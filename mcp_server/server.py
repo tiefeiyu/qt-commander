@@ -268,12 +268,10 @@ async def read_screenshot_resource(session_id: str, filename: str) -> bytes:
 # Server lifecycle
 # ============================================================================
 
-@mcp.on_startup
-async def on_startup():
-    """Recover sessions on startup."""
-    await sessions.recover_on_startup()
-
-
 def main():
-    """Entry point for 'qt-commander-mcp' console script."""
+    """Entry point for 'qt-commander-mcp' console script.
+
+    Session recovery (sessions.recover_on_startup) is invoked automatically
+    on first tool call via a lazy-init pattern, or can be triggered manually.
+    """
     mcp.run()
