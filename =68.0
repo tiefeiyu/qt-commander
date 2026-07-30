@@ -1,0 +1,5 @@
+Looking in indexes: https://mirrors.aliyun.com/pypi/simple/
+Collecting setuptools
+  Using cached setuptools-83.0.0-py3-none-any.whl (1.0 MB)
+Installing collected packages: setuptools
+Successfully installed setuptools-83.0.0

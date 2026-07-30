@@ -1,0 +1,2 @@
+[console_scripts]
+qt-commander-mcp = mcp_server.server:main
