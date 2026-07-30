@@ -174,16 +174,13 @@ bool writePortFileAtomic(const std::string& path, uint16_t port) {
 namespace rpc_io {
 
 std::string readFrame(socket_t fd) {
-    // Read header (6 bytes)
+    // Read header (4 bytes — big-endian length)
     uint8_t header[FRAME_HEADER_SIZE];
     if (!tcp_recv_all(fd, header, FRAME_HEADER_SIZE))
         return {};
 
     // Parse 4-byte big-endian payload length (no magic/version in new protocol)
-    if (header[0] != FRAME_MAGIC || header[1] != FRAME_VERSION)
-        return {};
 
-    // Parse 4-byte big-endian payload length
     uint32_t payloadLen = (static_cast<uint32_t>(header[0]) << 24) |
                            (static_cast<uint32_t>(header[1]) << 16) |
                            (static_cast<uint32_t>(header[2]) << 8)  |

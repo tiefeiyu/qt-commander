@@ -190,7 +190,9 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
 
     filename = f"screenshot_{session.snapshot_count + 1:08d}.png"
     ss_path = session.session_dir / "screenshots" / filename
-    ss_path.write_bytes(json.dumps(result).encode())
+    # Write raw PNG bytes, not JSON-encoded dict
+    data = result.get("data", json.dumps(result)) if isinstance(result, dict) else result
+    ss_path.write_bytes(data.encode() if isinstance(data, str) else data)
 
     return json.dumps({
         "session_id": session_id,
