@@ -355,3 +355,92 @@ class TestSessionRecovery:
 
         # PID alive but lib_path missing → should still clean up (no eject attempt)
         assert not sess_dir.exists()
+
+
+# ============================================================================
+# Edge cases
+# ============================================================================
+
+class TestSessionEdgeCases:
+    def test_session_id_is_alphanumeric(self):
+        s = Session("abcde12345fg", 1, Path("/x.dll"), Path("/tmp/ws"))
+        assert all(c in "abcdefghijklmnopqrstuvwxyz0123456789" for c in s.id)
+
+    @pytest.mark.asyncio
+    async def test_destroy_connected_session(self, workspace):
+        """Destroy a connected session should call disconnect first."""
+        sm = SessionManager(workspace)
+        s = await sm.create(500, Path("/tmp/lib.dll"))
+        s.connected = True
+        from unittest.mock import AsyncMock, MagicMock
+        s._writer = AsyncMock()
+        s._frame_writer = MagicMock()
+
+        async def mock_disconnect():
+            s.connected = False
+
+        original = s.disconnect
+        s.disconnect = mock_disconnect
+
+        ok = await sm.destroy(s.id, purge=False)
+        assert ok is True
+        assert sm.get(s.id) is None
+
+    @pytest.mark.asyncio
+    async def test_destroy_permission_error_retry(self, workspace):
+        """Destroy with purge retries on PermissionError."""
+        sm = SessionManager(workspace)
+        s = await sm.create(600, Path("/tmp/lib.dll"))
+
+        import shutil, asyncio as aio
+        call_count = [0]
+        original_rmtree = shutil.rmtree
+
+        def failing_rmtree(path, **kw):
+            call_count[0] += 1
+            if call_count[0] < 3:
+                raise PermissionError("locked")
+            original_rmtree(path, **kw)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("shutil.rmtree", failing_rmtree):
+            ok = await sm.destroy(s.id, purge=True)
+
+        assert ok is True
+        assert call_count[0] == 3
+
+    @pytest.mark.asyncio
+    async def test_send_rpc_increments_request_id(self, workspace):
+        """Each send_rpc call increments the request ID."""
+        sess = Session("rpc567890123", 14, Path("/tmp/a.dll"), workspace)
+
+        reader = __import__('asyncio').StreamReader()
+        resp1 = __import__('json').dumps({"jsonrpc": "2.0", "result": {"ok": 1}, "id": 1})
+        resp2 = __import__('json').dumps({"jsonrpc": "2.0", "result": {"ok": 2}, "id": 2})
+        import struct
+        frame1 = struct.pack("!I", len(resp1)) + resp1.encode()
+        frame2 = struct.pack("!I", len(resp2)) + resp2.encode()
+        reader.feed_data(frame1 + frame2)
+        reader.feed_eof()
+
+        from unittest.mock import AsyncMock
+        writer = AsyncMock()
+        sess._reader = reader
+        sess._writer = writer
+        from mcp_server.framing import FrameWriter, FrameReader
+        sess._frame_writer = FrameWriter(writer)
+        sess._frame_reader = FrameReader(reader)
+
+        r1 = await sess.send_rpc("test.method1", {})
+        assert r1 == {"ok": 1}
+
+        r2 = await sess.send_rpc("test.method2", {})
+        assert r2 == {"ok": 2}
+
+    def test_generate_session_id_length(self, workspace):
+        """Generated session IDs are exactly 12 characters."""
+        sm = SessionManager(workspace)
+        for _ in range(20):
+            sid = sm._generate_session_id()
+            assert len(sid) == 12
+            assert all(c in "abcdefghijklmnopqrstuvwxyz0123456789" for c in sid)

@@ -362,3 +362,92 @@ class TestToolErrorPaths:
         monkeypatch.setattr(srv, "sessions", sm)
         with pytest.raises(SessionNotFoundError):
             await srv.qt_get_property("nonexistent", 1, "text")
+
+
+# ============================================================================
+# Build tool + resources
+# ============================================================================
+
+class TestBuildTool:
+    @pytest.mark.asyncio
+    async def test_qt_build(self, monkeypatch):
+        from mcp_server import server as srv
+        async def mock_build(**kw):
+            return {"injector_path": "/tmp/qt-injector.exe", "library_path": "/tmp/lib.dll", "qt_version": "Qt5", "arch": "x64"}
+        monkeypatch.setattr(srv, "run_build", mock_build)
+        result = await srv.qt_build(vcvars_path="C:\\v.bat", qt_env="C:\\q.bat")
+        data = json.loads(result)
+        assert data["qt_version"] == "Qt5"
+
+    @pytest.mark.asyncio
+    async def test_qt_build_with_all_params(self, monkeypatch):
+        from mcp_server import server as srv
+        async def mock_build(**kw):
+            assert kw["vcvars_args"] == "x86"
+            assert kw["build_type"] == "Debug"
+            assert kw["qt_major"] == 6
+            assert kw["generator"] == "Ninja"
+            return {"injector_path": "/x", "library_path": "/y", "qt_version": "Qt6", "arch": "x86"}
+        monkeypatch.setattr(srv, "run_build", mock_build)
+        result = await srv.qt_build("C:\\v.bat", "C:\\q.bat", vcvars_args="x86", build_type="Debug", qt_major=6, generator="Ninja")
+        data = json.loads(result)
+        assert data["qt_version"] == "Qt6"
+
+
+class TestResources:
+    @pytest.mark.asyncio
+    async def test_read_snapshot_resource(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("res123456789", 99, Path("/tmp/z.dll"), workspace)
+        (sess.session_dir / "snapshots").mkdir(parents=True)
+        snap = sess.session_dir / "snapshots" / "test.json"
+        snap.write_text('{"elements": []}')
+        sess.connected = True
+        sm._sessions[sess.id] = sess
+        result = await srv.read_snapshot_resource("res123456789", "test.json")
+        assert "elements" in result
+
+    @pytest.mark.asyncio
+    async def test_read_snapshot_path_traversal(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("res234567890", 99, Path("/tmp/z.dll"), workspace)
+        sess.connected = True
+        sm._sessions[sess.id] = sess
+        result = await srv.read_snapshot_resource("res234567890", "../../etc/passwd")
+        assert "invalid filename" in result
+
+    @pytest.mark.asyncio
+    async def test_read_snapshot_not_found(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("res345678901", 99, Path("/tmp/z.dll"), workspace)
+        (sess.session_dir / "snapshots").mkdir(parents=True)
+        sess.connected = True
+        sm._sessions[sess.id] = sess
+        result = await srv.read_snapshot_resource("res345678901", "missing.json")
+        assert "not found" in result
+
+    @pytest.mark.asyncio
+    async def test_read_screenshot_resource(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("res456789012", 99, Path("/tmp/z.dll"), workspace)
+        (sess.session_dir / "screenshots").mkdir(parents=True)
+        shot = sess.session_dir / "screenshots" / "test.png"
+        shot.write_bytes(b'\x89PNG\r\n\x1a\n')
+        sess.connected = True
+        sm._sessions[sess.id] = sess
+        result = await srv.read_screenshot_resource("res456789012", "test.png")
+        assert result == b'\x89PNG\r\n\x1a\n'
+
+    @pytest.mark.asyncio
+    async def test_read_screenshot_path_traversal(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("res567890123", 99, Path("/tmp/z.dll"), workspace)
+        sess.connected = True
+        sm._sessions[sess.id] = sess
+        result = await srv.read_screenshot_resource("res567890123", "..\\..\\secret")
+        assert result == b""
