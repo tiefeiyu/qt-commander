@@ -1,9 +1,13 @@
+#define NOMINMAX
 #include "injector.h"
 
-#define NOMINMAX
 #include <windows.h>
 #include <psapi.h>
+#include <bcrypt.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "bcrypt.lib")
+#endif
 #include <vector>
 #include <string>
 #include <fstream>
@@ -11,45 +15,7 @@
 #include <chrono>
 #include <thread>
 #include <cstring>
-#include <unordered_map>
-#include <mutex>
-
-// ---------------------------------------------------------------------------
-// HMODULE store – maps (pid, lib_path) -> loaded HMODULE so ejectLibrary can
-// find the module without re-enumerating.  This is a simple module-level map
-// protected by a mutex.
-// ---------------------------------------------------------------------------
-static std::mutex g_hmodMutex;
-static std::unordered_map<int, std::unordered_map<std::wstring, HMODULE>>
-    g_hmodStore;
-
-static void storeHmodule(int pid, const std::wstring& libName, HMODULE hMod) {
-    std::lock_guard<std::mutex> lock(g_hmodMutex);
-    g_hmodStore[pid][libName] = hMod;
-}
-
-static bool lookupHmodule(int pid, const std::wstring& libName,
-                          HMODULE& out) {
-    std::lock_guard<std::mutex> lock(g_hmodMutex);
-    auto pidIt = g_hmodStore.find(pid);
-    if (pidIt == g_hmodStore.end())
-        return false;
-    auto modIt = pidIt->second.find(libName);
-    if (modIt == pidIt->second.end())
-        return false;
-    out = modIt->second;
-    return true;
-}
-
-static void eraseHmodule(int pid, const std::wstring& libName) {
-    std::lock_guard<std::mutex> lock(g_hmodMutex);
-    auto pidIt = g_hmodStore.find(pid);
-    if (pidIt != g_hmodStore.end()) {
-        pidIt->second.erase(libName);
-        if (pidIt->second.empty())
-            g_hmodStore.erase(pidIt);
-    }
-}
+#include <stdexcept>
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -87,7 +53,7 @@ static std::string lastErrorString() {
 }
 
 // ---------------------------------------------------------------------------
-// PE export directory parser – locate an exported function's RVA from a DLL
+// PE export directory parser -- locate an exported function's RVA from a DLL
 // file image loaded into memory.
 // ---------------------------------------------------------------------------
 
@@ -195,17 +161,20 @@ static DWORD findExportRva(const std::vector<uint8_t>& dllBytes,
 }
 
 // ---------------------------------------------------------------------------
-// InitParams – struct written into target process memory.  Must match the
-// declaration inside the injected library.
+// InitParams -- must match src/library/api.h exactly (1024-byte fixed layout)
 // ---------------------------------------------------------------------------
+#pragma pack(push, 1)
 struct InitParams {
-    char workspace_path[260];
-    char session_id[128];
-    char token[128];
-    char port_file_path[260];
+    uint32_t version;           // offset 0
+    uint32_t total_size;        // offset 4
+    char workspace_path[256];   // offset 8
+    char session_id[13];        // offset 264
+    char token[65];             // offset 277
+    char port_file_path[256];   // offset 342
+    uint8_t reserved[426];      // offset 598 -> total 1024
 };
-static_assert(sizeof(InitParams) <= 1024,
-              "InitParams must fit in 1024 bytes");
+#pragma pack(pop)
+static_assert(sizeof(InitParams) == 1024, "InitParams size must be 1024 bytes");
 
 // ---------------------------------------------------------------------------
 // injectLibrary
@@ -300,13 +269,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                 "injectLibrary: LoadLibraryW returned NULL in target process"};
     }
 
-    HMODULE dllBase = reinterpret_cast<HMODULE>(
-        static_cast<uintptr_t>(exitCode));
-
-    // 9. Store HMODULE for future eject
-    storeHmodule(pid, lib_path.filename().wstring(), dllBase);
-
-    // 10. Clean up
+    // 9. Clean up
     CloseHandle(hThread);
     VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
     CloseHandle(hProcess);
@@ -342,39 +305,34 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
         return 0;
     }
 
-    // 3. Lookup DLL base (use stored HMODULE, fall back to module enumeration)
+    // 3. Lookup DLL base via module enumeration
     std::wstring libNameW = lib_path.filename().wstring();
     HMODULE dllBase = nullptr;
 
-    if (!lookupHmodule(pid, libNameW, dllBase)) {
-        // Enumerate modules in the target to find our DLL
-        DWORD needed = 0;
-        EnumProcessModules(hProcess, nullptr, 0, &needed);
-        std::vector<HMODULE> modules(needed / sizeof(HMODULE));
-        if (!EnumProcessModules(
-                hProcess, modules.data(),
-                static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
-                &needed)) {
-            CloseHandle(hProcess);
-            return 0;
-        }
+    DWORD needed = 0;
+    EnumProcessModules(hProcess, nullptr, 0, &needed);
+    std::vector<HMODULE> modules(needed / sizeof(HMODULE));
+    if (!EnumProcessModules(
+            hProcess, modules.data(),
+            static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
+            &needed)) {
+        CloseHandle(hProcess);
+        return 0;
+    }
 
-        for (const auto& hMod : modules) {
-            wchar_t modName[MAX_PATH]{};
-            if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH) == 0)
-                continue;
-            if (_wcsicmp(modName, libNameW.c_str()) == 0) {
-                dllBase = hMod;
-                break;
-            }
+    for (const auto& hMod : modules) {
+        wchar_t modName[MAX_PATH]{};
+        if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH) == 0)
+            continue;
+        if (_wcsicmp(modName, libNameW.c_str()) == 0) {
+            dllBase = hMod;
+            break;
         }
+    }
 
-        if (!dllBase) {
-            CloseHandle(hProcess);
-            return 0;
-        }
-
-        storeHmodule(pid, libNameW, dllBase);
+    if (!dllBase) {
+        CloseHandle(hProcess);
+        return 0;
     }
 
     // 4. Compute entry-point address in the target
@@ -384,6 +342,9 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
 
     // 5. Fill InitParams
     InitParams params{};
+    params.version = 1;
+    params.total_size = 1024;
+
     auto safeCopy = [](char* dst, size_t dstLen, const std::string& src) {
         size_t n = (std::min)(src.size(), dstLen - 1);
         memcpy(dst, src.data(), n);
@@ -429,7 +390,7 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
     //    quickly)
     DWORD waitResult = WaitForSingleObject(hThread, 10000);
     if (waitResult != WAIT_OBJECT_0) {
-        // Init timed out or failed — clean up and return.
+        // Init timed out or failed -- clean up and return.
         TerminateThread(hThread, 1);
         CloseHandle(hThread);
         VirtualFreeEx(hProcess, remoteParams, 0, MEM_RELEASE);
@@ -492,95 +453,113 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
 // ejectLibrary
 // ---------------------------------------------------------------------------
 InjectResult ejectLibrary(int pid, const fs::path& lib_path) {
-    // 1. Open target process
     HANDLE hProcess = OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION |
-            PROCESS_VM_READ,
+        PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION |
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
         FALSE, static_cast<DWORD>(pid));
     if (!hProcess) {
-        return {false, "ejectLibrary: OpenProcess failed for PID " +
-                           std::to_string(pid) + ": " + lastErrorString()};
+        return {false, "ejectLibrary: OpenProcess failed: " + lastErrorString()};
     }
 
-    // 2. Get HMODULE from our store (fast path) or re-enumerate
+    // Enumerate modules to find the DLL base
+    DWORD needed = 0;
+    EnumProcessModules(hProcess, nullptr, 0, &needed);
+    std::vector<HMODULE> modules(needed / sizeof(HMODULE));
+    if (!EnumProcessModules(hProcess, modules.data(),
+                            static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
+                            &needed)) {
+        CloseHandle(hProcess);
+        return {false, "ejectLibrary: EnumProcessModules failed: " + lastErrorString()};
+    }
+
     std::wstring libNameW = lib_path.filename().wstring();
     HMODULE dllBase = nullptr;
-
-    if (!lookupHmodule(pid, libNameW, dllBase)) {
-        DWORD needed = 0;
-        EnumProcessModules(hProcess, nullptr, 0, &needed);
-        std::vector<HMODULE> modules(needed / sizeof(HMODULE));
-        if (!EnumProcessModules(
-                hProcess, modules.data(),
-                static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
-                &needed)) {
-            CloseHandle(hProcess);
-            return {false, "ejectLibrary: EnumProcessModules failed: " +
-                               lastErrorString()};
-        }
-
-        for (const auto& hMod : modules) {
-            wchar_t modName[MAX_PATH]{};
-            if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH) == 0)
-                continue;
-            if (_wcsicmp(modName, libNameW.c_str()) == 0) {
-                dllBase = hMod;
-                break;
-            }
+    for (const auto& hMod : modules) {
+        wchar_t modName[MAX_PATH]{};
+        if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH) &&
+            _wcsicmp(modName, libNameW.c_str()) == 0) {
+            dllBase = hMod;
+            break;
         }
     }
-
     if (!dllBase) {
         CloseHandle(hProcess);
-        return {false, "ejectLibrary: DLL \"" + lib_path.filename().string() +
-                           "\" not found in target process"};
+        return {false, "ejectLibrary: DLL not found in target process"};
     }
 
-    // 3. Get FreeLibrary address
-    HMODULE kernel32 = GetModuleHandleW(L"kernel32");
-    if (!kernel32) {
-        CloseHandle(hProcess);
-        return {false, "ejectLibrary: GetModuleHandle(kernel32) failed: " +
-                           lastErrorString()};
-    }
-
-    FARPROC freeLibAddr = GetProcAddress(kernel32, "FreeLibrary");
+    // Call FreeLibrary in the target
+    FARPROC freeLibAddr = GetProcAddress(
+        GetModuleHandleW(L"kernel32"), "FreeLibrary");
     if (!freeLibAddr) {
         CloseHandle(hProcess);
-        return {false, "ejectLibrary: GetProcAddress(FreeLibrary) failed: " +
-                           lastErrorString()};
+        return {false, "ejectLibrary: GetProcAddress(FreeLibrary) failed"};
     }
 
-    // 4. Create remote thread to call FreeLibrary(dllBase)
     HANDLE hThread = CreateRemoteThread(
         hProcess, nullptr, 0,
         reinterpret_cast<LPTHREAD_START_ROUTINE>(freeLibAddr),
         dllBase, 0, nullptr);
     if (!hThread) {
         CloseHandle(hProcess);
-        return {false, "ejectLibrary: CreateRemoteThread failed: " +
-                           lastErrorString()};
+        return {false, "ejectLibrary: CreateRemoteThread failed: " + lastErrorString()};
     }
 
-    // 5. Wait for FreeLibrary to return
     DWORD waitResult = WaitForSingleObject(hThread, 15000);
-    if (waitResult == WAIT_TIMEOUT) {
+    if (waitResult != WAIT_OBJECT_0) {
         TerminateThread(hThread, 1);
         CloseHandle(hThread);
         CloseHandle(hProcess);
-        return {false, "ejectLibrary: remote thread timed out (15 s)"};
+        return {false, "ejectLibrary: remote thread timed out (15s)"};
     }
-    if (waitResult == WAIT_FAILED) {
-        CloseHandle(hThread);
-        CloseHandle(hProcess);
-        return {false, "ejectLibrary: WaitForSingleObject failed: " +
-                           lastErrorString()};
-    }
-
-    // 6. Clean up
     CloseHandle(hThread);
     CloseHandle(hProcess);
-    eraseHmodule(pid, libNameW);
-
     return {true, ""};
+}
+
+// ---------------------------------------------------------------------------
+// isQtProcess
+// ---------------------------------------------------------------------------
+bool isQtProcess(int pid) {
+    HANDLE hProcess = OpenProcess(
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, static_cast<DWORD>(pid));
+    if (!hProcess) return false;
+
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    bool found = false;
+    if (EnumProcessModules(hProcess, mods, sizeof(mods), &needed)) {
+        int count = needed / sizeof(HMODULE);
+        for (int i = 0; i < count && !found; ++i) {
+            wchar_t name[MAX_PATH]{};
+            if (GetModuleBaseNameW(hProcess, mods[i], name, MAX_PATH)) {
+                std::wstring wn(name);
+                found = (wn.find(L"Qt5Core") != std::wstring::npos ||
+                         wn.find(L"Qt6Core") != std::wstring::npos);
+            }
+        }
+    }
+    CloseHandle(hProcess);
+    return found;
+}
+
+// ---------------------------------------------------------------------------
+// generateToken
+// ---------------------------------------------------------------------------
+std::string generateToken() {
+    uint8_t bytes[32];  // 32 bytes -> 64 hex chars
+    NTSTATUS status = BCryptGenRandom(
+        nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (status != 0) {
+        throw std::runtime_error("BCryptGenRandom failed");
+    }
+    static const char hex[] = "0123456789abcdef";
+    std::string token;
+    token.reserve(64);
+    for (int i = 0; i < 32; ++i) {
+        token += hex[bytes[i] >> 4];
+        token += hex[bytes[i] & 0x0F];
+    }
+    // Zero the raw bytes after use
+    SecureZeroMemory(bytes, sizeof(bytes));
+    return token;
 }

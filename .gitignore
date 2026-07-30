@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+.superpowers/
+.qt-commander/

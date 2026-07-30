@@ -12,7 +12,7 @@ if(MSVC)
 endif()
 
 # --- Options ---
-option(BUILD_SERVER   "Build qt-commander MCP server"  ON)
+option(BUILD_INJECTOR   "Build qt-injector standalone CLI"  ON)
 option(BUILD_LIBRARY  "Build injection library"        OFF)
 option(BUILD_TESTS    "Build tests"                    ON)
 option(WITH_QML       "Build with QML/QQuick support"  ON)
@@ -54,8 +54,8 @@ if(_need_qt)
 endif()
 
 # --- Subdirectories ---
-if(BUILD_SERVER)
-    add_subdirectory(src/server)
+if(BUILD_INJECTOR)
+    add_subdirectory(src/injector)
 endif()
 
 if(BUILD_LIBRARY)
