@@ -1,0 +1,1 @@
+"""qt-commander MCP server — Qt application introspection and automation."""

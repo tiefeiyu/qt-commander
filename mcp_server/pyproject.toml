@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qt-commander-mcp"
+version = "1.0.0"
+description = "MCP server for Qt application introspection and automation"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0",
+    "psutil>=5.0",
+]
+
+[project.scripts]
+qt-commander-mcp = "mcp_server.server:main"
+
+[tool.setuptools.packages.find]
+include = ["mcp_server*"]
+
+[tool.setuptools.package-data]
+mcp_server = ["native/**/*"]
