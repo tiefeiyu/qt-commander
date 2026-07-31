@@ -138,31 +138,36 @@ struct MockProcessOps : IProcessOps {
         return create_thread_result;
     }
     bool wait_for_thread(void*, uint32_t) override { return wait_result; }
+    bool get_thread_exit_code_result = true;
     bool get_thread_exit_code(void*, uint32_t& out_code) override {
         out_code = thread_exit_code;
-        return true;
+        return get_thread_exit_code_result;
     }
     void terminate_thread(void*) override {}
     void close_thread(void*) override {}
+    bool enum_modules_result = true;
     bool enum_modules(void* h, std::vector<std::string>& out_names) override {
         (void)h;
         calls.push_back({"enum_modules", 0, 0, ""});
         out_names = module_names;
-        return true;
+        return enum_modules_result;
     }
+    bool get_module_handle_result = true;
     bool get_module_handle(void*& out_handle, const std::string& name) override {
         calls.push_back({"get_module", 0, 0, name});
-        out_handle = module_handle;
-        return true;
+        out_handle = get_module_handle_result ? module_handle : nullptr;
+        return get_module_handle_result;
     }
+    bool get_proc_address_result = true;
     bool get_proc_address(void*, const std::string& name, void*& out_addr) override {
         calls.push_back({"get_proc", 0, 0, name});
-        out_addr = proc_address;
-        return true;
+        out_addr = get_proc_address_result ? proc_address : nullptr;
+        return get_proc_address_result;
     }
+    bool get_load_library_addr_result = true;
     bool get_load_library_addr(void*& out_addr) override {
-        out_addr = load_lib_addr;
-        return true;
+        out_addr = get_load_library_addr_result ? load_lib_addr : nullptr;
+        return get_load_library_addr_result;
     }
     bool read_file_bytes(const fs::path&, std::vector<uint8_t>& out) override {
         out = file_bytes;
