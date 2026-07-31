@@ -50,6 +50,17 @@ This compiles both targets into `.qt-commander/build/`.
 
 ## Testing
 
+```bash
+# Run everything
+python scripts/run_all_tests.py
+
+# Fast (Python + ctest only, ~20s)
+python scripts/run_all_tests.py --quick
+
+# Skip E2E (no Qt needed)
+python scripts/run_all_tests.py --skip-e2e
+```
+
 Tests are organized in three tiers:
 
 | Tier | Location | Language | Count | Dependencies |
