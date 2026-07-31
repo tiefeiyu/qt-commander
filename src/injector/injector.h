@@ -29,6 +29,20 @@ uint16_t performInitHandshake(
 
 // Generate a cryptographically random 64-hex-character token.
 std::string generateToken();
+std::string generateToken(class IProcessOps& ops);
 
 // Validate that the target PID is a Qt process by checking loaded modules.
 bool isQtProcess(int pid);
+bool isQtProcess(class IProcessOps& ops, int pid);
+
+// Dependency-injected variants (accept IProcessOps for testability).
+InjectResult injectLibrary(class IProcessOps& ops, int pid, const fs::path& lib_path);
+InjectResult ejectLibrary(class IProcessOps& ops, int pid, const fs::path& lib_path);
+uint16_t performInitHandshake(
+    class IProcessOps& ops,
+    int pid, const fs::path& lib_path,
+    const std::string& workspace_path,
+    const std::string& session_id,
+    const std::string& token,
+    const fs::path& port_file_path
+);
