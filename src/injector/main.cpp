@@ -3,13 +3,15 @@
 #include <fstream>
 #include <string>
 #include <cstdlib>
+#include <thread>
+#include <chrono>
 #include <filesystem>
 
 namespace fs = std::filesystem;
 
 static void print_usage() {
     std::cerr << "Usage:\n"
-              << "  qt-injector <pid> <library_path> <port_file_path>\n"
+              << "  qt-injector <pid> <library_path> <port_file_path> [--sleep-before-check <ms>]\n"
               << "  qt-injector --eject <pid> <library_path>\n";
 }
 
@@ -24,7 +26,7 @@ int main(int argc, char* argv[]) {
     std::string mode = argv[1];
 
     if (mode == "--eject") {
-        if (argc != 4) { print_usage(); return 1; }
+        if (argc < 4) { print_usage(); return 1; }
         int pid = std::stoi(argv[2]);
         if (pid <= 0) print_error_and_exit(1, "invalid PID: " + std::to_string(pid));
         fs::path lib_path(argv[3]);
@@ -34,7 +36,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (argc != 4) { print_usage(); return 1; }
+    if (argc < 4) { print_usage(); return 1; }
 
     int pid = std::stoi(argv[1]);
     if (pid <= 0) print_error_and_exit(1, "invalid PID: " + std::to_string(pid));
@@ -59,6 +61,12 @@ int main(int argc, char* argv[]) {
         port_file.parent_path().filename().string(), token, port_file);
 
     if (port == 0) print_error_and_exit(3, "qt_commander_init failed or timed out");
+
+    // Optional sleep for testing — creates window to delete/modify port file
+    if (argc >= 6 && std::string(argv[4]) == "--sleep-before-check") {
+        int ms = std::stoi(argv[5]);
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    }
 
     std::ifstream pf(port_file);
     if (!pf) print_error_and_exit(4, "port file not found: " + port_file.string());
