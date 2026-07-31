@@ -1,14 +1,21 @@
 #pragma once
+
+// Winsock2 MUST come before windows.h on MSVC
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <windows.h>
+#endif
+
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
 #include <vector>
 #include <stdexcept>
 
-// Platform-neutral byte-order conversion
-#ifdef _WIN32
-#include <winsock2.h>
-#else
+#ifndef _WIN32
 #include <arpa/inet.h>
 #endif
 

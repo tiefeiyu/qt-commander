@@ -9,7 +9,6 @@ set(LIB_SOURCES
     selector/selector.cpp
     protocol/handler.cpp
     ../common/socket_utils.cpp
-    ../common/framing.cpp
 )
 
 add_library(qt-commander-lib SHARED ${LIB_SOURCES}
