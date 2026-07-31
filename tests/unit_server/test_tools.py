@@ -503,3 +503,81 @@ class TestFinalEdgeCases:
         result = await srv.qt_detach("pur123456789", purge=False)
         data = json.loads(result)
         assert data["status"] == "detached"
+
+
+# ============================================================================
+# Targeted branch coverage
+# ============================================================================
+
+class TestServerBranchCoverage:
+    @pytest.mark.asyncio
+    async def test_qt_attach_exception_handler(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        from mcp_server.builder import BuildState
+        from unittest.mock import patch
+        import os
+        monkeypatch.setattr(srv, "sessions", sm)
+        monkeypatch.setattr(srv, "check_build_state", lambda: BuildState.BUILT)
+        lib_dir = sm.workspace / "library" / "build"
+        lib_dir.mkdir(parents=True)
+        lib_name = "libqt-commander.dll" if os.name == "nt" else "libqt-commander.so"
+        (lib_dir / lib_name).write_text("fake")
+        inj_dir = sm.workspace / "injector" / "build"
+        inj_dir.mkdir(parents=True)
+        inj_name = "qt-injector.exe" if os.name == "nt" else "qt-injector"
+        (inj_dir / inj_name).write_text("fake")
+        with patch.object(srv, "BUILD_DIR", sm.workspace):
+            from mcp_server.errors import InjectionError
+            async def fail(*a, **kw): raise InjectionError("test fail")
+            monkeypatch.setattr(srv, "inject_and_connect", fail)
+            result = await srv.qt_attach(pid=1234)
+            assert "2002" in result
+            assert "test fail" in result
+
+    @pytest.mark.asyncio
+    async def test_qt_screenshot_element_id_passed(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("shot_e01", 88, Path("/f.dll"), workspace)
+        (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        sess.connected = True; sess._rpc_lock = __import__('asyncio').Lock()
+        cp = {}
+        async def ms(m, p): cp.update(p); return {"data": "x"}
+        sess.send_rpc = ms
+        sm._sessions[sess.id] = sess
+        await srv.qt_screenshot("shot_e01", element_id=42)
+        assert cp.get("element_id") == 42
+
+    @pytest.mark.asyncio
+    async def test_qt_screenshot_default_no_element_id(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("shot_d01", 89, Path("/g.dll"), workspace)
+        (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        sess.connected = True; sess._rpc_lock = __import__('asyncio').Lock()
+        cp = {}
+        async def ms(m, p): cp.update(p); return {"data": "x"}
+        sess.send_rpc = ms
+        sm._sessions[sess.id] = sess
+        await srv.qt_screenshot("shot_d01")
+        assert "element_id" not in cp
+
+    @pytest.mark.asyncio
+    async def test_qt_set_property_plain_text_fallback(self, sm, monkeypatch, workspace):
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("set_r01", 90, Path("/h.dll"), workspace)
+        sess.connected = True; sess._rpc_lock = __import__('asyncio').Lock()
+        cv = None
+        async def ms(m, p):
+            nonlocal cv; cv = p.get("value"); return {"ok": True}
+        sess.send_rpc = ms
+        sm._sessions[sess.id] = sess
+        await srv.qt_set_property("set_r01", 1, "label", "plain text")
+        assert cv == "plain text"
+
+    def test_session_manager_lock_type(self):
+        from mcp_server.session import SessionManager
+        import asyncio as aio
+        sm = SessionManager(__import__('pathlib').Path("/tmp"))
+        assert isinstance(sm._lock, aio.Lock)
