@@ -10,3 +10,8 @@ build/
 *.dylib
 .superpowers/
 .qt-commander/
+*.gcov
+*.gcda
+*.gcno
+.coverage
+*.tmp
