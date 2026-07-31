@@ -1,113 +1,142 @@
 #!/usr/bin/env python3
-"""Run all qt-commander tests — Python + C++ (g++ or MSVC).
+"""Run all qt-commander tests.
 
 Usage:
-    python run_all_tests.py              # all tests
-    python run_all_tests.py --skip-cpp   # Python only
-    python run_all_tests.py --skip-e2e   # skip E2E (needs Qt)
-    python run_all_tests.py --quick      # Python + MSVC ctest only (fast)
+    python scripts/run_all_tests.py                           # all (needs g++)
+    python scripts/run_all_tests.py --quick                   # Python + MSVC ctest
+    python scripts/run_all_tests.py --skip-cpp                # Python only
+    python scripts/run_all_tests.py --skip-e2e                # skip Qt-dependent E2E
+
+    # With MSVC environment (for ctest + E2E):
+    python scripts/run_all_tests.py --vcvars "C:/.../vcvars64.bat" --qt-env "C:/Qt/.../qtenv2.bat"
 """
 
 import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
 MSVC = BUILD / "msvc"
 
-# ── helpers ──
+passed = 0
+failed = 0
+skipped = 0
 
-passed, failed, skipped = 0, 0, 0
 
-def run(name: str, cmd: list[str], cwd: Path = ROOT, env: dict | None = None,
-        ok_exit: int = 0, skip_reason: str = "") -> bool:
+def run(name: str, cmd: list[str], cwd: Path = ROOT, timeout: int = 600,
+        env: dict | None = None, skip_reason: str = "") -> bool:
     global passed, failed, skipped
     if skip_reason:
         print(f"  SKIP ({skip_reason}): {name}")
         skipped += 1
         return False
-
     print(f"  {name} ...", end=" ", flush=True)
     try:
         e = os.environ.copy()
         if env:
             e.update(env)
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600, env=e)
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           timeout=timeout, env=e)
     except subprocess.TimeoutExpired:
         print("TIMEOUT")
         failed += 1
         return False
-
-    if r.returncode == ok_exit:
+    if r.returncode == 0:
         print("PASS")
         passed += 1
         return True
     else:
         print("FAIL")
         if r.stderr.strip():
-            print(f"    stderr: {r.stderr.strip()[-200:]}")
+            print(f"    {r.stderr.strip()[-200:]}")
         if r.stdout.strip():
-            print(f"    stdout: {r.stdout.strip()[-200:]}")
+            print(f"    {r.stdout.strip()[-200:]}")
         failed += 1
         return False
 
 
-def gpp(src: str, out: str, extra_libs: str = "") -> bool:
+def run_with_msvc(name: str, cmd: str, vcvars: str, qt_env: str,
+                  vcvars_args: str = "amd64", timeout: int = 600) -> bool:
+    """Run a command inside a vcvars + qtenv2 environment."""
+    global passed, failed, skipped
+    if not vcvars or not qt_env:
+        run(name, [], skip_reason="--vcvars or --qt-env not set")
+        return False
+
+    bat = f'@echo off\r\ncall "{vcvars}" {vcvars_args}\r\ncall "{qt_env}"\r\ncd /d {ROOT}\r\n{cmd}\r\n'
+    tmp = ROOT / "build" / "_run_msvc.bat"
+    tmp.write_text(bat)
+    print(f"  {name} ...", end=" ", flush=True)
+    try:
+        r = subprocess.run(["cmd", "/c", str(tmp)], capture_output=True,
+                           text=True, timeout=timeout, cwd=ROOT)
+    except subprocess.TimeoutExpired:
+        print("TIMEOUT")
+        failed += 1; return False
+    tmp.unlink(missing_ok=True)
+    if r.returncode == 0:
+        print("PASS"); passed += 1; return True
+    else:
+        print("FAIL")
+        for line in r.stdout.splitlines()[-5:]:
+            print(f"    {line}")
+        for line in r.stderr.splitlines()[-3:]:
+            print(f"    {line}")
+        failed += 1; return False
+
+
+def gpp(src: str, out: str) -> bool:
     """Compile C++ source with g++."""
-    cmd = (
-        f"g++ -std=c++17 -static -o {out} {src} "
-        f"-I src/injector -I src/common -I src/library "
-        f"-lws2_32 -lpsapi -lbcrypt {extra_libs}"
-    )
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=ROOT)
-    if r.returncode != 0:
-        print(f"    BUILD FAIL: {out}")
-        if r.stderr.strip():
-            print(f"    {r.stderr.strip()[-200:]}")
+    libs = "-lws2_32 -lpsapi -lbcrypt"
+    inc = "-I src/injector -I src/common -I src/library"
+    r = subprocess.run(
+        f"g++ -std=c++17 -static -o {out} {src} {inc} {libs}",
+        shell=True, capture_output=True, text=True, cwd=ROOT)
     return r.returncode == 0
 
-
-# ── main ──
 
 def main():
     global passed, failed, skipped
     p = argparse.ArgumentParser(description="Run all qt-commander tests")
-    p.add_argument("--skip-cpp", action="store_true", help="Skip g++ tests")
-    p.add_argument("--skip-e2e", action="store_true", help="Skip E2E tests")
-    p.add_argument("--quick", action="store_true", help="Python + MSVC ctest only")
+    p.add_argument("--skip-cpp", action="store_true")
+    p.add_argument("--skip-e2e", action="store_true")
+    p.add_argument("--quick", action="store_true")
+    p.add_argument("--vcvars", default="", help="Path to vcvars64.bat")
+    p.add_argument("--vcvars-args", default="amd64")
+    p.add_argument("--qt-env", default="", help="Path to qtenv2.bat")
     args = p.parse_args()
 
-    print("=== Python (pytest) ===")
+    v = args.vcvars
+    q = args.qt_env
+
+    # ── Python ──
+    print("=== Python (pytest) ===", flush=True)
     run("pytest", ["python", "-m", "pytest", "tests/unit_server/", "-q"])
 
+    # ── MSVC ctest ──
     print("\n=== MSVC ctest ===", flush=True)
     if MSVC.exists():
-        qt_bin = r"C:\Software\Qt\5.15.2\msvc2019_64\bin"
-        run("ctest", ["ctest", "--output-on-failure"], cwd=MSVC,
-            env={"PATH": f"{qt_bin};{os.environ['PATH']}"},
-            skip_reason="" if MSVC.exists() else "build/msvc not found")
+        run_with_msvc("ctest", "ctest --output-on-failure", v, q, args.vcvars_args)
     else:
-        print("  SKIP: build/msvc not found")
-        skipped += 1
+        run("ctest", [], skip_reason="build/msvc not found")
 
     if args.quick:
         print(f"\n{'='*40}\n  Passed: {passed}  Failed: {failed}  Skipped: {skipped}\n{'='*40}")
         return 0 if failed == 0 else 1
 
-    # ── g++ tests ──
+    # ── g++ ──
     if args.skip_cpp:
         print("\n=== g++ tests: SKIPPED ===")
-    elif not subprocess.run(["g++", "--version"], capture_output=True).returncode == 0:
-        print("\n=== g++ tests: g++ not found, skipping ===")
-        skipped += 1
+    elif subprocess.run(["g++", "--version"], capture_output=True).returncode != 0:
+        run("g++", [], skip_reason="g++ not found")
     else:
         BUILD.mkdir(exist_ok=True)
         print("\n=== Building g++ binaries ===", flush=True)
-
-        targets = {
+        binaries = {
             "test_di.exe":     "tests/unit_injector/test_injector_logic.cpp  src/injector/injector_di.cpp",
             "test_pe.exe":     "tests/unit_injector/test_pe_real.cpp",
             "test_int.exe":    "tests/unit_injector/test_cli_integration.cpp src/injector/injector_di.cpp",
@@ -118,36 +147,41 @@ def main():
             "test_exit.exe":   "tests/unit_injector/test_e2e_exit_codes.cpp",
             "test_exit45.exe": "tests/unit_injector/test_exit45.cpp",
         }
+        built = {}
+        for out, src in binaries.items():
+            full = f"build/{out}"
+            ok = gpp(src, full)
+            print(f"  {'OK' if ok else 'FAIL'}: {out}")
+            if ok:
+                built[out] = full
 
-        for out, src in targets.items():
-            ok = gpp(src, f"build/{out}")
-            if not ok:
-                failed += 1
+        # Run unit tests
+        print("\n=== g++ unit tests ===", flush=True)
+        for name, exe in [
+            ("DI injector logic", "test_di.exe"),
+            ("PE parser (real)", "test_pe.exe"),
+            ("Win32ProcessOps + CLI", "test_int.exe"),
+            ("injector_win helpers", "test_w32.exe"),
+            ("Socket utils", "test_sock.exe"),
+        ]:
+            path = built.get(exe, "")
+            run(name, [path], skip_reason="not built" if not path else "")
 
-        # Run
-        print("\n=== g++ tests ===", flush=True)
-        tests = [
-            ("DI injector logic", "build/test_di.exe"),
-            ("PE parser (real)", "build/test_pe.exe"),
-            ("Win32ProcessOps + CLI", "build/test_int.exe"),
-            ("injector_win helpers", "build/test_w32.exe"),
-            ("Socket utils", "build/test_sock.exe"),
-        ]
-        for name, exe in tests:
-            run(name, [exe], skip_reason="" if Path(exe).exists() else "not built")
-
-        # E2E
+        # E2E (needs MSVC Qt env + built test app)
         if not args.skip_e2e:
-            qt_bin = r"C:\Software\Qt\5.15.2\msvc2019_64\bin"
-            env = {"PATH": f"{qt_bin};{MSVC / 'src' / 'library'};{os.environ['PATH']}"}
             print("\n=== E2E tests ===", flush=True)
             for name, exe in [
-                ("E2E full lifecycle", "build/test_e2e.exe"),
-                ("Exit codes 3/6", "build/test_exit.exe"),
-                ("Exit codes 4/5", "build/test_exit45.exe"),
-                ("Injector error path", "build/test_injerr.exe"),
+                ("E2E full lifecycle", "test_e2e.exe"),
+                ("Exit codes 3/6", "test_exit.exe"),
+                ("Exit codes 4/5", "test_exit45.exe"),
+                ("Injector error path", "test_injerr.exe"),
             ]:
-                run(name, [exe], env=env, skip_reason="" if Path(exe).exists() else "not built")
+                path = built.get(exe, "")
+                if path:
+                    run_with_msvc(name, str(ROOT / path), v, q, args.vcvars_args,
+                                  timeout=120)
+                else:
+                    run(name, [], skip_reason="not built")
 
     print(f"\n{'='*40}")
     print(f"  Passed: {passed}  Failed: {failed}  Skipped: {skipped}")
