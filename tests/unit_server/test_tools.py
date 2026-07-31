@@ -451,3 +451,55 @@ class TestResources:
         sm._sessions[sess.id] = sess
         result = await srv.read_screenshot_resource("res567890123", "..\\..\\secret")
         assert result == b""
+
+
+# ============================================================================
+# Final edge cases
+# ============================================================================
+
+class TestFinalEdgeCases:
+    def test_tool_error_format_complete(self):
+        """tool_error produces complete JSON-RPC error structure."""
+        from mcp_server.errors import tool_error
+        result = tool_error(2002, "injection error")
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert parsed["error"]["code"] == -32000
+        assert parsed["error"]["data"]["code"] == 2002
+        assert "injection error" in parsed["error"]["message"]
+
+    def test_error_codes_range(self):
+        """All error codes are in valid ranges."""
+        from mcp_server.errors import QtCommanderError, ElementDestroyedError, SessionNotFoundError
+        e1 = ElementDestroyedError(1)
+        assert e1.code == 1001
+        e2 = SessionNotFoundError("x")
+        assert e2.code == -32602
+        e3 = QtCommanderError(9999, "custom")
+        assert e3.code == 9999
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_filtered(self, sm, monkeypatch):
+        """list_sessions returns sessions regardless of connected state."""
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        s1 = Session("aaa123456789", 1, Path("/x.dll"), sm.workspace)
+        s2 = Session("bbb123456789", 2, Path("/y.dll"), sm.workspace)
+        s1.connected = True
+        s2.connected = False
+        sm._sessions[s1.id] = s1
+        sm._sessions[s2.id] = s2
+        result = await srv.qt_list_sessions()
+        data = json.loads(result)
+        assert len(data["sessions"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_detach_with_purge(self, sm, monkeypatch, workspace):
+        """qt_detach with purge=True removes directory."""
+        from mcp_server import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("pur123456789", 999, Path("/p.dll"), workspace)
+        sm._sessions[sess.id] = sess
+        result = await srv.qt_detach("pur123456789", purge=False)
+        data = json.loads(result)
+        assert data["status"] == "detached"
