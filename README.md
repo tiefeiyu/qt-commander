@@ -1,189 +1,201 @@
 # qt-commander
 
-MCP server for Qt application introspection and automation — analogous to
-Playwright for the browser, but targeting native Qt widgets and QML scenes.
+MCP server for Qt application introspection and automation — the
+[Playwright](https://playwright.dev) for native Qt, covering both
+QWidget and QML interfaces.
 
 ## Architecture
 
 ```
-AI Agent → Python MCP Server (fastmcp) → qt-injector.exe → libqt-commander.dll
-                  ↑ subprocess                    ↑ CreateRemoteThread
+┌──────────┐     stdio      ┌──────────────┐   subprocess    ┌──────────────┐
+│ AI Agent │ ◄────────────► │ MCP Server   │ ──────────────► │ qt-injector  │
+└──────────┘                │ (Python)     │                 │ (C++)        │
+                            └──────────────┘                 └──────┬───────┘
+                                                                    │
+                                                    CreateRemoteThread
+                                                                    │
+                                                           ┌────────▼───────┐
+                                                           │ libqt-commander│
+                                                           │ (C++/Qt)       │
+                                                           └────────────────┘
 ```
 
-- **MCP Server** (`mcp_server/`): Python + fastmcp, handles MCP protocol, sessions, builds
-- **Injector** (`src/injector/`): C++ standalone CLI, injects DLL into target process
-- **Library** (`src/library/`): C++/Qt, injected into target for UI introspection
+| Component | Path | Language | Role |
+|-----------|------|----------|------|
+| MCP Server | `qt_commander/` | Python | Protocol bridge, session management, on-demand build |
+| Injector CLI | `src/injector/` | C++ | Standalone binary that loads the library into a target process |
+| Injection Library | `src/library/` | C++/Qt | In-process engine for UI introspection, manipulation, capture |
+| Shared | `src/common/` | C++ | Frame protocol, TCP socket utilities |
+
+### How it works
+
+1. **AI Agent** sends an MCP tool call (e.g. `qt_snapshot`) via stdio.
+2. **MCP Server** spawns `qt-injector.exe` as a subprocess with the target PID.
+3. **qt-injector** loads `libqt-commander.dll` into the target Qt process via
+   `CreateRemoteThread` + `LoadLibraryW`, performs a token-authenticated
+   handshake, then prints the library's TCP port to stdout.
+4. **MCP Server** connects to the library over TCP and relays RPC calls
+   (snapshot, click, input, etc.) using a 4-byte length-prefix frame protocol.
 
 ## Quick Start
 
 ```bash
-pip install -e ./mcp_server
-qt-commander-mcp --transport stdio  # Start MCP server on stdio
+# Install (pulls fastmcp and other runtime dependencies automatically)
+pip install -e .
+
+# Launch MCP server
+python -m qt_commander
 ```
 
-Or development mode:
-```bash
-pip install -e ./mcp_server
-python -c "from mcp_server.server import main; main()"
+> **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
+
+## Building
+
+The injector and library require **Visual Studio 2022+**, **Qt 5.15+**, and
+**CMake 3.16+**. They can be compiled manually or on-demand via the `qt_build`
+MCP tool.
+
+### Manual build
+
+```powershell
+# Setup environment
+cmd /c "C:\...\vcvars64.bat" amd64
+cmd /c "C:\Qt\5.15.2\msvc2019_64\bin\qtenv2.bat"
+
+# Configure & build
+cmake -B build/msvc -G Ninja ^
+  -DBUILD_INJECTOR=ON -DBUILD_LIBRARY=ON ^
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build/msvc
 ```
 
-## Building Native Components
+### On-demand build (via MCP)
 
-The C++ injector and library are compiled on-demand via the `qt_build` MCP tool:
-
+```python
+qt_build(
+    qt_env="C:/Qt/5.15.2/msvc2019_64/bin/qtenv2.bat",
+    vcvars_path="C:/.../vcvars64.bat",
+    vcvars_args="amd64"
+)
 ```
-qt_build(qt_env="C:/Qt/5.15.2/msvc2019_64/bin/qtenv2.bat",
-         vcvars_path="C:/.../vcvars64.bat", vcvars_args="amd64")
-```
 
-This compiles both targets into `.qt-commander/build/`.
-
-## CMake Options
+### CMake Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `BUILD_INJECTOR` | ON | Build qt-injector standalone CLI |
-| `BUILD_LIBRARY` | OFF | Build injection library (auto-ON with BUILD_TESTS) |
+| `BUILD_INJECTOR` | ON | Build `qt-injector.exe` |
+| `BUILD_LIBRARY` | OFF | Build `libqt-commander.dll` (auto-enabled with `BUILD_TESTS`) |
 | `BUILD_TESTS` | ON | Build all test suites |
-| `WITH_QML` | ON | Enable QML/QQuick support in the library |
+| `WITH_QML` | ON | Enable QML/QQuick support |
 | `QT_MAJOR_VERSION` | 5 | Qt major version (5 or 6) |
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `qt_list_processes` | List running Qt processes (cross-platform via psutil) |
+| `qt_attach` | Inject library into a target process and open a session |
+| `qt_detach` | Disconnect from a session, optionally eject the library |
+| `qt_list_sessions` | List active sessions |
+| `qt_build` | Compile injector + library on demand |
+| `qt_snapshot` | Capture the full UI element tree |
+| `qt_find_element` | Find elements by type, text, or property query |
+| `qt_get_property` | Read a QObject property |
+| `qt_set_property` | Write a QObject property |
+| `qt_call_method` | Invoke a QObject method |
+| `qt_screenshot` | Capture a screenshot of a specific element or window |
+| `qt_mouse_click` | Send a mouse click event |
+| `qt_keyboard_input` | Send keyboard input |
+| `qt_focus` | Set focus on a specific element |
 
 ## Testing
 
 ```bash
-# Run everything
+# Python only — no compiler needed
 python scripts/run_all_tests.py
 
-# Fast (Python + ctest only, ~20s)
-python scripts/run_all_tests.py --quick
+# Full suite — Python + C++ (requires MSVC + Qt)
+python scripts/run_all_tests.py ^
+  --vcvars "C:\...\vcvars64.bat" ^
+  --qt-env "C:\Qt\5.15.2\msvc2019_64\bin\qtenv2.bat"
 
-# Skip E2E (no Qt needed)
-python scripts/run_all_tests.py --skip-e2e
+# Quick mode — skip CMake configure
+python scripts/run_all_tests.py --quick --vcvars "..." --qt-env "..."
 ```
 
-Tests are organized in three tiers:
+### Test matrix
 
-| Tier | Location | Language | Count | Dependencies |
-|------|----------|----------|-------|-------------|
-| Unit | `tests/unit_server/` | Python | 169 | `pip install pytest pytest-cov` |
-| Unit | `tests/unit_injector/` | C++ | ~80 | g++ (MinGW) or MSVC + CMake |
-| Integration | `tests/unit_injector/` | C++ | ~30 | g++ or MSVC, Qt 5.15+ |
+| Suite | Location | Language | Tests | Requires |
+|-------|----------|----------|-------|----------|
+| Server unit | `tests/unit_server/` | Python | 169 | Python 3.10+ |
+| Injector unit | `tests/unit_injector/` | C++ | ~100 | MSVC |
+| Library unit | `tests/unit_library/` | C++ | ~36 | MSVC + Qt |
+| E2E integration | `tests/unit_injector/test_e2e*.cpp` | C++ | ~30 | MSVC + Qt + test app |
 
-### Python (169 tests, 95% coverage)
-
-No compiler needed — pure Python with mocked TCP/subprocess.
-
-```bash
-pip install -e ./mcp_server
-pip install pytest pytest-cov
-
-# Run all tests
-pytest tests/unit_server/ -v          # 169 tests
-pytest tests/unit_server/ -q          # concise output
-
-# Coverage report
-pytest tests/unit_server/ --cov=mcp_server --cov-report=term
-# Expected: TOTAL 582 29 95%
-```
-
-### C++ with g++ (no Qt needed)
-
-MinGW-w64 with g++ 13+. Covers DI injector logic, PE parser, Win32ProcessOps, CLI.
+### Running individually
 
 ```bash
-# Build and run individual test suites
-g++ -std=c++17 -static -o build/test_di.exe \
-  tests/unit_injector/test_injector_logic.cpp src/injector/injector_di.cpp \
-  -I src/injector -I src/common -I src/library -lws2_32 -lpsapi -lbcrypt
-./build/test_di.exe                    # 35 tests — injector DI logic
+# Python (95% coverage)
+pytest tests/unit_server/ -q
+pytest tests/unit_server/ --cov=qt_commander --cov-report=term
 
-g++ -std=c++17 -static -o build/test_pe.exe \
-  tests/unit_injector/test_pe_real.cpp \
-  -I src/injector -I src/common -I src/library -lws2_32 -lpsapi -lbcrypt
-./build/test_pe.exe                    # 7 tests — PE parser vs kernel32.dll
-
-g++ -std=c++17 -static -o build/test_int.exe \
-  tests/unit_injector/test_cli_integration.cpp src/injector/injector_di.cpp \
-  -I src/injector -I src/common -I src/library -lws2_32 -lpsapi -lbcrypt
-./build/test_int.exe                   # 30 tests — Win32ProcessOps + CLI args
-
-g++ -std=c++17 -static -o build/test_win32.exe \
-  tests/unit_injector/test_win32_coverage.cpp \
-  -I src/injector -I src/common -I src/library -lws2_32 -lpsapi -lbcrypt
-./build/test_win32.exe                 # ~15 tests — injector_win.cpp helpers
-```
-
-### C++ with MSVC + Qt (full suite)
-
-Requires Visual Studio 2022+, Qt 5.15+, CMake 3.16+.
-
-```bash
-# Setup environment
-call "C:\...\vcvars64.bat"
-call "C:\Qt\5.15.2\msvc2019_64\bin\qtenv2.bat"
-
-# Configure
-cmake -B build/msvc -G Ninja \
-  -DBUILD_INJECTOR=ON -DBUILD_LIBRARY=ON -DBUILD_TESTS=ON \
-  -DCMAKE_BUILD_TYPE=Release
-
-# Build
-cmake --build build/msvc
-
-# Run ctest (7 tests)
+# C++ via ctest (requires MSVC + Qt environment)
 cd build/msvc && ctest --output-on-failure
-# Expected: 100% tests passed
-
-# Run Python tests too
-pytest tests/unit_server/ --cov=mcp_server --cov-report=term
 ```
 
-### E2E Integration (requires compiled injector + Qt test app)
+### Coverage targets
 
-Tests the full lifecycle: inject → authenticate → RPC → snapshot → shutdown.
+| Scope | Target | Status |
+|-------|--------|--------|
+| Python (`qt_commander/`) | ≥95% overall | ✅ 95% |
+| C++ main interfaces (43 public APIs) | 100% | ✅ |
+| C++ overall | ≥95% functional | ✅ 96.5% |
+| All test suites | 100% pass rate | ✅ 16/16 ctest |
 
-```bash
-# Ensure Qt is on PATH
-set PATH=C:\Qt\5.15.2\msvc2019_64\bin;%PATH%
+## Project Structure
 
-# Build E2E test runner
-g++ -std=c++17 -static -o build/test_e2e.exe \
-  tests/unit_injector/test_e2e.cpp -lws2_32
-
-# Run (expects binaries in build/msvc/)
-./build/test_e2e.exe                   # 12 tests — full lifecycle
-
-# Exit code coverage
-g++ -std=c++17 -static -o build/test_exit.exe \
-  tests/unit_injector/test_e2e_exit_codes.cpp -lws2_32
-
-./build/test_exit.exe                  # 2 tests — exit 3, exit 6
+```
+qt-commander/
+├── qt_commander/              Python MCP server
+│   ├── server.py            FastMCP app, 14 tools + 2 resources
+│   ├── session.py           Session/SessionManager with RPC lock
+│   ├── rpc_client.py        Subprocess injector launcher
+│   ├── builder.py           On-demand MSVC build orchestrator
+│   ├── process_detector.py  Cross-platform Qt process discovery
+│   ├── framing.py           4-byte BE length-prefix frame protocol
+│   └── errors.py            MCP error code registry
+│
+├── src/
+│   ├── common/              Shared C++ utilities
+│   │   ├── framing.h        Frame protocol (header-only)
+│   │   ├── socket_utils.h   TCP abstraction
+│   │   └── socket_utils.cpp
+│   ├── injector/            Standalone injection CLI
+│   │   ├── main.cpp         Entry point, argument parsing, exit codes 1-6
+│   │   ├── injector.h       Public API declarations
+│   │   ├── injector_win.cpp Win32 implementation (CreateRemoteThread, PE parser)
+│   │   ├── injector_di.cpp  DI variants (IProcessOps-driven, fully testable)
+│   │   └── os_ops.h         IProcessOps / MockProcessOps / Win32ProcessOps
+│   └── library/             Injected DLL
+│       ├── entry_win.cpp    DllMain / Windows entry
+│       ├── api.h            InitParams handshake layout (1024 bytes)
+│       ├── core/            UI scanner, event injector, screenshot, element map
+│       ├── protocol/        JSON-RPC handler
+│       ├── rpc/             TCP RPC server
+│       └── selector/        Element query engine
+│
+├── tests/
+│   ├── unit_server/         Python unit tests (169)
+│   ├── unit_injector/       C++ unit + E2E tests (~130)
+│   ├── unit_library/        C++ library component tests (~36)
+│   └── test-apps/           Minimal Qt test applications
+│
+├── scripts/
+│   └── run_all_tests.py     Unified cross-platform test runner
+│
+└── CMakeLists.txt
 ```
 
-### C++ Coverage (gcovr)
+## License
 
-```bash
-pip install gcovr
-
-# Build tests with --coverage flag, run them, then:
-gcovr -r . --filter "src/injector/" --exclude ".*test.*" --print-summary
-```
-
-## Tools
-
-| Tool | Description |
-|------|-------------|
-| `qt_list_processes` | List running Qt processes |
-| `qt_attach` | Inject library + open session |
-| `qt_detach` | Disconnect + optionally eject library |
-| `qt_list_sessions` | List active sessions |
-| `qt_build` | Compile injector + library |
-| `qt_snapshot` | Full UI tree snapshot |
-| `qt_find_element` | Find elements by query |
-| `qt_get_property` | Read element property |
-| `qt_set_property` | Write element property |
-| `qt_call_method` | Invoke QObject method |
-| `qt_screenshot` | Capture element/window screenshot |
-| `qt_mouse_click` | Send mouse click event |
-| `qt_keyboard_input` | Send keyboard input |
-| `qt_focus` | Set focus on element |
+MIT

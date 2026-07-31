@@ -19,8 +19,15 @@ static int passed = 0, total = 0;
 #define CHECK(cond, msg) do { total++; if (cond) { passed++; } else { printf("FAIL %s:%d — %s\n", __FILE__, __LINE__, msg); } } while(0)
 
 static std::string discover(const char* name) {
-    const char* bases[] = {".", "build", "build/msvc", "build/msvc/src/library",
-        "build/msvc/tests/test-apps/widget", nullptr};
+    const char* bases[] = {
+        ".", "..",
+        "build", "build/msvc",
+        "tests/test-apps/widget", "tests",
+        "../src/library", "../tests/test-apps/widget",
+        "build/msvc/tests/test-apps/widget",
+        "build/msvc/src/library", "src/library",
+        nullptr
+    };
     for (int i = 0; bases[i]; i++) {
         std::string p = std::string(bases[i]) + "/" + name;
         if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) return p;

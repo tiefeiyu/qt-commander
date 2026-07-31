@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from mcp_server.builder import (
+from qt_commander.builder import (
     BuildState,
     check_build_state,
     detect_native_src,
@@ -34,8 +34,8 @@ class TestSourceDetection:
         (cwd_src / "injector").mkdir()
         (cwd_src / "library").mkdir()
 
-        with patch("mcp_server.builder.Path.cwd", return_value=tmp_path):
-            with patch("mcp_server.builder.Path.__init__", return_value=None):
+        with patch("qt_commander.builder.Path.cwd", return_value=tmp_path):
+            with patch("qt_commander.builder.Path.__init__", return_value=None):
                 pass  # CWD fallback tested indirectly
 
     def test_file_not_found_error(self, tmp_path, monkeypatch):
@@ -43,8 +43,8 @@ class TestSourceDetection:
         # If neither env var, package native/, nor CWD src/ exist → FileNotFoundError
         empty = tmp_path / "empty_dir"
         empty.mkdir()
-        with patch("mcp_server.builder.Path.__init__", return_value=None):
-            with patch("mcp_server.builder.Path.cwd", return_value=empty):
+        with patch("qt_commander.builder.Path.__init__", return_value=None):
+            with patch("qt_commander.builder.Path.cwd", return_value=empty):
                 with patch.object(Path, "exists", return_value=False):
                     with patch.object(Path, "__truediv__", return_value=empty / "nonexistent"):
                         pass  # Would raise FileNotFoundError but hard to mock cleanly
@@ -106,8 +106,8 @@ class TestBuildState:
         manifest.write_text(json.dumps({"source_hash": "deadbeef00000000000000000000000000000000000000000000000000000000"}))
 
         # Current source hash will be different → NOT_BUILT
-        with patch("mcp_server.builder.detect_native_src", return_value=tmp_path):
-            with patch("mcp_server.builder._compute_source_hash", return_value="different_hash_1234"):
+        with patch("qt_commander.builder.detect_native_src", return_value=tmp_path):
+            with patch("qt_commander.builder._compute_source_hash", return_value="different_hash_1234"):
                 state = check_build_state(tmp_path)
                 assert state == BuildState.NOT_BUILT
 
@@ -187,7 +187,7 @@ class TestRunBuild:
     async def test_run_build_success(self, tmp_path, monkeypatch):
         """Full build flow with mocked subprocess."""
         from unittest.mock import MagicMock, patch
-        import mcp_server.builder as bmod
+        import qt_commander.builder as bmod
 
         # Set up fake native source
         native = tmp_path / "native" / "src"
@@ -232,7 +232,7 @@ class TestRunBuild:
     async def test_run_build_cmake_failure(self, tmp_path, monkeypatch):
         """Build fails when cmake returns non-zero."""
         from unittest.mock import MagicMock, patch
-        import mcp_server.builder as bmod
+        import qt_commander.builder as bmod
 
         native = tmp_path / "native" / "src"
         (native / "injector").mkdir(parents=True)
@@ -252,7 +252,7 @@ class TestRunBuild:
             patch.object(bmod, "_compute_source_hash", return_value="b" * 64),
             patch("subprocess.run", return_value=mock_result),
         ):
-            from mcp_server.errors import QtCommanderError
+            from qt_commander.errors import QtCommanderError
             with pytest.raises(QtCommanderError, match="Build failed"):
                 await bmod.run_build(
                     vcvars_path="C:\\vcvars64.bat",
@@ -263,7 +263,7 @@ class TestRunBuild:
     @pytest.mark.asyncio
     async def test_run_build_sanitization_rejected(self, tmp_path):
         """Build rejects paths with control characters before running cmake."""
-        import mcp_server.builder as bmod
+        import qt_commander.builder as bmod
         with pytest.raises(ValueError, match="Invalid character"):
             await bmod.run_build(
                 vcvars_path="C:\\evil\n.bat",
@@ -275,7 +275,7 @@ class TestRunBuild:
     async def test_run_build_concurrent_rejected(self, tmp_path, monkeypatch):
         """Second concurrent build is rejected with code 2007."""
         from unittest.mock import MagicMock, patch
-        import mcp_server.builder as bmod
+        import qt_commander.builder as bmod
 
         native = tmp_path / "native" / "src"
         (native / "injector").mkdir(parents=True)
@@ -305,7 +305,7 @@ class TestRunBuild:
     def test_cmake_build_windows_script(self, tmp_path):
         """_run_cmake_build generates correct Windows batch script."""
         from unittest.mock import MagicMock, patch
-        import mcp_server.builder as bmod
+        import qt_commander.builder as bmod
 
         src_dir = tmp_path / "src"
         src_dir.mkdir()
@@ -335,7 +335,7 @@ class TestRunBuild:
     async def test_run_build_resets_state_on_error(self, tmp_path, monkeypatch):
         """After a build error, BuildState resets to NOT_BUILT."""
         from unittest.mock import MagicMock, patch
-        import mcp_server.builder as bmod
+        import qt_commander.builder as bmod
 
         native = tmp_path / "native" / "src"
         (native / "injector").mkdir(parents=True)
@@ -354,7 +354,7 @@ class TestRunBuild:
             patch.object(bmod, "_compute_source_hash", return_value="d" * 64),
             patch("subprocess.run", return_value=mock_result),
         ):
-            from mcp_server.errors import QtCommanderError
+            from qt_commander.errors import QtCommanderError
             with pytest.raises(QtCommanderError):
                 await bmod.run_build(
                     vcvars_path="C:\\vcvars64.bat",

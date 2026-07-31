@@ -13,6 +13,7 @@ endif()
 
 # --- Options ---
 option(BUILD_INJECTOR   "Build qt-injector standalone CLI"  ON)
+option(BUILD_INJECTOR   "Build qt-injector standalone CLI"  ON)
 option(BUILD_LIBRARY  "Build injection library"        OFF)
 option(BUILD_TESTS    "Build tests"                    ON)
 option(WITH_QML       "Build with QML/QQuick support"  ON)

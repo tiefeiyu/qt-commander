@@ -188,13 +188,39 @@ socket_t tcp_listen_loopback(uint16_t& port) {
 }
 
 // ---------------------------------------------------------------------------
-// tcp_accept
+// tcp_accept  (honours SO_RCVTIMEO via select)
 // ---------------------------------------------------------------------------
 socket_t tcp_accept(socket_t listen_fd) {
 #ifdef _WIN32
+    // SO_RCVTIMEO doesn't affect accept() on Windows — use select() instead
+    DWORD timeout_ms = 0;
+    int timeout_len = sizeof(timeout_ms);
+    if (::getsockopt(static_cast<SOCKET>(listen_fd), SOL_SOCKET, SO_RCVTIMEO,
+                     reinterpret_cast<char*>(&timeout_ms), &timeout_len) == 0
+        && timeout_ms > 0) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(static_cast<SOCKET>(listen_fd), &readfds);
+        struct timeval tv;
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        if (::select(0, &readfds, nullptr, nullptr, &tv) <= 0)
+            return INVALID_SOCK;
+    }
     SOCKET fd = ::accept(static_cast<SOCKET>(listen_fd), nullptr, nullptr);
     return (fd == INVALID_SOCKET) ? INVALID_SOCK : static_cast<socket_t>(fd);
 #else
+    struct timeval tv;
+    socklen_t tv_len = sizeof(tv);
+    if (::getsockopt(static_cast<int>(listen_fd), SOL_SOCKET, SO_RCVTIMEO,
+                     &tv, &tv_len) == 0 && (tv.tv_sec > 0 || tv.tv_usec > 0)) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(static_cast<int>(listen_fd), &readfds);
+        if (::select(static_cast<int>(listen_fd) + 1, &readfds,
+                     nullptr, nullptr, &tv) <= 0)
+            return INVALID_SOCK;
+    }
     int fd = ::accept(static_cast<int>(listen_fd), nullptr, nullptr);
     return (fd < 0) ? INVALID_SOCK : static_cast<socket_t>(fd);
 #endif

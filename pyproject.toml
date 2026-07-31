@@ -13,10 +13,10 @@ dependencies = [
 ]
 
 [project.scripts]
-qt-commander-mcp = "mcp_server.server:main"
+qt-commander-mcp = "qt_commander.server:main"
 
 [tool.setuptools.packages.find]
-include = ["mcp_server*"]
+include = ["qt_commander*"]
 
 [tool.setuptools.package-data]
-mcp_server = ["native/**/*"]
+qt_commander = ["native/**/*"]

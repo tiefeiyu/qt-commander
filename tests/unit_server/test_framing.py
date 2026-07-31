@@ -4,7 +4,7 @@ import struct
 from unittest.mock import AsyncMock
 
 import pytest
-from mcp_server.framing import FrameWriter, FrameReader, ProtocolError, MAX_FRAME_PAYLOAD
+from qt_commander.framing import FrameWriter, FrameReader, ProtocolError, MAX_FRAME_PAYLOAD
 
 
 # ============================================================================

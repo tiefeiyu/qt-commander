@@ -3,7 +3,7 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
-from mcp_server.process_detector import list_qt_processes, _check_qt_linux
+from qt_commander.process_detector import list_qt_processes, _check_qt_linux
 
 
 class TestListQtProcesses:
@@ -36,25 +36,25 @@ class TestListQtProcesses:
 
 class TestProcessDetectorMocked:
     def test_empty(self, monkeypatch):
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [])
         assert list_qt_processes() == []
 
     def test_pid_none_skipped(self, monkeypatch):
         p = MagicMock()
         p.info = {"pid": None, "name": "x", "exe": None}
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         assert list_qt_processes() == []
 
     def test_access_denied_skipped(self, monkeypatch):
         p = MagicMock()
         p.info.__getitem__.side_effect = __import__('psutil').AccessDenied()
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         assert list_qt_processes() == []
 
     def test_no_such_process_skipped(self, monkeypatch):
         p = MagicMock()
         p.info.__getitem__.side_effect = __import__('psutil').NoSuchProcess(99)
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         assert list_qt_processes() == []
 
     def test_qt5_detected(self, monkeypatch):
@@ -65,7 +65,7 @@ class TestProcessDetectorMocked:
         p.name.return_value = "app.exe"
         p.memory_maps.return_value = [mmap]
         monkeypatch.setattr("sys.platform", "win32")
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         r = list_qt_processes()
         assert len(r) == 1
         assert r[0]["pid"] == 1234
@@ -79,7 +79,7 @@ class TestProcessDetectorMocked:
         p.name.return_value = "qt6app.exe"
         p.memory_maps.return_value = [mmap]
         monkeypatch.setattr("sys.platform", "win32")
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         r = list_qt_processes()
         assert len(r) == 1
         assert r[0]["qt_version"] == "6"
@@ -92,7 +92,7 @@ class TestProcessDetectorMocked:
         p.name.return_value = "notepad.exe"
         p.memory_maps.return_value = [mmap]
         monkeypatch.setattr("sys.platform", "win32")
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         r = list_qt_processes()
         assert len(r) == 0
 
@@ -102,7 +102,7 @@ class TestProcessDetectorMocked:
         p.name.return_value = "p.exe"
         p.memory_maps.side_effect = __import__('psutil').AccessDenied()
         monkeypatch.setattr("sys.platform", "win32")
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         r = list_qt_processes()
         assert len(r) == 0
 
@@ -150,7 +150,7 @@ class TestProcessDetectorMocked:
         p.name.return_value = "macapp"
         p.memory_maps.return_value = [mmap]
         monkeypatch.setattr("sys.platform", "darwin")
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         r = list_qt_processes()
         assert len(r) == 1
 
@@ -160,6 +160,6 @@ class TestProcessDetectorMocked:
         p.name.return_value = "x"
         p.memory_maps.side_effect = __import__('psutil').AccessDenied()
         monkeypatch.setattr("sys.platform", "darwin")
-        monkeypatch.setattr("mcp_server.process_detector.psutil.process_iter", lambda attrs: [p])
+        monkeypatch.setattr("qt_commander.process_detector.psutil.process_iter", lambda attrs: [p])
         r = list_qt_processes()
         assert len(r) == 0

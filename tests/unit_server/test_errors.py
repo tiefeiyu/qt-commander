@@ -1,6 +1,6 @@
 """Test all error code classes and JSON formatting — 100% error class coverage."""
 import json
-from mcp_server.errors import (
+from qt_commander.errors import (
     tool_error,
     QtCommanderError,
     ElementDestroyedError,

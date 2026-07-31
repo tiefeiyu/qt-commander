@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from mcp_server.rpc_client import inject_and_connect
-from mcp_server.errors import InjectionError
-from mcp_server.session import Session
+from qt_commander.rpc_client import inject_and_connect
+from qt_commander.errors import InjectionError
+from qt_commander.session import Session
 
 
 @pytest.fixture

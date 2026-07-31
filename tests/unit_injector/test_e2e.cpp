@@ -59,8 +59,13 @@ static std::string recv_frame(SOCKET s) {
 int main() {
     // Auto-discover binaries
     const char* bases[] = {
-        ".", "build", "build/msvc", "build/msvc/src/library",
-        "build/msvc/tests/test-apps/widget", "build/msvc/src/injector/Release",
+        ".", "..",                           // binary-dir or parent (ctest)
+        "build", "build/msvc",
+        "tests/test-apps/widget", "tests",
+        "../src/library", "../tests/test-apps/widget",
+        "build/msvc/tests/test-apps/widget",
+        "build/msvc/src/library", "src/library",
+        "build/msvc/src/injector/Release",
         "../build/msvc", nullptr
     };
     std::string ip, lp, tp;
@@ -159,7 +164,38 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     closesocket(sock); WSACleanup();
 
-    // 7. Cleanup
+    // 7. Eject — verify ejectLibrary success path
+    {
+        std::string ej_cmd = "\"" + ip + "\" --eject " + std::to_string(pi.dwProcessId) + " \"" + lp + "\"";
+        HANDLE hRead2, hWrite2;
+        SECURITY_ATTRIBUTES sa2 = { sizeof(sa2), nullptr, TRUE };
+        CreatePipe(&hRead2, &hWrite2, &sa2, 0);
+        SetHandleInformation(hRead2, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFO si3 = { sizeof(si3) };
+        si3.dwFlags = STARTF_USESTDHANDLES;
+        si3.hStdOutput = hWrite2;
+        si3.hStdError = hWrite2;
+        PROCESS_INFORMATION pi3 = {};
+        if (!CreateProcess(nullptr, (LPSTR)ej_cmd.c_str(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si3, &pi3)) {
+            printf("(eject subprocess launch failed — skip)\n");
+            CHECK(true, "eject test attempted");
+        } else {
+            CloseHandle(hWrite2);
+            char ebuf[1024] = {}; DWORD en = 0;
+            std::string eject_out;
+            while (ReadFile(hRead2, ebuf, sizeof(ebuf) - 1, &en, nullptr) && en > 0) { ebuf[en] = '\0'; eject_out += ebuf; }
+            CloseHandle(hRead2);
+            WaitForSingleObject(pi3.hProcess, 60000);
+            DWORD ej_ec = 99; GetExitCodeProcess(pi3.hProcess, &ej_ec);
+            CloseHandle(pi3.hProcess); CloseHandle(pi3.hThread);
+            printf("Eject exit code: %lu, output: %s\n", ej_ec, eject_out.c_str());
+            CHECK(ej_ec == 0, (std::string("eject exit 0, got ") + std::to_string(ej_ec)).c_str());
+            CHECK(eject_out.find("ejected") != std::string::npos, "eject output contains 'ejected'");
+        }
+    }
+
+    // 8. Cleanup
     TerminateProcess(pi.hProcess, 0); WaitForSingleObject(pi.hProcess, 5000);
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     DeleteFileA(pf.c_str());

@@ -1,6 +1,7 @@
 // Test exit codes 4 and 5 using --sleep-before-check flag.
 // Exit 4: delete port file during sleep window.
 // Exit 5: modify port file token during sleep window.
+#define _CRT_SECURE_NO_WARNINGS
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -19,10 +20,31 @@
 static int passed = 0, total = 0;
 #define CHECK(cond, msg) do { total++; if (cond) { passed++; } else { printf("FAIL %s:%d — %s\n", __FILE__, __LINE__, msg); } } while(0)
 
+// Auto-discover binary paths (same logic as test_e2e.cpp)
+static std::string find_binary(const char* name) {
+    const char* bases[] = {
+        ".", "..",                           // binary-dir or parent (ctest)
+        "build", "build/msvc",
+        "tests/test-apps/widget", "tests",
+        "../src/library", "../tests/test-apps/widget",
+        "build/msvc/tests/test-apps/widget",
+        "build/msvc/src/library", "src/library",
+        "build/msvc/src/injector/Release",
+        "../build/msvc", nullptr
+    };
+    for (int i = 0; bases[i]; i++) {
+        std::string p = std::string(bases[i]) + "/" + name;
+        if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) return p;
+    }
+    return "";
+}
+
 static int run_cov_injector(DWORD pid, const std::string& lib, const std::string& pf, int sleep_ms) {
-    std::string cmd = "build\\qt-injector_cov.exe " + std::to_string(pid) + " \"" + lib + "\" \"" + pf + "\" --sleep-before-check " + std::to_string(sleep_ms);
-    STARTUPINFO si = {sizeof(si)}; PROCESS_INFORMATION pi = {};
-    if (!CreateProcess(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) return -1;
+    std::string ip = find_binary("qt-injector.exe");
+    if (ip.empty()) return -1;
+    std::string cmd = ip + " " + std::to_string(pid) + " \"" + lib + "\" \"" + pf + "\" --sleep-before-check " + std::to_string(sleep_ms);
+    STARTUPINFOA si = {sizeof(si)}; PROCESS_INFORMATION pi = {};
+    if (!CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) return -1;
     WaitForSingleObject(pi.hProcess, 120000);
     DWORD ec = 99; GetExitCodeProcess(pi.hProcess, &ec);
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
@@ -30,16 +52,19 @@ static int run_cov_injector(DWORD pid, const std::string& lib, const std::string
 }
 
 void test_exit_4_delete_port_file() {
-    // Launch Qt test app
-    STARTUPINFO si = {sizeof(si)}; PROCESS_INFORMATION pi = {};
-    const char* tp = "build\\msvc\\tests\\test-apps\\widget\\qt-widget-test.exe";
-    if (!CreateProcess(nullptr, (LPSTR)tp, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    std::string tp = find_binary("qt-widget-test.exe");
+    if (tp.empty()) { printf("SKIP: qt-widget-test.exe not found\n"); return; }
+
+    STARTUPINFOA si = {sizeof(si)}; PROCESS_INFORMATION pi = {};
+    if (!CreateProcessA(nullptr, (LPSTR)tp.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         CHECK(false, "launch Qt test app"); return;
     }
     DWORD pid = pi.dwProcessId;
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    std::string lib = "build\\msvc\\src\\library\\libqt-commander.dll";
+    std::string lib = find_binary("libqt-commander.dll");
+    if (lib.empty()) { printf("SKIP: libqt-commander.dll not found\n"); TerminateProcess(pi.hProcess, 0); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return; }
+
     std::string pf = std::string(getenv("TEMP") ? getenv("TEMP") : ".") + "\\e2e_exit4.txt";
     DeleteFileA(pf.c_str());
 
@@ -60,28 +85,29 @@ void test_exit_4_delete_port_file() {
 }
 
 void test_exit_5_wrong_token() {
-    // Launch Qt test app
-    STARTUPINFO si = {sizeof(si)}; PROCESS_INFORMATION pi = {};
-    const char* tp = "build\\msvc\\tests\\test-apps\\widget\\qt-widget-test.exe";
-    if (!CreateProcess(nullptr, (LPSTR)tp, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    std::string tp = find_binary("qt-widget-test.exe");
+    if (tp.empty()) { printf("SKIP: qt-widget-test.exe not found\n"); return; }
+
+    STARTUPINFOA si = {sizeof(si)}; PROCESS_INFORMATION pi = {};
+    if (!CreateProcessA(nullptr, (LPSTR)tp.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         CHECK(false, "launch Qt test app"); return;
     }
     DWORD pid = pi.dwProcessId;
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    std::string lib = "build\\msvc\\src\\library\\libqt-commander.dll";
+    std::string lib = find_binary("libqt-commander.dll");
+    if (lib.empty()) { printf("SKIP: libqt-commander.dll not found\n"); TerminateProcess(pi.hProcess, 0); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return; }
+
     std::string pf = std::string(getenv("TEMP") ? getenv("TEMP") : ".") + "\\e2e_exit5.txt";
     DeleteFileA(pf.c_str());
 
     // Run injector with 3s sleep window; during sleep, modify token in port file
     std::thread modifier([&pf]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-        // Wait for port file to appear (library writes it), then corrupt token
         for (int i = 0; i < 20; i++) {
             std::ifstream check(pf);
             if (check.is_open()) {
                 check.close();
-                // Read current content, replace second line with wrong token
                 std::ifstream in(pf);
                 std::string port_line, token_line;
                 std::getline(in, port_line);

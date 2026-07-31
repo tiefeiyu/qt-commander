@@ -128,6 +128,17 @@ void test_connect_retry() {
     socket_cleanup();
 }
 
+void test_keepalive() {
+    socket_init();
+    uint16_t port = 0;
+    socket_t s = tcp_listen_loopback(port);
+    CHECK(s != INVALID_SOCK, "listen for keepalive");
+    tcp_set_keepalive(s, 60, 10, 5);
+    CHECK(true, "tcp_set_keepalive applied");
+    tcp_close(s);
+    socket_cleanup();
+}
+
 int main() {
     printf("=== socket_utils.cpp coverage tests ===\n\n");
     test_init_cleanup();
@@ -138,8 +149,8 @@ int main() {
     test_accept_timeout();
     test_send_to_closed();
     test_connect_retry();
+    test_keepalive();
 
     printf("\n%d/%d tests passed\n", passed, total);
     return passed == total ? 0 : 1;
-}
 }

@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: qt-commander-mcp
-Version: 1.0.0
-Summary: MCP server for Qt application introspection and automation
-Requires-Python: >=3.10
-Requires-Dist: fastmcp>=2.0
-Requires-Dist: psutil>=5.0

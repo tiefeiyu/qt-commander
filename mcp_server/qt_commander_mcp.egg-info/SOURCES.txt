@@ -1,7 +1,0 @@
-pyproject.toml
-qt_commander_mcp.egg-info/PKG-INFO
-qt_commander_mcp.egg-info/SOURCES.txt
-qt_commander_mcp.egg-info/dependency_links.txt
-qt_commander_mcp.egg-info/entry_points.txt
-qt_commander_mcp.egg-info/requires.txt
-qt_commander_mcp.egg-info/top_level.txt

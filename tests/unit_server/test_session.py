@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
-from mcp_server.session import Session, SessionManager
-from mcp_server.errors import SessionExistsError, SessionNotFoundError, AuthFailedError, RpcTimeoutError
+from qt_commander.session import Session, SessionManager
+from qt_commander.errors import SessionExistsError, SessionNotFoundError, AuthFailedError, RpcTimeoutError
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ class TestSessionSendRpc:
         writer = AsyncMock()
         sess._reader = reader
         sess._writer = writer
-        from mcp_server.framing import FrameWriter, FrameReader
+        from qt_commander.framing import FrameWriter, FrameReader
         sess._frame_writer = FrameWriter(writer)
         sess._frame_reader = FrameReader(reader)
 
@@ -184,7 +184,7 @@ class TestSessionSendRpc:
         writer = AsyncMock()
         sess._reader = reader
         sess._writer = writer
-        from mcp_server.framing import FrameWriter, FrameReader
+        from qt_commander.framing import FrameWriter, FrameReader
         sess._frame_writer = FrameWriter(writer)
         sess._frame_reader = FrameReader(reader)
 
@@ -200,7 +200,7 @@ class TestSessionSendRpc:
         writer = AsyncMock()
         sess._reader = reader
         sess._writer = writer
-        from mcp_server.framing import FrameWriter, FrameReader
+        from qt_commander.framing import FrameWriter, FrameReader
         sess._frame_writer = FrameWriter(writer)
         sess._frame_reader = FrameReader(reader)
 
@@ -427,7 +427,7 @@ class TestSessionEdgeCases:
         writer = AsyncMock()
         sess._reader = reader
         sess._writer = writer
-        from mcp_server.framing import FrameWriter, FrameReader
+        from qt_commander.framing import FrameWriter, FrameReader
         sess._frame_writer = FrameWriter(writer)
         sess._frame_reader = FrameReader(reader)
 

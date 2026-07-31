@@ -7,14 +7,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
-from mcp_server.server import (
+from qt_commander.server import (
     _resolve_session,
     qt_list_processes,
     qt_list_sessions,
     qt_detach,
 )
-from mcp_server.session import Session, SessionManager
-from mcp_server.errors import SessionNotFoundError
+from qt_commander.session import Session, SessionManager
+from qt_commander.errors import SessionNotFoundError
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def sm(workspace):
 class TestResolveSession:
     def test_resolve_valid_session(self, sm, monkeypatch):
         """_resolve_session returns session when it exists and is connected."""
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         sess = Session("valid123456", 100, Path("/tmp/a.dll"), sm.workspace)
@@ -49,14 +49,14 @@ class TestResolveSession:
         assert result is sess
 
     def test_resolve_nonexistent_session(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         with pytest.raises(SessionNotFoundError):
             _resolve_session("nonexistent")
 
     def test_resolve_disconnected_session(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         sess = Session("disconn1234", 200, Path("/tmp/b.dll"), sm.workspace)
@@ -74,7 +74,7 @@ class TestResolveSession:
 class TestSessionTools:
     @pytest.mark.asyncio
     async def test_qt_list_processes(self, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         mock_result = [{"pid": 123, "name": "app.exe", "qt_version": "5"}]
         monkeypatch.setattr(srv, "list_qt_processes", lambda: mock_result)
 
@@ -85,7 +85,7 @@ class TestSessionTools:
 
     @pytest.mark.asyncio
     async def test_qt_list_sessions(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         result = await qt_list_sessions()
@@ -95,7 +95,7 @@ class TestSessionTools:
 
     @pytest.mark.asyncio
     async def test_qt_list_sessions_with_data(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         sess = Session("test12345678", 1, Path("/tmp/a.dll"), sm.workspace)
@@ -112,7 +112,7 @@ class TestSessionTools:
 
     @pytest.mark.asyncio
     async def test_qt_detach_success(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         sess = Session("detach12345", 300, Path("/tmp/c.dll"), sm.workspace)
@@ -125,7 +125,7 @@ class TestSessionTools:
 
     @pytest.mark.asyncio
     async def test_qt_detach_not_found(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
 
         result = await qt_detach("nonexistent")
@@ -172,8 +172,8 @@ class TestResourceHandlers:
 class TestQtAttachErrors:
     @pytest.mark.asyncio
     async def test_qt_attach_not_built(self, sm, monkeypatch):
-        from mcp_server import server as srv
-        from mcp_server.builder import BuildState
+        from qt_commander import server as srv
+        from qt_commander.builder import BuildState
         monkeypatch.setattr(srv, "sessions", sm)
         monkeypatch.setattr(srv, "check_build_state", lambda: BuildState.NOT_BUILT)
 
@@ -183,8 +183,8 @@ class TestQtAttachErrors:
 
     @pytest.mark.asyncio
     async def test_qt_attach_missing_artifacts(self, sm, monkeypatch):
-        from mcp_server import server as srv
-        from mcp_server.builder import BuildState
+        from qt_commander import server as srv
+        from qt_commander.builder import BuildState
         monkeypatch.setattr(srv, "sessions", sm)
         monkeypatch.setattr(srv, "check_build_state", lambda: BuildState.BUILT)
         monkeypatch.setattr(srv, "_resolve_session", lambda sid: MagicMock())
@@ -201,7 +201,7 @@ class TestQtAttachErrors:
 class TestUiTools:
     @pytest.mark.asyncio
     async def test_qt_snapshot(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("snap00000001", 1, Path("/tmp/a.dll"), workspace)
         (sess.session_dir / "snapshots").mkdir(parents=True, exist_ok=True)
@@ -219,7 +219,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_find_element(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("find00000001", 2, Path("/tmp/b.dll"), workspace)
         sess.connected = True
@@ -235,7 +235,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_get_property(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("prop00000001", 3, Path("/tmp/c.dll"), workspace)
         sess.connected = True
@@ -251,7 +251,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_set_property(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("setp00000001", 4, Path("/tmp/d.dll"), workspace)
         sess.connected = True
@@ -267,7 +267,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_call_method(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("call00000001", 5, Path("/tmp/e.dll"), workspace)
         sess.connected = True
@@ -283,7 +283,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_screenshot(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("shot00000001", 6, Path("/tmp/f.dll"), workspace)
         (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
@@ -301,7 +301,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_mouse_click(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("click0000001", 8, Path("/tmp/h.dll"), workspace)
         sess.connected = True
@@ -317,7 +317,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_keyboard_input(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("keys00000001", 9, Path("/tmp/i.dll"), workspace)
         sess.connected = True
@@ -333,7 +333,7 @@ class TestUiTools:
 
     @pytest.mark.asyncio
     async def test_qt_focus(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("focs00000001", 10, Path("/tmp/j.dll"), workspace)
         sess.connected = True
@@ -351,14 +351,14 @@ class TestUiTools:
 class TestToolErrorPaths:
     @pytest.mark.asyncio
     async def test_snapshot_invalid_session(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         with pytest.raises(SessionNotFoundError):
             await srv.qt_snapshot("nonexistent")
 
     @pytest.mark.asyncio
     async def test_get_property_invalid_session(self, sm, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         with pytest.raises(SessionNotFoundError):
             await srv.qt_get_property("nonexistent", 1, "text")
@@ -371,7 +371,7 @@ class TestToolErrorPaths:
 class TestBuildTool:
     @pytest.mark.asyncio
     async def test_qt_build(self, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         async def mock_build(**kw):
             return {"injector_path": "/tmp/qt-injector.exe", "library_path": "/tmp/lib.dll", "qt_version": "Qt5", "arch": "x64"}
         monkeypatch.setattr(srv, "run_build", mock_build)
@@ -381,7 +381,7 @@ class TestBuildTool:
 
     @pytest.mark.asyncio
     async def test_qt_build_with_all_params(self, monkeypatch):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         async def mock_build(**kw):
             assert kw["vcvars_args"] == "x86"
             assert kw["build_type"] == "Debug"
@@ -397,7 +397,7 @@ class TestBuildTool:
 class TestResources:
     @pytest.mark.asyncio
     async def test_read_snapshot_resource(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("res123456789", 99, Path("/tmp/z.dll"), workspace)
         (sess.session_dir / "snapshots").mkdir(parents=True)
@@ -410,7 +410,7 @@ class TestResources:
 
     @pytest.mark.asyncio
     async def test_read_snapshot_path_traversal(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("res234567890", 99, Path("/tmp/z.dll"), workspace)
         sess.connected = True
@@ -420,7 +420,7 @@ class TestResources:
 
     @pytest.mark.asyncio
     async def test_read_snapshot_not_found(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("res345678901", 99, Path("/tmp/z.dll"), workspace)
         (sess.session_dir / "snapshots").mkdir(parents=True)
@@ -431,7 +431,7 @@ class TestResources:
 
     @pytest.mark.asyncio
     async def test_read_screenshot_resource(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("res456789012", 99, Path("/tmp/z.dll"), workspace)
         (sess.session_dir / "screenshots").mkdir(parents=True)
@@ -444,7 +444,7 @@ class TestResources:
 
     @pytest.mark.asyncio
     async def test_read_screenshot_path_traversal(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("res567890123", 99, Path("/tmp/z.dll"), workspace)
         sess.connected = True
@@ -460,7 +460,7 @@ class TestResources:
 class TestFinalEdgeCases:
     def test_tool_error_format_complete(self):
         """tool_error produces complete JSON-RPC error structure."""
-        from mcp_server.errors import tool_error
+        from qt_commander.errors import tool_error
         result = tool_error(2002, "injection error")
         parsed = json.loads(result)
         assert "error" in parsed
@@ -470,7 +470,7 @@ class TestFinalEdgeCases:
 
     def test_error_codes_range(self):
         """All error codes are in valid ranges."""
-        from mcp_server.errors import QtCommanderError, ElementDestroyedError, SessionNotFoundError
+        from qt_commander.errors import QtCommanderError, ElementDestroyedError, SessionNotFoundError
         e1 = ElementDestroyedError(1)
         assert e1.code == 1001
         e2 = SessionNotFoundError("x")
@@ -481,7 +481,7 @@ class TestFinalEdgeCases:
     @pytest.mark.asyncio
     async def test_list_sessions_filtered(self, sm, monkeypatch):
         """list_sessions returns sessions regardless of connected state."""
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         s1 = Session("aaa123456789", 1, Path("/x.dll"), sm.workspace)
         s2 = Session("bbb123456789", 2, Path("/y.dll"), sm.workspace)
@@ -496,7 +496,7 @@ class TestFinalEdgeCases:
     @pytest.mark.asyncio
     async def test_detach_with_purge(self, sm, monkeypatch, workspace):
         """qt_detach with purge=True removes directory."""
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("pur123456789", 999, Path("/p.dll"), workspace)
         sm._sessions[sess.id] = sess
@@ -512,8 +512,8 @@ class TestFinalEdgeCases:
 class TestServerBranchCoverage:
     @pytest.mark.asyncio
     async def test_qt_attach_exception_handler(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
-        from mcp_server.builder import BuildState
+        from qt_commander import server as srv
+        from qt_commander.builder import BuildState
         from unittest.mock import patch
         import os
         monkeypatch.setattr(srv, "sessions", sm)
@@ -527,7 +527,7 @@ class TestServerBranchCoverage:
         inj_name = "qt-injector.exe" if os.name == "nt" else "qt-injector"
         (inj_dir / inj_name).write_text("fake")
         with patch.object(srv, "BUILD_DIR", sm.workspace):
-            from mcp_server.errors import InjectionError
+            from qt_commander.errors import InjectionError
             async def fail(*a, **kw): raise InjectionError("test fail")
             monkeypatch.setattr(srv, "inject_and_connect", fail)
             result = await srv.qt_attach(pid=1234)
@@ -536,7 +536,7 @@ class TestServerBranchCoverage:
 
     @pytest.mark.asyncio
     async def test_qt_screenshot_element_id_passed(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("shot_e01", 88, Path("/f.dll"), workspace)
         (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
@@ -550,7 +550,7 @@ class TestServerBranchCoverage:
 
     @pytest.mark.asyncio
     async def test_qt_screenshot_default_no_element_id(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("shot_d01", 89, Path("/g.dll"), workspace)
         (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
@@ -564,7 +564,7 @@ class TestServerBranchCoverage:
 
     @pytest.mark.asyncio
     async def test_qt_set_property_plain_text_fallback(self, sm, monkeypatch, workspace):
-        from mcp_server import server as srv
+        from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("set_r01", 90, Path("/h.dll"), workspace)
         sess.connected = True; sess._rpc_lock = __import__('asyncio').Lock()
@@ -577,7 +577,7 @@ class TestServerBranchCoverage:
         assert cv == "plain text"
 
     def test_session_manager_lock_type(self):
-        from mcp_server.session import SessionManager
+        from qt_commander.session import SessionManager
         import asyncio as aio
         sm = SessionManager(__import__('pathlib').Path("/tmp"))
         assert isinstance(sm._lock, aio.Lock)
