@@ -292,7 +292,7 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
 async def qt_mouse_click(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None) -> str:
     """Send a mouse click to a UI element."""
     session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.mouseClick", {
+    result = await session.send_rpc("qt.click", {
         "element_id": element_id, "button": button, "modifiers": modifiers or [],
     })
     return json.dumps(result, indent=2)

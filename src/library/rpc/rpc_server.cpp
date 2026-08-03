@@ -694,11 +694,23 @@ void run_rpc_server(socket_t listen_fd,
                         QVariantList varArgs;
                         for (const QJsonValue& v : args)
                             varArgs.append(v.toVariant());
-                        bool callOk = QMetaObject::invokeMethod(
-                            obj,
-                            methodNameStr.toUtf8().constData(),
-                            Qt::DirectConnection,
-                            Q_ARG(QVariantList, varArgs));
+                        // Zero-arg methods (e.g. QPushButton::click()) cannot
+                        // be invoked with a Q_ARG(QVariantList, ...) attached
+                        // -- the signatures never match.  Invoke without
+                        // arguments when the caller passed none.
+                        bool callOk = false;
+                        if (varArgs.isEmpty()) {
+                            callOk = QMetaObject::invokeMethod(
+                                obj,
+                                methodNameStr.toUtf8().constData(),
+                                Qt::DirectConnection);
+                        } else {
+                            callOk = QMetaObject::invokeMethod(
+                                obj,
+                                methodNameStr.toUtf8().constData(),
+                                Qt::DirectConnection,
+                                Q_ARG(QVariantList, varArgs));
+                        }
                         result[QStringLiteral("ok")] = callOk;
                         if (!callOk) {
                             result[QStringLiteral("message")] =
@@ -924,11 +936,13 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- keyPress ----
                 else if (opMethod == QStringLiteral("keyPress")) {
-                    QWidget* focusWidget = QApplication::focusWidget();
-                    if (!focusWidget) {
+                    QObject* obj = elementMap->get(elementId);
+                    if (!obj)
+                        obj = QApplication::focusWidget();
+                    if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
-                            QStringLiteral("No focused widget");
+                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString key =
                             rpcParams[QStringLiteral("key")].toString();
@@ -942,7 +956,7 @@ void run_rpc_server(socket_t listen_fd,
 
                         result[QStringLiteral("ok")] =
                             EventInjector::keyPress(
-                                focusWidget, key, modifiers, text);
+                                obj, key, modifiers, text);
                         if (!result[QStringLiteral("ok")].toBool()) {
                             result[QStringLiteral("message")] =
                                 QStringLiteral("keyPress failed");
@@ -951,11 +965,13 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- keyRelease ----
                 else if (opMethod == QStringLiteral("keyRelease")) {
-                    QWidget* focusWidget = QApplication::focusWidget();
-                    if (!focusWidget) {
+                    QObject* obj = elementMap->get(elementId);
+                    if (!obj)
+                        obj = QApplication::focusWidget();
+                    if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
-                            QStringLiteral("No focused widget");
+                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString key =
                             rpcParams[QStringLiteral("key")].toString();
@@ -969,7 +985,7 @@ void run_rpc_server(socket_t listen_fd,
 
                         result[QStringLiteral("ok")] =
                             EventInjector::keyRelease(
-                                focusWidget, key, modifiers, text);
+                                obj, key, modifiers, text);
                         if (!result[QStringLiteral("ok")].toBool()) {
                             result[QStringLiteral("message")] =
                                 QStringLiteral("keyRelease failed");
@@ -978,11 +994,13 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- typeText ----
                 else if (opMethod == QStringLiteral("typeText")) {
-                    QWidget* focusWidget = QApplication::focusWidget();
-                    if (!focusWidget) {
+                    QObject* obj = elementMap->get(elementId);
+                    if (!obj)
+                        obj = QApplication::focusWidget();
+                    if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
-                            QStringLiteral("No focused widget");
+                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString text =
                             rpcParams[QStringLiteral("text")].toString();
@@ -991,7 +1009,7 @@ void run_rpc_server(socket_t listen_fd,
 
                         result[QStringLiteral("ok")] =
                             EventInjector::typeText(
-                                focusWidget, text, intervalMs);
+                                obj, text, intervalMs);
                         if (!result[QStringLiteral("ok")].toBool()) {
                             result[QStringLiteral("message")] =
                                 QStringLiteral("typeText failed");
@@ -1000,17 +1018,19 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- keyCombo ----
                 else if (opMethod == QStringLiteral("keyCombo")) {
-                    QWidget* focusWidget = QApplication::focusWidget();
-                    if (!focusWidget) {
+                    QObject* obj = elementMap->get(elementId);
+                    if (!obj)
+                        obj = QApplication::focusWidget();
+                    if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
-                            QStringLiteral("No focused widget");
+                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString keys =
                             rpcParams[QStringLiteral("keys")].toString();
 
                         result[QStringLiteral("ok")] =
-                            EventInjector::keyCombo(focusWidget, keys);
+                            EventInjector::keyCombo(obj, keys);
                         if (!result[QStringLiteral("ok")].toBool()) {
                             result[QStringLiteral("message")] =
                                 QStringLiteral("keyCombo failed");

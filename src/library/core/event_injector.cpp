@@ -2,6 +2,7 @@
 #include "../compat_qt.h"
 
 #include <QCoreApplication>
+#include <QApplication>
 #include <QWidget>
 #include <QWindow>
 #ifdef QT_COMMANDER_WITH_QML
@@ -16,6 +17,12 @@
 #include <QThread>
 #include <QPoint>
 #include <QHash>
+
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 // ============================================================================
 // Module-level state
@@ -947,6 +954,34 @@ bool EventInjector::touchRelease(int touchId)
 bool EventInjector::focus(QObject* target)
 {
     if (auto* w = qobject_cast<QWidget*>(target)) {
+        // SetFocus() only updates QApplication::focusWidget() while the
+        // window is considered active.  In an injected context the OS
+        // foreground window is usually another application, so force the
+        // Qt-side activation explicitly (that is what focusWidget() reads),
+        // then attempt the OS-level foreground switch as well.
+        if (QWidget* win = w->window()) {
+            QApplication::setActiveWindow(win);
+            win->activateWindow();
+            win->raise();
+#ifdef Q_OS_WIN
+            HWND hwnd = reinterpret_cast<HWND>(win->winId());
+            if (hwnd) {
+                HWND fg = GetForegroundWindow();
+                if (fg != hwnd) {
+                    DWORD curThread = GetCurrentThreadId();
+                    DWORD fgThread = GetWindowThreadProcessId(fg, nullptr);
+                    if (curThread != fgThread) {
+                        AttachThreadInput(curThread, fgThread, TRUE);
+                        SetForegroundWindow(hwnd);
+                        AttachThreadInput(curThread, fgThread, FALSE);
+                    } else {
+                        SetForegroundWindow(hwnd);
+                    }
+                }
+                SetFocus(hwnd);
+            }
+#endif
+        }
         w->setFocus();
         return true;
     }
