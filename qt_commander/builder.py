@@ -57,10 +57,19 @@ def detect_native_src() -> Path:
 
 
 def _compute_source_hash(src_dir: Path) -> str:
-    """Compute SHA-256 of all .cpp/.h files in src_dir."""
+    """Compute SHA-256 of all .cpp/.h files in src_dir.
+
+    When src_dir is the project root, only the native sources under
+    ``src/`` count: globbing the whole root would also hash generated
+    build files (e.g. .qt-commander/build/.../mocs_compilation_*.cpp)
+    that change on every build, making the hash never match the manifest.
+    """
+    native_root = src_dir / "src"
+    if not native_root.is_dir():
+        native_root = src_dir  # caller passed the src dir directly
     hasher = hashlib.sha256()
     for pattern in ["**/*.cpp", "**/*.h", "**/*.hpp"]:
-        for f in sorted(src_dir.glob(pattern)):
+        for f in sorted(native_root.glob(pattern)):
             hasher.update(f.read_bytes())
     return hasher.hexdigest()
 

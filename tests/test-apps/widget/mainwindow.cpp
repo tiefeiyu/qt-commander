@@ -19,6 +19,7 @@
 #include <QRadioButton>
 #include <QCalendarWidget>
 #include <QTextEdit>
+#include <QDateTime>
 
 WidgetTestWindow::WidgetTestWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -33,7 +34,9 @@ void WidgetTestWindow::setupUI()
     auto* central = new QWidget(this);
     setCentralWidget(central);
 
-    auto* mainLayout = new QVBoxLayout(central);
+    // mainLayout is wrapped by bodyRow (with the log panel) into
+    // centralLayout at the end of setupUI.
+    auto* mainLayout = new QVBoxLayout();
 
     // ---- Header ----
     auto* headerLabel = new QLabel(QStringLiteral("Qt Widget Test Application"));
@@ -124,6 +127,26 @@ void WidgetTestWindow::setupUI()
 
     mainLayout->addWidget(tab_widget_);
 
+    // ---- Operation log panel (right side) ----
+    auto* logBox = new QGroupBox(QStringLiteral("Operation Log"));
+    logBox->setObjectName(QStringLiteral("logBox"));
+    auto* logLay = new QVBoxLayout(logBox);
+    log_view_ = new QPlainTextEdit();
+    log_view_->setObjectName(QStringLiteral("logView"));
+    log_view_->setReadOnly(true);
+    log_view_->setMaximumBlockCount(200);
+    logLay->addWidget(log_view_);
+    auto* rightCol = new QVBoxLayout();
+    rightCol->addWidget(logBox, 1);
+    rightCol->addStretch();
+
+    auto* bodyRow = new QHBoxLayout();
+    bodyRow->addLayout(mainLayout, 1);
+    bodyRow->addLayout(rightCol, 0);
+    auto* centralLayout = new QVBoxLayout(central);
+    centralLayout->addLayout(bodyRow);
+    resize(1150, 600);
+
     // ---- Menu bar ----
     auto* fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     auto* actNew = fileMenu->addAction(QStringLiteral("&New"));
@@ -131,6 +154,28 @@ void WidgetTestWindow::setupUI()
     auto* actQuit = fileMenu->addAction(QStringLiteral("&Quit"));
     actQuit->setObjectName(QStringLiteral("actQuit"));
     QObject::connect(actQuit, &QAction::triggered, this, &QWidget::close);
+
+    // ---- Wire widgets to the operation log ----
+    QObject::connect(btn_cancel_, &QPushButton::clicked, this, [this]() {
+        logOperation(QStringLiteral("Cancel button clicked"));
+    });
+    QObject::connect(check_box_, &QCheckBox::toggled, this, [this](bool on) {
+        logOperation(QStringLiteral("Checkbox: ") +
+                     (on ? QStringLiteral("checked") : QStringLiteral("unchecked")));
+    });
+    QObject::connect(combo_box_, &QComboBox::currentTextChanged, this, [this](const QString& t) {
+        logOperation(QStringLiteral("Combo selection: ") + t);
+    });
+    QObject::connect(spin_box_, QOverload<int>::of(&QSpinBox::valueChanged),
+                     this, [this](int v) {
+        logOperation(QStringLiteral("Spinbox: ") + QString::number(v));
+    });
+    QObject::connect(slider_, &QSlider::valueChanged, this, [this](int v) {
+        logOperation(QStringLiteral("Slider: ") + QString::number(v));
+    });
+    QObject::connect(tab_widget_, &QTabWidget::currentChanged, this, [this](int i) {
+        logOperation(QStringLiteral("Switched to tab ") + QString::number(i + 1));
+    });
 
     // ---- Dynamic container ----
     dynamic_container_ = new QWidget();
@@ -259,10 +304,19 @@ void WidgetTestWindow::setupAdvancedTab(QTabWidget* parent)
     parent->addTab(advanced, QStringLiteral("Advanced"));
 }
 
+void WidgetTestWindow::logOperation(const QString& msg)
+{
+    log_view_->appendPlainText(QStringLiteral("[%1] %2")
+                          .arg(QDateTime::currentDateTime()
+                                   .toString(QStringLiteral("HH:mm:ss")),
+                               msg));
+}
+
 void WidgetTestWindow::onOkClicked()
 {
     label_->setText(QStringLiteral("Status: OK clicked! Text: %1")
                         .arg(line_edit_->text()));
+    logOperation(QStringLiteral("OK clicked, input: ") + line_edit_->text());
 }
 
 void WidgetTestWindow::onDynamicAddRemove()
@@ -274,6 +328,7 @@ void WidgetTestWindow::onDynamicAddRemove()
         dynamic_container_->layout()->addWidget(newBtn);
         added = true;
         label_->setText(QStringLiteral("Status: Dynamic button added"));
+        logOperation(QStringLiteral("Dynamic button added"));
     } else {
         auto* btn = dynamic_container_->findChild<QPushButton*>(
             QStringLiteral("dynamicBtn"));
@@ -283,11 +338,13 @@ void WidgetTestWindow::onDynamicAddRemove()
         }
         added = false;
         label_->setText(QStringLiteral("Status: Dynamic button removed"));
+        logOperation(QStringLiteral("Dynamic button removed"));
     }
 }
 
 void WidgetTestWindow::onShowDialog()
 {
+    logOperation(QStringLiteral("Dialog opened"));
     TestDialog dlg(this);
     dlg.exec();
 }

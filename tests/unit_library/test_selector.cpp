@@ -26,6 +26,13 @@
 #include <QMouseEvent>
 #include <QProgressBar>
 #include <QVBoxLayout>
+#ifdef QT_COMMANDER_WITH_QML
+#include <QDir>
+#include <QQmlApplicationEngine>
+#include <QQuickWindow>
+#include <QQuickItem>
+#include <QTemporaryFile>
+#endif
 #include <QWidget>
 #include <QJsonObject>
 #include <QHash>
@@ -566,6 +573,59 @@ static void test_callmethod_non_slot_not_invokable()
 }
 
 // ---------------------------------------------------------------------------
+// QQmlApplicationEngine with a Window root: the QML scene must be reachable
+// from the top-level QQuickWindow's contentItem (regression for QML
+// snapshots showing only the root).
+// ---------------------------------------------------------------------------
+#ifdef QT_COMMANDER_WITH_QML
+static void test_qml_window_root_reachable()
+{
+    TEST("Window-root QML scene reachable from QQuickWindow contentItem");
+
+    QTemporaryFile qml(QDir::tempPath() + QStringLiteral("/qtc_XXXXXX.qml"));
+    CHECK(qml.open(), "temp qml file");
+    if (!qml.isOpen()) {
+        PASS();
+        return;
+    }
+    qml.write("import QtQuick 2.0\n"
+              "import QtQuick.Window 2.0\n"
+              "Window {\n"
+              "    objectName: \"sceneRoot\"\n"
+              "    width: 400; height: 300; visible: true\n"
+              "    Rectangle { objectName: \"childRect\" }\n"
+              "}\n");
+    qml.flush();
+
+    QQmlApplicationEngine engine;
+    engine.load(QUrl::fromLocalFile(qml.fileName()));
+    QApplication::processEvents();
+
+    // The Window root creates a top-level QQuickWindow.
+    QQuickWindow* sceneWin = nullptr;
+    for (QWindow* w : QGuiApplication::topLevelWindows()) {
+        if (auto* qw = qobject_cast<QQuickWindow*>(w)) {
+            sceneWin = qw;
+            break;
+        }
+    }
+    CHECK(sceneWin != nullptr, "no top-level QQuickWindow for Window root");
+
+    // The Window root is the QQuickWindow itself; its QML children live
+    // under the window's contentItem.
+    bool foundChild = false;
+    for (QQuickItem* ci : sceneWin->contentItem()->childItems()) {
+        if (ci->objectName() == QStringLiteral("childRect"))
+            foundChild = true;
+    }
+    CHECK(foundChild, "QML children not reachable from window contentItem");
+
+    engine.deleteLater();
+    PASS();
+}
+#endif // QT_COMMANDER_WITH_QML
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[])
@@ -590,6 +650,9 @@ int main(int argc, char* argv[])
     test_lineedit_ctrl_a_select_all();
     test_callmethod_typed_int();
     test_callmethod_non_slot_not_invokable();
+#ifdef QT_COMMANDER_WITH_QML
+    test_qml_window_root_reachable();
+#endif
 
     std::cout << "\n" << passed << " passed, " << failed << " failed\n";
     return failed > 0 ? 1 : 0;

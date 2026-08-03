@@ -168,6 +168,28 @@ class TestComputeSourceHash:
         h2 = _compute_source_hash(tmp_path)
         assert h1 != h2
 
+    def test_project_root_ignores_generated_build_files(self, tmp_path):
+        """Project-root hashing must only cover src/: generated build files
+        (mocs_compilation_*.cpp etc.) change on every build and would make
+        the manifest hash never match."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "main.cpp").write_text("int main() { return 0; }")
+        build = tmp_path / ".qt-commander" / "build" / "library"
+        build.mkdir(parents=True)
+
+        h1 = _compute_source_hash(tmp_path)
+        # Simulate a rebuild: generated moc file appears in the build dir.
+        (build / "mocs_compilation_Release.cpp").write_text(
+            "#include <QObject>")
+        h2 = _compute_source_hash(tmp_path)
+        assert h1 == h2, "build-dir generated files must not change the hash"
+
+        # A real source change still changes the hash.
+        (src / "main.cpp").write_text("int main() { return 1; }")
+        h3 = _compute_source_hash(tmp_path)
+        assert h3 != h1
+
 
 # ============================================================================
 # run_build + _run_cmake_build tests (mocked subprocess)

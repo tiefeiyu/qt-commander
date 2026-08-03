@@ -321,6 +321,11 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
         }
     }
 #ifdef QT_COMMANDER_WITH_QML
+    // QQuickWindow: the scene root is its contentItem()
+    if (QQuickWindow* qw = qobject_cast<QQuickWindow*>(parent)) {
+        if (QQuickItem* content = qw->contentItem())
+            childList.append(content);
+    }
     // QQuickItem children
     if (QQuickItem* qi = qobject_cast<QQuickItem*>(parent)) {
         const auto& items = qi->childItems();
@@ -1274,6 +1279,22 @@ void run_rpc_server(socket_t listen_fd,
                             }
                             obj = top;
                         }
+#ifdef QT_COMMANDER_WITH_QML
+                        // QML apps have no QWidgets; fall back to the first
+                        // visible QQuickWindow.
+                        if (!obj) {
+                            const auto wins =
+                                QGuiApplication::topLevelWindows();
+                            for (QWindow* win : wins) {
+                                if (auto* qw = qobject_cast<QQuickWindow*>(win)) {
+                                    if (qw->isVisible()) {
+                                        obj = qw;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+#endif
                     }
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;

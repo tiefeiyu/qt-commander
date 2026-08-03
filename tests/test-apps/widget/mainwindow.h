@@ -18,6 +18,8 @@
 #include <QDial>
 #include <QProgressBar>
 #include <QRadioButton>
+#include <QPlainTextEdit>
+#include <QTextEdit>
 
 class WidgetTestWindow : public QMainWindow {
     Q_OBJECT
@@ -28,6 +30,7 @@ private slots:
     void onOkClicked();
     void onDynamicAddRemove();
     void onShowDialog();
+    void logOperation(const QString& msg);
 
 private:
     void setupUI();
@@ -45,6 +48,8 @@ private:
     QSpinBox* spin_box_;
     QSlider* slider_;
     QWidget* dynamic_container_;
+
+    QPlainTextEdit* log_view_;
 
     // Advanced tab widgets
     QTableView* table_view_;

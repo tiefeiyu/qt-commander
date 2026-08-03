@@ -25,7 +25,9 @@ set_target_properties(qt-widget-test PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
-install(TARGETS qt-widget-test RUNTIME DESTINATION bin)
+# Component-scoped so a QML-only build tree can install just its own app:
+#   cmake --install <build> --component widget-tests
+install(TARGETS qt-widget-test RUNTIME DESTINATION bin COMPONENT widget-tests)
 
 # Deploy the Qt runtime DLLs next to the exe so the app runs standalone
 # right after `cmake --install`. Platform deploy tools all share the same
@@ -51,7 +53,7 @@ if(WIN32)
             if(NOT _wdq_result EQUAL 0)
                 message(WARNING \"windeployqt failed (exit \${_wdq_result})\")
             endif()
-        ")
+        " COMPONENT widget-tests)
     else()
         message(WARNING
             "windeployqt not found; Qt DLLs must be deployed manually")
