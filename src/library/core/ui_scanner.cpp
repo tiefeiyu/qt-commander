@@ -14,7 +14,6 @@
 #include <QFile>
 #include <QDir>
 #ifdef QT_COMMANDER_WITH_QML
-#include <QtQuickWidgets/QQuickWidget>
 #include <QQuickWindow>
 #include <QQuickItem>
 #endif
@@ -324,30 +323,30 @@ void UiScanner::traverseQmlWindows(QJsonArray& elements,
             return;
     }
 
-    // Also scan QQuickWidget children in the QWidget tree.
-    // QQuickWidget creates offscreen QQuickWindows that don't appear in topLevelWindows().
-    if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
-        const auto widgets = app->allWidgets();
-        for (QWidget* w : widgets) {
-            auto* qqw = qobject_cast<QQuickWidget*>(w);
-            if (!qqw) continue;
-            QQuickWindow* qw = qqw->quickWindow();
-            if (!qw) continue;
-            QQuickItem* ci = qw->contentItem();
-            if (!ci) continue;
-            // Serialize the QQuickWindow if not already visited
-            if (!visited.contains(qw)) {
-                visited.insert(qw);
-                uint64_t id = next_id++;
-                element_map->insert(id, qw);
-                id_map.insert(qw, id);
-                QJsonObject el = serializeElement(qw, nullptr, id, detail, snapshot_dir, id_map);
-                elements.append(el);
-            }
-            if (!include_hidden && !isEffectivelyVisible(ci)) continue;
-            walker.walk(ci, nullptr);
-            if (truncated) return;
+    // Also scan QML scenes embedded in widgets (QQuickWidget).  QQuickWidget
+    // renders into an offscreen QQuickWindow (objectName
+    // "QQuickOffScreenWindow" -- set by Qt's own implementation) that does
+    // not appear in topLevelWindows().  Enumerate it via allWindows() so the
+    // library does not need a compile-time dependency on Qt5QuickWidgets.
+    const QString offscreenName = QStringLiteral("QQuickOffScreenWindow");
+    for (QWindow* win : QGuiApplication::allWindows()) {
+        auto* qw = qobject_cast<QQuickWindow*>(win);
+        if (!qw || qw->objectName() != offscreenName)
+            continue;
+        QQuickItem* ci = qw->contentItem();
+        if (!ci) continue;
+        // Serialize the QQuickWindow if not already visited.
+        if (!visited.contains(qw)) {
+            visited.insert(qw);
+            uint64_t id = next_id++;
+            element_map->insert(id, qw);
+            id_map.insert(qw, id);
+            QJsonObject el = serializeElement(qw, nullptr, id, detail, snapshot_dir, id_map);
+            elements.append(el);
         }
+        if (!include_hidden && !isEffectivelyVisible(ci)) continue;
+        walker.walk(ci, nullptr);
+        if (truncated) return;
     }
 }
 #endif

@@ -1,9 +1,15 @@
 set(CMAKE_AUTOMOC ON)
 
 # Find Qt
+#
+# The injected library must not depend on Qt modules the target process does
+# not already load (LoadLibraryW fails otherwise).  QuickWidgets is never
+# loaded by plain widget or plain QML processes, so it must not be linked;
+# embedded-QML scenes (QQuickWidget) are discovered at runtime via the
+# offscreen QQuickWindow's object name instead.
 set(QT_COMPONENTS Core Gui Widgets)
 if(WITH_QML)
-    list(APPEND QT_COMPONENTS Quick QuickWidgets)
+    list(APPEND QT_COMPONENTS Quick)
     if(QT_MAJOR_VERSION EQUAL 6)
         list(APPEND QT_COMPONENTS Qml)
     endif()
@@ -46,7 +52,6 @@ if(WITH_QML)
     target_compile_definitions(qt-commander-lib PRIVATE QT_COMMANDER_WITH_QML)
     target_link_libraries(qt-commander-lib PRIVATE
         Qt${QT_MAJOR_VERSION}::Quick
-        Qt${QT_MAJOR_VERSION}::QuickWidgets
     )
     if(QT_MAJOR_VERSION EQUAL 6)
         target_link_libraries(qt-commander-lib PRIVATE Qt6::Qml)
