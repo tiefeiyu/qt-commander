@@ -17,6 +17,14 @@
 #include <QMainWindow>
 #include <QPushButton>
 #include <QLineEdit>
+#include <QComboBox>
+#include <QAbstractItemView>
+#include <QElapsedTimer>
+#include <QKeyEvent>
+#include <QMetaMethod>
+#include <QListWidget>
+#include <QMouseEvent>
+#include <QProgressBar>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QJsonObject>
@@ -339,6 +347,225 @@ static void test_find_type_inherits_all_widgets()
 }
 
 // ---------------------------------------------------------------------------
+// Combo popup: ElementSelector::find must not return the same object twice
+// (regression: QComboBoxListView appeared twice in find results while the
+// popup was open).
+// ---------------------------------------------------------------------------
+static void test_combo_popup_no_duplicates()
+{
+    TEST("find does not return duplicates for a combo popup");
+
+    QMainWindow win;
+    auto* combo = new QComboBox(&win);
+    combo->addItems({QStringLiteral("A"), QStringLiteral("B"),
+                     QStringLiteral("C")});
+    win.setCentralWidget(combo);
+    win.resize(200, 100);
+    win.show();
+    combo->showPopup();
+    QApplication::processEvents();
+
+    // Build the element map the way the snapshot/findElement path does:
+    // every top-level widget becomes a root, all descendants get ids.
+    QHash<uint64_t, QObject*> map;
+    uint64_t nextId = 1;
+    std::function<void(QObject*)> addTree = [&](QObject* obj) {
+        map.insert(nextId++, obj);
+        const QObjectList& kids = obj->children();
+        for (QObject* k : kids)
+            addTree(k);
+    };
+    for (QWidget* w : QApplication::topLevelWidgets())
+        addTree(w);
+
+    QJsonObject query;
+    query[QStringLiteral("type_inherits")] = QStringLiteral("QAbstractItemView");
+    const QVector<SelectorResult> results =
+        ElementSelector::find(query, map);
+
+    // Same object must not appear twice (dup ids mean double traversal).
+    QSet<uint64_t> ids;
+    for (const SelectorResult& r : results) {
+        CHECK(!ids.contains(r.id),
+              "duplicate result id " << r.id << " (object walked twice)");
+        ids.insert(r.id);
+    }
+    CHECK(results.size() >= 1,
+          "expected at least one QAbstractItemView (combo popup list)");
+
+    combo->hidePopup();
+    win.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Combo popup item click: a mouse press+release on the popup list view must
+// select the item under the cursor.  Distinguishes Qt popup behavior from
+// event-injection timing issues.
+// ---------------------------------------------------------------------------
+static void test_combo_popup_click_selects()
+{
+    TEST("mouse click on popup list selects the item under the cursor");
+
+    QMainWindow win;
+    auto* combo = new QComboBox(&win);
+    combo->addItems({QStringLiteral("A"), QStringLiteral("B"),
+                     QStringLiteral("C")});
+    win.setCentralWidget(combo);
+    win.resize(200, 100);
+    win.show();
+    combo->showPopup();
+    QApplication::processEvents();
+
+    // The popup animates in (QScrollEffect); give it time to become visible.
+    QAbstractItemView* view = nullptr;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 2000) {
+        for (QWidget* top : QApplication::topLevelWidgets()) {
+            view = top->findChild<QAbstractItemView*>();
+            if (view && view->isVisible())
+                break;
+            view = nullptr;
+        }
+        if (view)
+            break;
+        QCoreApplication::processEvents();
+    }
+    CHECK(view != nullptr, "popup list view not found or not visible");
+
+    // Pick a target inside the list; compute the row Qt resolves for it.
+    const QPoint target(10, 27);
+    const QModelIndex expected = view->indexAt(target);
+    CHECK(expected.isValid(), "click target must resolve to an item");
+    if (!expected.isValid()) {
+        combo->hidePopup();
+        win.close();
+        return;
+    }
+
+    // Qt guards the popup against accidental clicks for
+    // doubleClickInterval() ms after showPopup (blockMouseReleaseTimer);
+    // an injected click arrives faster than a human one, so wait it out.
+    QElapsedTimer waitTimer;
+    waitTimer.start();
+    while (waitTimer.elapsed() < 500)
+        QCoreApplication::processEvents();
+
+    // A real click moves the pointer first (the combo popup container sets
+    // the view's currentIndex from MouseMove and only selects the item on
+    // MouseButtonRelease), and lands on the viewport -- the deepest child
+    // under the cursor -- not on the view widget itself.
+    QWidget* vp = view->viewport();
+    const QPoint vpPos = vp->mapFrom(view, target);
+    const QPoint vpGlobal = vp->mapToGlobal(vpPos);
+
+    QMouseEvent move(QEvent::MouseMove, QPointF(vpPos),
+                     QPointF(vpPos), QPointF(vpGlobal),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(vp, &move);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(vpPos),
+                      QPointF(vpPos), QPointF(vpGlobal),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(vp, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(vpPos),
+                        QPointF(vpPos), QPointF(vpGlobal),
+                        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(vp, &release);
+    QApplication::processEvents();
+
+    CHECK(combo->currentIndex() == expected.row(),
+          "expected index " << expected.row() << " after clicking, got "
+          << combo->currentIndex());
+
+    combo->hidePopup();
+    win.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+A in QLineEdit must select all; subsequent typed characters replace
+// the selection.  Regression for the injected keyboard path.
+// ---------------------------------------------------------------------------
+static void test_lineedit_ctrl_a_select_all()
+{
+    TEST("Ctrl+A selects all and typing replaces the selection");
+
+    QLineEdit edit;
+    edit.setText(QStringLiteral("hello world"));
+    edit.resize(200, 30);
+    edit.show();
+    QApplication::processEvents();
+    edit.setFocus();
+    QApplication::processEvents();
+
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier,
+                    QStringLiteral("a"));
+    QCoreApplication::postEvent(&edit, new QKeyEvent(press));
+    QKeyEvent release(QEvent::KeyRelease, Qt::Key_A, Qt::ControlModifier,
+                      QStringLiteral("a"));
+    QCoreApplication::postEvent(&edit, new QKeyEvent(release));
+    QApplication::processEvents();
+
+    CHECK(edit.selectedText() == QStringLiteral("hello world"),
+          "Ctrl+A should select all, got: '"
+              << edit.selectedText().toStdString() << "'");
+
+    // A printable key while everything is selected replaces the text.
+    QKeyEvent tPress(QEvent::KeyPress, Qt::Key_R, Qt::NoModifier,
+                     QStringLiteral("r"));
+    QCoreApplication::postEvent(&edit, new QKeyEvent(tPress));
+    QApplication::processEvents();
+    CHECK(edit.text() == QStringLiteral("r"),
+          "typing after select-all should replace, got: '"
+              << edit.text().toStdString() << "'");
+
+    edit.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Typed method invocation: a manual QGenericArgument("int", ...) must be
+// able to invoke a slot with an int parameter (regression for the typed
+// callMethod path).
+// ---------------------------------------------------------------------------
+static void test_callmethod_typed_int()
+{
+    TEST("typed int invocation of a slot (QProgressBar::setValue)");
+
+    QProgressBar bar;
+    bar.setRange(0, 100);
+    bar.setValue(10);
+
+    int value = 77;
+    const bool ok = QMetaObject::invokeMethod(
+        &bar, "setValue", Qt::DirectConnection, Q_ARG(int, value));
+    CHECK(ok && bar.value() == 77,
+          "typed int invoke failed (ok=" << ok << " value=" << bar.value() << ")");
+
+    PASS();
+}
+
+static void test_callmethod_non_slot_not_invokable()
+{
+    TEST("plain public method is not invokable via QMetaObject");
+
+    // QListWidget::setCurrentRow is a plain public method, not a slot;
+    // QMetaObject::invokeMethod must reject it (callMethod reports a clear
+    // "no invokable overload" error instead of silently failing).
+    QListWidget list;
+    list.addItems({QStringLiteral("A"), QStringLiteral("B")});
+
+    int row = 1;
+    const bool ok = QMetaObject::invokeMethod(
+        &list, "setCurrentRow", Qt::DirectConnection, Q_ARG(int, row));
+    CHECK(!ok && list.currentRow() == -1,
+          "plain method must not be invokable (ok=" << ok << ")");
+
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[])
@@ -358,6 +585,11 @@ int main(int argc, char* argv[])
     test_find_empty_query();
     test_find_no_matches();
     test_find_type_inherits_all_widgets();
+    test_combo_popup_no_duplicates();
+    test_combo_popup_click_selects();
+    test_lineedit_ctrl_a_select_all();
+    test_callmethod_typed_int();
+    test_callmethod_non_slot_not_invokable();
 
     std::cout << "\n" << passed << " passed, " << failed << " failed\n";
     return failed > 0 ? 1 : 0;

@@ -31,7 +31,11 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QMetaObject>
+#include <QMetaMethod>
 #include <QMetaProperty>
+#include <QDate>
+#include <QTime>
+#include <QColor>
 #include <QSemaphore>
 #include <QScreen>
 #include <QPixmap>
@@ -125,6 +129,22 @@ static QJsonValue serializeValue(const QVariant& value, int propDepth) {
         QSize s = value.toSize();
         return QStringLiteral("%1x%2").arg(s.width()).arg(s.height());
     }
+    case QVariant::Date: {
+        QDate d = value.toDate();
+        return d.toString(Qt::ISODate);
+    }
+    case QVariant::Time: {
+        QTime t = value.toTime();
+        return t.toString(Qt::ISODate);
+    }
+    case QVariant::DateTime: {
+        QDateTime dt = value.toDateTime();
+        return dt.toString(Qt::ISODate);
+    }
+    case QVariant::Color: {
+        QColor c = value.value<QColor>();
+        return c.name();
+    }
     default:
         break;
     }
@@ -148,6 +168,123 @@ static QJsonValue serializeValue(const QVariant& value, int propDepth) {
     }
 
     return QJsonValue();
+}
+
+// ---------------------------------------------------------------------------
+// Method invocation with typed arguments
+// ---------------------------------------------------------------------------
+
+/// Invoke *methodName* on *obj*, converting JSON-derived arguments to the
+/// method's declared parameter types (int/uint/double/float/bool/QString/
+/// QVariant).  Falls back to zero-arg and QVariantList invocations for
+/// compatibility.  On failure fills *errorMsg* with a hint.
+static bool invokeMethodTyped(QObject* obj, const QString& methodName,
+                              const QVariantList& args, QString* errorMsg)
+{
+    const QMetaObject* mo = obj->metaObject();
+    const QByteArray name = methodName.toUtf8();
+
+    // ---- Pass 1: find an overload whose parameter types we can convert to
+    // Walk from 0 so inherited slots (e.g. QDial::setValue coming from
+    // QAbstractSlider) are found too -- methodOffset only covers methods
+    // declared in the concrete class.
+    for (int i = 0; i < mo->methodCount(); ++i) {
+        const QMetaMethod m = mo->method(i);
+        if (m.name() != name || m.parameterCount() != args.size())
+            continue;
+
+        int      ints[10];      uint     uints[10];
+        double   doubles[10];   float    floats[10];
+        bool     bools[10];
+        QString  strings[10];
+        QVariant variants[10];
+        QGenericArgument ga[10];
+        bool convOk = true;
+
+        for (int a = 0; a < args.size(); ++a) {
+            // Qt 5: parameterType() returns a metatype id; Qt 6 returns a
+            // QMetaType object.  Use QMetaType::typeName() so both work.
+            const char* tn = QMetaType::typeName(m.parameterType(a));
+            const QByteArray t = tn ? QByteArray(tn) : QByteArray();
+            bool ok = false;
+            if (t == "int") {
+                ints[a] = args[a].toInt(&ok);
+                ga[a] = Q_ARG(int, ints[a]);
+            } else if (t == "uint") {
+                uints[a] = args[a].toUInt(&ok);
+                ga[a] = Q_ARG(uint, uints[a]);
+            } else if (t == "double") {
+                doubles[a] = args[a].toDouble(&ok);
+                ga[a] = Q_ARG(double, doubles[a]);
+            } else if (t == "float") {
+                floats[a] = static_cast<float>(args[a].toDouble(&ok));
+                ga[a] = Q_ARG(float, floats[a]);
+            } else if (t == "bool") {
+                bools[a] = args[a].toBool();
+                ok = true;
+                ga[a] = Q_ARG(bool, bools[a]);
+            } else if (t == "QString") {
+                strings[a] = args[a].toString();
+                ok = true;
+                ga[a] = Q_ARG(QString, strings[a]);
+            } else if (t == "QVariant") {
+                variants[a] = args[a];
+                ok = true;
+                ga[a] = Q_ARG(QVariant, variants[a]);
+            } else {
+                convOk = false;  // unsupported parameter type
+                break;
+            }
+            if (!ok) {
+                convOk = false;
+                break;
+            }
+        }
+        if (!convOk)
+            continue;
+
+        bool callOk = false;
+        const char* n = name.constData();
+        const int nargs = args.size();
+        switch (nargs) {
+        case 0: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection); break;
+        case 1: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0]); break;
+        case 2: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1]); break;
+        case 3: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2]); break;
+        case 4: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3]); break;
+        case 5: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3], ga[4]); break;
+        case 6: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3], ga[4], ga[5]); break;
+        case 7: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3], ga[4], ga[5], ga[6]); break;
+        case 8: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3], ga[4], ga[5], ga[6], ga[7]); break;
+        case 9: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3], ga[4], ga[5], ga[6], ga[7], ga[8]); break;
+        case 10: callOk = QMetaObject::invokeMethod(obj, n, Qt::DirectConnection, ga[0], ga[1], ga[2], ga[3], ga[4], ga[5], ga[6], ga[7], ga[8], ga[9]); break;
+        default: return false;
+        }
+        if (callOk)
+            return true;
+        // Conversion succeeded but the call failed (method not invokable,
+        // e.g. a plain public method) -- try the next overload.
+    }
+
+    // ---- Pass 2: legacy fallbacks (zero-arg / QVariantList) --------------
+    if (args.isEmpty()) {
+        if (QMetaObject::invokeMethod(obj, name.constData(),
+                                      Qt::DirectConnection))
+            return true;
+    } else {
+        QVariantList varArgs = args;
+        if (QMetaObject::invokeMethod(obj, name.constData(),
+                                      Qt::DirectConnection,
+                                      Q_ARG(QVariantList, varArgs)))
+            return true;
+    }
+
+    if (errorMsg) {
+        *errorMsg = QStringLiteral("no invokable overload of %1(%2)")
+            .arg(methodName)
+            .arg(QString::number(args.size()));
+    }
+    return false;
 }
 
 /// Collect a QObject's properties into a JSON object.
@@ -668,8 +805,11 @@ void run_rpc_server(socket_t listen_fd,
                             obj->property(
                                 propName.toUtf8().constData());
                         result[QStringLiteral("ok")] = true;
+                        // Use the snapshot serializer so common Qt value
+                        // types (QRect/QPoint/QSize/...) come back as
+                        // readable strings instead of null.
                         result[QStringLiteral("value")] =
-                            QJsonValue::fromVariant(val);
+                            serializeValue(val, 0);
                         result[QStringLiteral("type")] =
                             QString::fromLatin1(val.typeName());
                     }
@@ -712,28 +852,15 @@ void run_rpc_server(socket_t listen_fd,
                         QVariantList varArgs;
                         for (const QJsonValue& v : args)
                             varArgs.append(v.toVariant());
-                        // Zero-arg methods (e.g. QPushButton::click()) cannot
-                        // be invoked with a Q_ARG(QVariantList, ...) attached
-                        // -- the signatures never match.  Invoke without
-                        // arguments when the caller passed none.
-                        bool callOk = false;
-                        if (varArgs.isEmpty()) {
-                            callOk = QMetaObject::invokeMethod(
-                                obj,
-                                methodNameStr.toUtf8().constData(),
-                                Qt::DirectConnection);
-                        } else {
-                            callOk = QMetaObject::invokeMethod(
-                                obj,
-                                methodNameStr.toUtf8().constData(),
-                                Qt::DirectConnection,
-                                Q_ARG(QVariantList, varArgs));
-                        }
+                        QString errMsg;
+                        const bool callOk =
+                            invokeMethodTyped(obj, methodNameStr,
+                                              varArgs, &errMsg);
                         result[QStringLiteral("ok")] = callOk;
                         if (!callOk) {
                             result[QStringLiteral("message")] =
-                                QStringLiteral(
-                                    "callMethod failed");
+                                QStringLiteral("callMethod failed: %1")
+                                    .arg(errMsg);
                         }
                     }
                 }
@@ -1519,7 +1646,8 @@ std::string RpcServer::processRequest(const QJsonObject& request)
         result = handleCallMethod(params);
     else if (method == QStringLiteral("qt.screenshot"))
         result = handleScreenshot(params);
-    else if (method == QStringLiteral("qt.mouseClick"))
+    else if (method == QStringLiteral("qt.mouseClick") ||
+             method == QStringLiteral("qt.click"))  // live-path alias
         result = handleMouseClick(params);
     else if (method == QStringLiteral("qt.mousePress"))
         result = handleMousePress(params);
@@ -1639,7 +1767,9 @@ QVariant RpcServer::dispatchToMain(const std::string& method,
                         [QStringLiteral("detail")].toString(
                             QStringLiteral("minimal")),
                     args.operationParams
-                        [QStringLiteral("includeHidden")].toBool(false),
+                        [QStringLiteral("includeHidden")].toBool(false)
+                        || args.operationParams
+                               [QStringLiteral("include_hidden")].toBool(false),
                     args.operationParams
                         [QStringLiteral("snapshotDir")].toString(),
                     &tempSem,
@@ -1697,7 +1827,8 @@ QVariant RpcServer::dispatchToMain(const std::string& method,
                     args.capturedEpoch);
             }
             // ---- mouseClick ----
-            else if (methodName == QStringLiteral("qt.mouseClick")) {
+            else if (methodName == QStringLiteral("qt.mouseClick") ||
+                     methodName == QStringLiteral("qt.click")) {  // live alias
                 double x = args.operationParams
                     [QStringLiteral("x")].toDouble(-1.0);
                 double y = args.operationParams

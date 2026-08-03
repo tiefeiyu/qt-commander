@@ -11,6 +11,7 @@
 #include <QQuickWindow>
 #endif
 #include <QQueue>
+#include <QSet>
 #include <QWidget>
 #include <QWindow>
 #include <QtMath>
@@ -233,8 +234,17 @@ static bool walkBfs(WalkState& state, const QVector<QObject*>& roots,
         queue.enqueue({r, 0});
     }
 
+    // Guard against duplicate traversal: some widgets are reachable from
+    // more than one root (e.g. a combo popup's QRollEffect is both a child
+    // of the popup container and a top-level widget, so its descendants --
+    // including the list view -- would otherwise be visited twice).
+    QSet<QObject*> visited;
+
     while (!queue.isEmpty()) {
         Entry e = queue.dequeue();
+        if (visited.contains(e.obj))
+            continue;
+        visited.insert(e.obj);
 
         // ---- match check ---------------------------------------------------
         if (ElementSelector::matchesQuery(e.obj, state.query,

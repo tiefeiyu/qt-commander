@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QApplication>
 #include <QWidget>
+#include <QAbstractItemView>
 #include <QWindow>
 #ifdef QT_COMMANDER_WITH_QML
 #include <QQuickWindow>
@@ -364,6 +365,18 @@ bool EventInjector::dispatchEvent(QObject* target, QEvent* event)
         return false;
 
     if (auto* w = qobject_cast<QWidget*>(target)) {
+        // Real mouse events land on the deepest child under the cursor,
+        // which for item views is the viewport; QAbstractItemView's own
+        // filter forwards viewport events to the view handlers.  Target
+        // the viewport so item views (combo popups, tables, trees, ...)
+        // react to clicks the way they do under a real cursor.
+        const int t = event->type();
+        if (t >= QEvent::MouseButtonPress && t <= QEvent::MouseMove) {
+            if (auto* iv = qobject_cast<QAbstractItemView*>(w)) {
+                if (QWidget* vp = iv->viewport())
+                    w = vp;
+            }
+        }
         sendToWidget(w, event);
         return true;
     }
@@ -407,6 +420,15 @@ bool EventInjector::mouseClick(QObject* target, const QString& button,
                                 double x, double y,
                                 const QStringList& modifiers, bool hasCoords)
 {
+    // Resolve coordinates once -- move, press and release must agree.
+    getEventPos(target, x, y, hasCoords);
+    // A real click always starts with the pointer moving to the target.
+    // Some widgets depend on that: a combo popup's container sets the
+    // view's currentIndex from MouseMove and only selects the item on
+    // MouseButtonRelease, so a press+release without a preceding move
+    // never selects anything.
+    if (!mouseMove(target, x, y))
+        return false;
     if (!mousePress(target, button, x, y, modifiers, hasCoords))
         return false;
     return mouseRelease(target, button, x, y, modifiers, hasCoords);

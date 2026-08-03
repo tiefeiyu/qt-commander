@@ -9,6 +9,15 @@
 #include <QSpinBox>
 #include <QSlider>
 #include <QDialog>
+#include <QTableView>
+#include <QTreeWidget>
+#include <QListWidget>
+#include <QTextEdit>
+#include <QCalendarWidget>
+#include <QDateEdit>
+#include <QDial>
+#include <QProgressBar>
+#include <QRadioButton>
 
 class WidgetTestWindow : public QMainWindow {
     Q_OBJECT
@@ -22,6 +31,8 @@ private slots:
 
 private:
     void setupUI();
+    void setupAdvancedTab(QTabWidget* parent);
+
     QPushButton* btn_ok_;
     QPushButton* btn_cancel_;
     QPushButton* btn_dynamic_;
@@ -34,4 +45,16 @@ private:
     QSpinBox* spin_box_;
     QSlider* slider_;
     QWidget* dynamic_container_;
+
+    // Advanced tab widgets
+    QTableView* table_view_;
+    QTreeWidget* tree_widget_;
+    QListWidget* list_widget_;
+    QTextEdit* text_edit_;
+    QCalendarWidget* calendar_;
+    QDateEdit* date_edit_;
+    QDial* dial_;
+    QProgressBar* progress_bar_;
+    QRadioButton* radio_a_;
+    QRadioButton* radio_b_;
 };
