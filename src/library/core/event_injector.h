@@ -6,6 +6,7 @@
 #include <QHash>
 
 class QWidget;
+class QWindow;
 class QQuickItem;
 class QTouchDevice;
 
@@ -28,6 +29,22 @@ public:
     static bool mouseMove(QObject* target, double x, double y);
     static bool mouseWheel(QObject* target, double deltaX, double deltaY,
                            double x, double y, bool pixelDelta, bool hasCoords);
+
+    // Coordinate-based clicks through the real QPA input pipeline
+    // (QWindowSystemInterface::handleMouseEvent): the injected event goes
+    // through the same hit testing as a real mouse click at that position.
+    // x,y are window-local; window may be null only for mouseClickRegion.
+    static bool mouseClickAt(QWindow* window, double x, double y,
+                             const QString& button,
+                             const QStringList& modifiers);
+    // Clicks at the center of the element's on-screen region.
+    static bool mouseClickRegion(QObject* element, const QString& button,
+                                 const QStringList& modifiers);
+    // Resolves the QWindow hosting an element (widget top-level window,
+    // QML item's QQuickWindow, or the window itself).
+    static QWindow* resolveWindow(QObject* elementOrWindow);
+    // First visible top-level window of the process (session primary window).
+    static QWindow* primaryWindow();
 
     // Keyboard
     static bool keyPress(QObject* target, const QString& key,

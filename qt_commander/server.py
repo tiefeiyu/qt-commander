@@ -305,6 +305,40 @@ async def qt_mouse_click(session_id: str, element_id: int, button: str = "left",
 
 
 @mcp.tool()
+async def qt_mouse_click_at(session_id: str, x: float, y: float, button: str = "left", modifiers: list[str] | None = None, window_id: int = 0) -> str:
+    """Click at an exact window coordinate, exactly like a real mouse click at that position.
+
+    x/y are relative to the target window's client area (same space as
+    screenshots). The click goes through the real Qt input pipeline, so the
+    hit test (scene graph for QML, widget tree for QtWidgets) determines
+    what receives it -- identical behavior to a human clicking there.
+    window_id: element id of a top-level window from a snapshot; 0 uses the
+    session's first visible top-level window."""
+    session = _resolve_session(session_id)
+    result = await session.send_rpc("qt.clickAt", {
+        "x": x, "y": y, "button": button,
+        "modifiers": modifiers or [], "window_id": window_id,
+    })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def qt_mouse_click_region(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None) -> str:
+    """Click at the center of an element's on-screen region.
+
+    Unlike qt_mouse_click (which delivers straight to the element), this
+    routes through the real Qt input pipeline with real hit testing: for a
+    QML container (e.g. a Rectangle with a MouseArea inside) the scene graph
+    hit test delivers the click to the MouseArea, exactly as a human click
+    would."""
+    session = _resolve_session(session_id)
+    result = await session.send_rpc("qt.clickRegion", {
+        "element_id": element_id, "button": button, "modifiers": modifiers or [],
+    })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
 async def qt_keyboard_input(session_id: str, element_id: int, text: str, modifiers: list[str] | None = None) -> str:
     """Send keyboard input to a UI element."""
     session = _resolve_session(session_id)

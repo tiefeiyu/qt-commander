@@ -454,6 +454,69 @@ QVariant Handler::doMouseWheel(quint64 elementId, double dx, double dy,
     return QVariant(result);
 }
 
+// --------------------------------------------------------------
+// doMouseClickAt  (window-local coordinate click, real QPA pipeline)
+// --------------------------------------------------------------
+QVariant Handler::doMouseClickAt(quint64 windowElementId, double x, double y,
+                                 const QString& button, const QStringList& mods,
+                                 QSemaphore* sem, quint64 epoch)
+{
+    QVariantMap result;
+    QWindow* win = nullptr;
+    if (windowElementId > 0) {
+        QObject* obj = validateElement(windowElementId, epoch, result);
+        if (!obj) {
+            if (sem) sem->release();
+            return QVariant(result);
+        }
+        win = EventInjector::resolveWindow(obj);
+    } else {
+        win = EventInjector::primaryWindow();
+    }
+    if (!win) {
+        result = makeError(-23,
+            QStringLiteral("No target window for clickAt"));
+        if (sem) sem->release();
+        return QVariant(result);
+    }
+    const bool ok = EventInjector::mouseClickAt(win, x, y, button, mods);
+    if (!ok) {
+        result = makeError(-23,
+            QStringLiteral("mouseClickAt failed"));
+        if (sem) sem->release();
+        return QVariant(result);
+    }
+    result = makeOk();
+    if (sem) sem->release();
+    return QVariant(result);
+}
+
+// --------------------------------------------------------------
+// doMouseClickRegion  (click at the center of the element's region)
+// --------------------------------------------------------------
+QVariant Handler::doMouseClickRegion(quint64 elementId, const QString& button,
+                                     const QStringList& mods,
+                                     QSemaphore* sem, quint64 epoch)
+{
+    QVariantMap result;
+    QObject* obj = validateElement(elementId, epoch, result);
+    if (!obj) {
+        if (sem) sem->release();
+        return QVariant(result);
+    }
+    const bool ok = EventInjector::mouseClickRegion(obj, button, mods);
+    if (!ok) {
+        result = makeError(-24,
+            QStringLiteral("mouseClickRegion failed on element %1")
+                .arg(elementId));
+        if (sem) sem->release();
+        return QVariant(result);
+    }
+    result = makeOk();
+    if (sem) sem->release();
+    return QVariant(result);
+}
+
 // ==============================================================
 // Keyboard methods
 // ==============================================================

@@ -29,6 +29,9 @@ add_library(qt-commander-lib SHARED ${LIB_SOURCES}
 target_include_directories(qt-commander-lib PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ..
+    # QtGui private/QPA headers (QWindowSystemInterface for the real
+    # coordinate-click input pipeline)
+    ${Qt${QT_MAJOR_VERSION}Gui_PRIVATE_INCLUDE_DIRS}
 )
 
 # Qt base (always required)

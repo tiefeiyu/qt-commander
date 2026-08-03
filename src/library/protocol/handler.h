@@ -30,6 +30,12 @@ public:
     Q_INVOKABLE QVariant doMousePress(quint64 elementId, const QString& button, double x, double y, const QStringList& mods, bool hasCoords, QSemaphore* sem, quint64 epoch);
     Q_INVOKABLE QVariant doMouseRelease(quint64 elementId, const QString& button, double x, double y, const QStringList& mods, bool hasCoords, QSemaphore* sem, quint64 epoch);
     Q_INVOKABLE QVariant doMouseDblClick(quint64 elementId, const QString& button, double x, double y, const QStringList& mods, bool hasCoords, QSemaphore* sem, quint64 epoch);
+    // Coordinate-based clicks through the real QPA input pipeline.
+    // windowElementId: element id of a top-level window (0 = first visible
+    // top-level window); x,y are window-local coordinates.
+    Q_INVOKABLE QVariant doMouseClickAt(quint64 windowElementId, double x, double y, const QString& button, const QStringList& mods, QSemaphore* sem, quint64 epoch);
+    // Clicks at the center of the element's on-screen region.
+    Q_INVOKABLE QVariant doMouseClickRegion(quint64 elementId, const QString& button, const QStringList& mods, QSemaphore* sem, quint64 epoch);
     Q_INVOKABLE QVariant doMouseMove(quint64 elementId, double x, double y, QSemaphore* sem, quint64 epoch);
     Q_INVOKABLE QVariant doMouseWheel(quint64 elementId, double dx, double dy, double x, double y, bool pixel, bool hasCoords, QSemaphore* sem, quint64 epoch);
     Q_INVOKABLE QVariant doKeyPress(quint64 elementId, const QString& key, const QStringList& mods, const QString& text, QSemaphore* sem, quint64 epoch);

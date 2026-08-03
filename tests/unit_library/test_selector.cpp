@@ -29,9 +29,18 @@
 #ifdef QT_COMMANDER_WITH_QML
 #include <QDir>
 #include <QQmlApplicationEngine>
+#include <QQuickView>
 #include <QQuickWindow>
 #include <QQuickItem>
 #include <QTemporaryFile>
+#include "core/event_injector.h"
+#endif
+// The QPA input interface: flushed synchronously in tests so injected
+// coordinate clicks are delivered before assertions run.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QtGui/private/qwindowsysteminterface_p.h>
+#else
+#include <QtGui/qpa/qwindowsysteminterface.h>
 #endif
 #include <QWidget>
 #include <QJsonObject>
@@ -623,7 +632,164 @@ static void test_qml_window_root_reachable()
     engine.deleteLater();
     PASS();
 }
+
+// ---------------------------------------------------------------------------
+// Real coordinate click: QWindowSystemInterface routes the click through the
+// QPA input pipeline with the real scene-graph hit test -- clicking the
+// center of a plain Rectangle must reach the QQuickMouseArea inside it,
+// exactly like a real mouse click.
+// ---------------------------------------------------------------------------
+static void test_click_at_qml_hit_test()
+{
+    TEST("clickAt lands on MouseArea via real scene-graph hit test");
+
+    QTemporaryFile qml(QDir::tempPath() + QStringLiteral("/qtc_XXXXXX.qml"));
+    CHECK(qml.open(), "temp qml file");
+    if (!qml.isOpen()) {
+        PASS();
+        return;
+    }
+    qml.write("import QtQuick 2.0\n"
+              "Item {\n"
+              "    id: root\n"
+              "    objectName: \"root\"\n"
+              "    property int clickCount: 0\n"
+              "    Rectangle {\n"
+              "        objectName: \"box\"\n"
+              "        width: 100; height: 50\n"
+              "        MouseArea {\n"
+              "            objectName: \"ma\"\n"
+              "            anchors.fill: parent\n"
+              "            onClicked: root.clickCount += 1\n"
+              "        }\n"
+              "    }\n"
+              "}\n");
+    qml.flush();
+
+    QQuickView view;
+    view.setSource(QUrl::fromLocalFile(qml.fileName()));
+    view.show();
+    QApplication::processEvents();
+
+    QQuickItem* root = view.rootObject();
+    CHECK(root != nullptr, "scene root");
+    if (!root) {
+        view.close();
+        return;
+    }
+
+    // Box occupies (0,0)-(100,50); its center in window coordinates.
+    const bool ok = EventInjector::mouseClickAt(
+        &view, 50.0, 25.0, QStringLiteral("left"), QStringList());
+    QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);
+    QApplication::processEvents();
+
+    CHECK(ok, "mouseClickAt returned success");
+    CHECK(root->property("clickCount").toInt() == 1,
+          "MouseArea inside Rectangle must receive the click, got "
+              << root->property("clickCount").toInt());
+
+    view.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Region click: clicking the on-screen region of a container Rectangle must
+// land on the MouseArea inside it (real hit testing, not class guessing).
+// ---------------------------------------------------------------------------
+static void test_click_region_qml()
+{
+    TEST("clickRegion on container reaches inner MouseArea");
+
+    QTemporaryFile qml(QDir::tempPath() + QStringLiteral("/qtc_XXXXXX.qml"));
+    CHECK(qml.open(), "temp qml file");
+    if (!qml.isOpen()) {
+        PASS();
+        return;
+    }
+    qml.write("import QtQuick 2.0\n"
+              "Item {\n"
+              "    id: root\n"
+              "    objectName: \"root\"\n"
+              "    property int clickCount: 0\n"
+              "    Rectangle {\n"
+              "        objectName: \"box\"\n"
+              "        width: 100; height: 50\n"
+              "        MouseArea {\n"
+              "            objectName: \"ma\"\n"
+              "            anchors.fill: parent\n"
+              "            onClicked: root.clickCount += 1\n"
+              "        }\n"
+              "    }\n"
+              "}\n");
+    qml.flush();
+
+    QQuickView view;
+    view.setSource(QUrl::fromLocalFile(qml.fileName()));
+    view.show();
+    QApplication::processEvents();
+
+    QQuickItem* root = view.rootObject();
+    QQuickItem* box = root ? root->findChild<QQuickItem*>(
+                                 QStringLiteral("box")) : nullptr;
+    CHECK(box != nullptr, "box present");
+    if (!box) {
+        view.close();
+        return;
+    }
+
+    const bool ok = EventInjector::mouseClickRegion(
+        box, QStringLiteral("left"), QStringList());
+    QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);
+    QApplication::processEvents();
+
+    CHECK(ok, "mouseClickRegion returned success");
+    CHECK(root->property("clickCount").toInt() == 1,
+          "region click on Rectangle must hit the MouseArea, got "
+              << root->property("clickCount").toInt());
+
+    view.close();
+    PASS();
+}
 #endif // QT_COMMANDER_WITH_QML
+
+// ---------------------------------------------------------------------------
+// Widget coordinate click: the real QPA pipeline hit tests the widget tree,
+// so a click at a button's window coordinates fires its clicked() signal.
+// ---------------------------------------------------------------------------
+static void test_click_at_widget_hit_test()
+{
+    TEST("clickAt on a widget button fires clicked() via real hit test");
+
+    QWidget win;
+    win.resize(300, 200);
+    auto* btn = new QPushButton(QStringLiteral("T"), &win);
+    btn->setGeometry(50, 50, 80, 30);
+    int clicks = 0;
+    QObject::connect(btn, &QPushButton::clicked,
+                     [&clicks]() { clicks += 1; });
+    win.show();
+    QApplication::processEvents();
+
+    CHECK(win.windowHandle() != nullptr, "top-level window handle");
+    if (!win.windowHandle()) {
+        win.close();
+        return;
+    }
+
+    // Button center in top-level window coordinates: (90, 65).
+    const bool ok = EventInjector::mouseClickAt(
+        win.windowHandle(), 90.0, 65.0,
+        QStringLiteral("left"), QStringList());
+    QWindowSystemInterface::sendWindowSystemEvents(QEventLoop::AllEvents);
+    QApplication::processEvents();
+
+    CHECK(ok, "mouseClickAt returned success");
+    CHECK(clicks == 1, "button must receive the click, got " << clicks);
+
+    win.close();
+    PASS();
+}
 
 // ---------------------------------------------------------------------------
 // main
@@ -650,8 +816,11 @@ int main(int argc, char* argv[])
     test_lineedit_ctrl_a_select_all();
     test_callmethod_typed_int();
     test_callmethod_non_slot_not_invokable();
+    test_click_at_widget_hit_test();
 #ifdef QT_COMMANDER_WITH_QML
     test_qml_window_root_reachable();
+    test_click_at_qml_hit_test();
+    test_click_region_qml();
 #endif
 
     std::cout << "\n" << passed << " passed, " << failed << " failed\n";

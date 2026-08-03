@@ -15,6 +15,7 @@
 #include <QJsonArray>
 #include <QString>
 #include <QStringList>
+#include <QWindow>
 
 // ============================================================================
 // UiScanner stubs
@@ -43,6 +44,25 @@ bool EventInjector::mouseClick(QObject* /*target*/, const QString& /*button*/,
                                 double /*x*/, double /*y*/,
                                 const QStringList& /*modifiers*/, bool /*hasCoords*/)
 { return true; }
+
+/* static */
+bool EventInjector::mouseClickAt(QWindow* /*window*/, double /*x*/, double /*y*/,
+                                 const QString& /*button*/,
+                                 const QStringList& /*modifiers*/)
+{ return true; }
+
+/* static */
+bool EventInjector::mouseClickRegion(QObject* /*element*/, const QString& /*button*/,
+                                     const QStringList& /*modifiers*/)
+{ return true; }
+
+/* static */
+QWindow* EventInjector::resolveWindow(QObject* /*elementOrWindow*/)
+{ return nullptr; }
+
+/* static */
+QWindow* EventInjector::primaryWindow()
+{ return nullptr; }
 
 /* static */
 bool EventInjector::mousePress(QObject* /*target*/, const QString& /*button*/,

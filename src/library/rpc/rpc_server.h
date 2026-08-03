@@ -72,6 +72,8 @@ private:
     QJsonObject handleMousePress(const QJsonObject& params);
     QJsonObject handleMouseRelease(const QJsonObject& params);
     QJsonObject handleMouseDblClick(const QJsonObject& params);
+    QJsonObject handleMouseClickAt(const QJsonObject& params);
+    QJsonObject handleMouseClickRegion(const QJsonObject& params);
     QJsonObject handleMouseMove(const QJsonObject& params);
     QJsonObject handleMouseWheel(const QJsonObject& params);
     QJsonObject handleKeyPress(const QJsonObject& params);

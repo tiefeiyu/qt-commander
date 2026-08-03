@@ -22,6 +22,8 @@ from qt_commander.server import (
     qt_set_property,
     qt_call_method,
     qt_mouse_click,
+    qt_mouse_click_at,
+    qt_mouse_click_region,
     qt_keyboard_input,
     qt_focus,
     qt_attach,
@@ -265,6 +267,85 @@ class TestMouseClickPayload:
         await qt_mouse_click("clck_p02", 42)
         assert captured["params"] == {
             "element_id": 42,
+            "button": "left",
+            "modifiers": [],
+        }
+
+
+# ============================================================================
+# qt_mouse_click_at — real coordinate click ("qt.clickAt")
+# ============================================================================
+
+class TestMouseClickAtPayload:
+    @pytest.mark.asyncio
+    async def test_click_at_sends_coordinates_and_button(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "clka_p01", 11, workspace)
+
+        result = await qt_mouse_click_at(
+            "clka_p01", 120.5, 80.0, button="right", modifiers=["Alt"]
+        )
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.clickAt"
+        assert captured["params"] == {
+            "x": 120.5,
+            "y": 80.0,
+            "button": "right",
+            "modifiers": ["Alt"],
+            "window_id": 0,
+        }
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_click_at_defaults(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "clka_p02", 12, workspace)
+
+        await qt_mouse_click_at("clka_p02", 10, 20)
+        assert captured["params"] == {
+            "x": 10.0,
+            "y": 20.0,
+            "button": "left",
+            "modifiers": [],
+            "window_id": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_click_at_with_window_anchor(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "clka_p03", 13, workspace)
+
+        await qt_mouse_click_at("clka_p03", 5, 6, window_id=3)
+        assert captured["params"]["window_id"] == 3
+
+
+# ============================================================================
+# qt_mouse_click_region — click at element's region center ("qt.clickRegion")
+# ============================================================================
+
+class TestMouseClickRegionPayload:
+    @pytest.mark.asyncio
+    async def test_click_region_sends_element_and_button(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "clkr_p01", 11, workspace)
+
+        result = await qt_mouse_click_region(
+            "clkr_p01", 77, button="right", modifiers=["Shift"]
+        )
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.clickRegion"
+        assert captured["params"] == {
+            "element_id": 77,
+            "button": "right",
+            "modifiers": ["Shift"],
+        }
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_click_region_defaults(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "clkr_p02", 12, workspace)
+
+        await qt_mouse_click_region("clkr_p02", 8)
+        assert captured["params"] == {
+            "element_id": 8,
             "button": "left",
             "modifiers": [],
         }

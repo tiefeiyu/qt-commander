@@ -19,6 +19,17 @@
 #include <QPoint>
 #include <QHash>
 
+// The QPA input interface: the same entry point the platform plugins use to
+// deliver OS mouse events into Qt.  Events queued here are delivered on the
+// GUI thread with the real hit testing (scene graph for QML windows, widget
+// tree for widget windows), so an injected click behaves exactly like a
+// real mouse click at the given coordinate.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QtGui/private/qwindowsysteminterface_p.h>
+#else
+#include <QtGui/qpa/qwindowsysteminterface.h>
+#endif
+
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -383,6 +394,12 @@ bool EventInjector::dispatchEvent(QObject* target, QEvent* event)
 
 #ifdef QT_COMMANDER_WITH_QML
     if (auto* item = qobject_cast<QQuickItem*>(target)) {
+        // QQuickWindow::sendEvent delivers the event straight to the given
+        // item, bypassing the scene graph's hit testing.  Element clicks
+        // therefore target the exact item the caller found (typically the
+        // MouseArea itself); for coordinate/region clicks use mouseClickAt
+        // / mouseClickRegion, which go through the real QPA input pipeline
+        // with real hit testing.
         sendToQmlItem(item, event);
         return true;
     }
@@ -432,6 +449,110 @@ bool EventInjector::mouseClick(QObject* target, const QString& button,
     if (!mousePress(target, button, x, y, modifiers, hasCoords))
         return false;
     return mouseRelease(target, button, x, y, modifiers, hasCoords);
+}
+
+// ---------------------------------------------------------------------------
+// mouseClickAt / mouseClickRegion  --  real QPA input pipeline
+//
+// Unlike the element-based ops above (which post events straight to the
+// element via QCoreApplication/QQuickWindow::sendEvent), these route the
+// click through QWindowSystemInterface::handleMouseEvent -- the entry point
+// the platform plugins use for OS mouse messages.  The GUI thread then
+// delivers the events with real hit testing: the scene graph for QML
+// windows, the widget tree for widget windows.  Behavior is identical to a
+// real mouse click at the given position.
+// ---------------------------------------------------------------------------
+
+bool EventInjector::mouseClickAt(QWindow* window, double x, double y,
+                                 const QString& button,
+                                 const QStringList& modifiers)
+{
+    if (!window)
+        return false;
+
+    const QPointF local(x, y);
+    const QPointF global(window->mapToGlobal(local.toPoint()));
+    const Qt::MouseButton btn = parseButton(button);
+    const Qt::KeyboardModifiers mods = parseModifiers(modifiers);
+
+    // A real click sequence: move the pointer, press, release.  The events
+    // are queued (thread-safe) and delivered on the GUI thread; for the
+    // synchronous test path QWindowSystemInterface::sendWindowSystemEvents
+    // flushes the queue.
+    QWindowSystemInterface::handleMouseEvent(
+        window, local, global, Qt::NoButton, Qt::NoButton,
+        QEvent::MouseMove, mods);
+    QWindowSystemInterface::handleMouseEvent(
+        window, local, global, btn, btn,
+        QEvent::MouseButtonPress, mods);
+    QWindowSystemInterface::handleMouseEvent(
+        window, local, global, Qt::NoButton, btn,
+        QEvent::MouseButtonRelease, mods);
+    return true;
+}
+
+bool EventInjector::mouseClickRegion(QObject* element, const QString& button,
+                                     const QStringList& modifiers)
+{
+    if (!element)
+        return false;
+
+    if (auto* w = qobject_cast<QWidget*>(element)) {
+        QWidget* win = w->window();
+        if (!win || !win->windowHandle())
+            return false;
+        // Widget-local center -> top-level window-local coordinates.
+        const QPoint local = w->mapTo(win, w->rect().center());
+        return mouseClickAt(win->windowHandle(), local.x(), local.y(),
+                            button, modifiers);
+    }
+#ifdef QT_COMMANDER_WITH_QML
+    if (auto* item = qobject_cast<QQuickItem*>(element)) {
+        QQuickWindow* win = item->window();
+        if (!win)
+            return false;
+        // mapToScene() yields window-local coordinates for a top-level
+        // QQuickWindow (its contentItem spans the whole client area).
+        const QPointF local = item->mapToScene(
+            QPointF(item->width() / 2.0, item->height() / 2.0));
+        return mouseClickAt(win, local.x(), local.y(), button, modifiers);
+    }
+#endif
+    if (auto* win = qobject_cast<QWindow*>(element)) {
+        return mouseClickAt(win, win->width() / 2.0, win->height() / 2.0,
+                            button, modifiers);
+    }
+    return false;
+}
+
+QWindow* EventInjector::resolveWindow(QObject* elementOrWindow)
+{
+    if (!elementOrWindow)
+        return nullptr;
+    if (auto* w = qobject_cast<QWidget*>(elementOrWindow)) {
+        QWidget* win = w->window();
+        return win ? win->windowHandle() : nullptr;
+    }
+#ifdef QT_COMMANDER_WITH_QML
+    if (auto* item = qobject_cast<QQuickItem*>(elementOrWindow))
+        return item->window();
+#endif
+    return qobject_cast<QWindow*>(elementOrWindow);
+}
+
+QWindow* EventInjector::primaryWindow()
+{
+    if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+        for (QWidget* w : app->topLevelWidgets()) {
+            if (w->isVisible() && w->windowHandle())
+                return w->windowHandle();
+        }
+    }
+    for (QWindow* w : QGuiApplication::topLevelWindows()) {
+        if (w->isVisible())
+            return w;
+    }
+    return nullptr;
 }
 
 bool EventInjector::mousePress(QObject* target, const QString& button,

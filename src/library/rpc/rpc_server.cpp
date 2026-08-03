@@ -938,6 +938,75 @@ void run_rpc_server(socket_t listen_fd,
                         }
                     }
                 }
+                // ---- clickAt (window-local coordinate, real QPA pipeline) ----
+                else if (opMethod == QStringLiteral("clickAt")) {
+                    const double x =
+                        rpcParams[QStringLiteral("x")].toDouble(0);
+                    const double y =
+                        rpcParams[QStringLiteral("y")].toDouble(0);
+                    const QString button =
+                        rpcParams[QStringLiteral("button")].toString(
+                            QStringLiteral("left"));
+                    QStringList modifiers;
+                    const QJsonArray modArr =
+                        rpcParams[QStringLiteral("modifiers")].toArray();
+                    for (const QJsonValue& v : modArr)
+                        modifiers.append(v.toString());
+
+                    QWindow* win = nullptr;
+                    const uint64_t windowId = static_cast<uint64_t>(
+                        rpcParams[QStringLiteral("window_id")].toDouble(0));
+                    if (windowId > 0) {
+                        QObject* winObj = elementMap->get(windowId);
+                        if (!winObj) {
+                            result[QStringLiteral("ok")] = false;
+                            result[QStringLiteral("message")] =
+                                QStringLiteral(
+                                    "Window element not found: id=%1")
+                                    .arg(windowId);
+                        } else {
+                            win = EventInjector::resolveWindow(winObj);
+                        }
+                    } else {
+                        win = EventInjector::primaryWindow();
+                    }
+                    if (win) {
+                        result[QStringLiteral("ok")] =
+                            EventInjector::mouseClickAt(
+                                win, x, y, button, modifiers);
+                        if (!result[QStringLiteral("ok")].toBool()) {
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("clickAt failed");
+                        }
+                    }
+                }
+                // ---- clickRegion (center of element's region) ----
+                else if (opMethod == QStringLiteral("clickRegion")) {
+                    QObject* obj = elementMap->get(elementId);
+                    if (!obj) {
+                        result[QStringLiteral("ok")] = false;
+                        result[QStringLiteral("message")] =
+                            QStringLiteral("Element not found: id=%1")
+                                .arg(elementId);
+                    } else {
+                        const QString button =
+                            rpcParams[QStringLiteral("button")].toString(
+                                QStringLiteral("left"));
+                        QStringList modifiers;
+                        const QJsonArray modArr =
+                            rpcParams[QStringLiteral("modifiers")].toArray();
+                        for (const QJsonValue& v : modArr)
+                            modifiers.append(v.toString());
+
+                        result[QStringLiteral("ok")] =
+                            EventInjector::mouseClickRegion(
+                                obj, button, modifiers);
+                        if (!result[QStringLiteral("ok")].toBool()) {
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("clickRegion failed");
+                        }
+                    }
+                }
                 // ---- dblClick ----
                 else if (opMethod == QStringLiteral("dblClick")) {
                     QObject* obj = elementMap->get(elementId);
@@ -1676,6 +1745,12 @@ std::string RpcServer::processRequest(const QJsonObject& request)
         result = handleMouseRelease(params);
     else if (method == QStringLiteral("qt.mouseDblClick"))
         result = handleMouseDblClick(params);
+    else if (method == QStringLiteral("qt.mouseClickAt") ||
+             method == QStringLiteral("qt.clickAt"))  // live-path alias
+        result = handleMouseClickAt(params);
+    else if (method == QStringLiteral("qt.mouseClickRegion") ||
+             method == QStringLiteral("qt.clickRegion"))  // live-path alias
+        result = handleMouseClickRegion(params);
     else if (method == QStringLiteral("qt.mouseMove"))
         result = handleMouseMove(params);
     else if (method == QStringLiteral("qt.mouseWheel"))
@@ -1868,6 +1943,35 @@ QVariant RpcServer::dispatchToMain(const std::string& method,
                     toStringList(args.operationParams
                         [QStringLiteral("modifiers")].toArray()),
                     hasCoords,
+                    &tempSem, args.capturedEpoch);
+            }
+            // ---- mouseClickAt ----
+            else if (methodName == QStringLiteral("qt.mouseClickAt") ||
+                     methodName == QStringLiteral("qt.clickAt")) {  // live alias
+                result = handler_->doMouseClickAt(
+                    static_cast<quint64>(args.operationParams
+                        [QStringLiteral("window_id")].toDouble(0)),
+                    args.operationParams
+                        [QStringLiteral("x")].toDouble(0),
+                    args.operationParams
+                        [QStringLiteral("y")].toDouble(0),
+                    args.operationParams
+                        [QStringLiteral("button")].toString(
+                            QStringLiteral("left")),
+                    toStringList(args.operationParams
+                        [QStringLiteral("modifiers")].toArray()),
+                    &tempSem, args.capturedEpoch);
+            }
+            // ---- mouseClickRegion ----
+            else if (methodName == QStringLiteral("qt.mouseClickRegion") ||
+                     methodName == QStringLiteral("qt.clickRegion")) {  // live alias
+                result = handler_->doMouseClickRegion(
+                    args.elementId,
+                    args.operationParams
+                        [QStringLiteral("button")].toString(
+                            QStringLiteral("left")),
+                    toStringList(args.operationParams
+                        [QStringLiteral("modifiers")].toArray()),
                     &tempSem, args.capturedEpoch);
             }
             // ---- mousePress ----
@@ -2178,6 +2282,18 @@ QJsonObject RpcServer::handleMouseRelease(const QJsonObject& params)
 QJsonObject RpcServer::handleMouseDblClick(const QJsonObject& params)
 {
     QVariant result = dispatchToMain("qt.mouseDblClick", params);
+    return QJsonObject::fromVariantMap(result.toMap());
+}
+
+QJsonObject RpcServer::handleMouseClickAt(const QJsonObject& params)
+{
+    QVariant result = dispatchToMain("qt.mouseClickAt", params);
+    return QJsonObject::fromVariantMap(result.toMap());
+}
+
+QJsonObject RpcServer::handleMouseClickRegion(const QJsonObject& params)
+{
+    QVariant result = dispatchToMain("qt.mouseClickRegion", params);
     return QJsonObject::fromVariantMap(result.toMap());
 }
 
