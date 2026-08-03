@@ -80,26 +80,20 @@ class TestBuildState:
         assert state == BuildState.NOT_BUILT
 
     def test_built_when_artifacts_present(self, tmp_path):
-        build_dir = tmp_path / "injector" / "build"
-        build_dir.mkdir(parents=True)
-        (build_dir / "qt-injector.exe").write_text("fake binary content")
-
-        lib_dir = tmp_path / "library" / "build"
-        lib_dir.mkdir(parents=True)
-        (lib_dir / "libqt-commander.dll").write_text("fake library content")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "qt-injector.exe").write_text("fake binary content")
+        (bin_dir / "libqt-commander.dll").write_text("fake library content")
 
         state = check_build_state(tmp_path)
         assert state == BuildState.BUILT
 
     def test_manifest_hash_mismatch_causes_not_built(self, tmp_path):
         """When manifest exists but source hash differs, return NOT_BUILT."""
-        build_dir = tmp_path / "injector" / "build"
-        build_dir.mkdir(parents=True)
-        (build_dir / "qt-injector.exe").write_text("fake")
-
-        lib_dir = tmp_path / "library" / "build"
-        lib_dir.mkdir(parents=True)
-        (lib_dir / "libqt-commander.dll").write_text("fake")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "qt-injector.exe").write_text("fake")
+        (bin_dir / "libqt-commander.dll").write_text("fake")
 
         import json
         manifest = tmp_path / "build_manifest.json"
@@ -113,13 +107,10 @@ class TestBuildState:
 
     def test_manifest_corrupt_json_ignored(self, tmp_path):
         """Corrupt manifest JSON should be ignored (verified artifact existence)."""
-        build_dir = tmp_path / "injector" / "build"
-        build_dir.mkdir(parents=True)
-        (build_dir / "qt-injector.exe").write_text("fake")
-
-        lib_dir = tmp_path / "library" / "build"
-        lib_dir.mkdir(parents=True)
-        (lib_dir / "libqt-commander.dll").write_text("fake")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "qt-injector.exe").write_text("fake")
+        (bin_dir / "libqt-commander.dll").write_text("fake")
 
         (tmp_path / "build_manifest.json").write_text("corrupt json{{{")
 
@@ -302,34 +293,12 @@ class TestRunBuild:
             )
             assert result["injector_path"]
 
-    def test_cmake_build_windows_script(self, tmp_path):
-        """_run_cmake_build generates correct Windows batch script."""
-        from unittest.mock import MagicMock, patch
+    def test_find_build_script(self):
+        """_find_build_script finds scripts/build_windows.bat in the project."""
         import qt_commander.builder as bmod
-
-        src_dir = tmp_path / "src"
-        src_dir.mkdir()
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            bmod._run_cmake_build(
-                src_dir, build_dir, "Release", "Ninja",
-                "C:\\vcvars64.bat", "amd64", "C:\\Qt\\qtenv2.bat",
-            )
-
-        # Verify subprocess.run was called
-        mock_run.assert_called_once()
-        # On Windows, it should use cmd.exe /c
-        args = mock_run.call_args[0][0]
-        assert args[0] == "cmd.exe"
-        script = args[2]
-        assert 'call "C:\\vcvars64.bat" amd64' in script
-        assert 'call "C:\\Qt\\qtenv2.bat"' in script
-        assert "cmake -S" in script
+        bat = bmod._find_build_script()
+        assert bat.name == "build_windows.bat"
+        assert bat.exists()
 
     @pytest.mark.asyncio
     async def test_run_build_resets_state_on_error(self, tmp_path, monkeypatch):

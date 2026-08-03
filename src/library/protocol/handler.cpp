@@ -48,6 +48,8 @@ bool ensureDir(const QString& path)
 // ---- Resolve a possibly-relative path against workspace ----
 QString resolvePath(const QString& path, const QString& workspacePath)
 {
+    if (path.isEmpty() && workspacePath.isEmpty())
+        return QDir::currentPath();
     if (path.isEmpty())
         return workspacePath;
     QFileInfo fi(path);

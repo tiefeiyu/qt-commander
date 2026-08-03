@@ -22,7 +22,7 @@ class TestListQtProcesses:
         result = list_qt_processes()
         for proc in result:
             assert "arch" in proc
-            assert proc["arch"] in ("x64", "x86", "")
+            assert proc["arch"] in ("x64", "x86", "arm64", "")
 
     def test_non_qt_excluded(self):
         result = list_qt_processes()

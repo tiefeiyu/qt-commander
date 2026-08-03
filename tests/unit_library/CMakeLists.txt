@@ -49,3 +49,17 @@ target_link_libraries(test_handler PRIVATE Qt${QT_MAJOR_VERSION}::Core Qt${QT_MA
 set_target_properties(test_handler PROPERTIES AUTOMOC ON)
 add_test(NAME test_handler COMMAND test_handler)
 set_tests_properties(test_handler PROPERTIES ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")
+
+# --- RPC server test (parse_utils + screenshot) ---
+add_executable(test_rpc_server
+    test_rpc_server.cpp
+    handler_test_stubs.cpp
+    ${CMAKE_SOURCE_DIR}/src/library/protocol/handler.cpp
+    ${CMAKE_SOURCE_DIR}/src/library/core/element_map.cpp
+    ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
+)
+target_include_directories(test_rpc_server PRIVATE ${CMAKE_SOURCE_DIR}/src/library ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_rpc_server PRIVATE Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Gui Qt${QT_MAJOR_VERSION}::Widgets)
+set_target_properties(test_rpc_server PROPERTIES AUTOMOC ON)
+add_test(NAME test_rpc_server COMMAND test_rpc_server)
+set_tests_properties(test_rpc_server PROPERTIES ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")

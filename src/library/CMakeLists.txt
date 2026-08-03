@@ -1,5 +1,15 @@
 set(CMAKE_AUTOMOC ON)
 
+# Find Qt
+set(QT_COMPONENTS Core Gui Widgets)
+if(WITH_QML)
+    list(APPEND QT_COMPONENTS Quick QuickWidgets)
+    if(QT_MAJOR_VERSION EQUAL 6)
+        list(APPEND QT_COMPONENTS Qml)
+    endif()
+endif()
+find_package(Qt${QT_MAJOR_VERSION} REQUIRED COMPONENTS ${QT_COMPONENTS})
+
 set(LIB_SOURCES
     rpc/rpc_server.cpp
     core/ui_scanner.cpp
@@ -18,7 +28,7 @@ add_library(qt-commander-lib SHARED ${LIB_SOURCES}
 
 target_include_directories(qt-commander-lib PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/src
+    ..
 )
 
 # Qt base (always required)
@@ -58,4 +68,9 @@ endif()
 set_target_properties(qt-commander-lib PROPERTIES
     OUTPUT_NAME "qt-commander"
     PREFIX "lib"
+)
+
+install(TARGETS qt-commander-lib
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION bin
 )

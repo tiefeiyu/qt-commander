@@ -11,9 +11,11 @@
 // =============================================================================
 
 #include "rpc/rpc_server.h"
+#include "../rpc/parse_utils.h"
 #include "api.h"
 #include "core/element_map.h"
 #include "../core/event_injector.h"
+#include "../core/screenshot.h"
 #ifdef QT_COMMANDER_WITH_QML
 #include <QQuickWindow>
 #include <QQuickItem>
@@ -28,6 +30,7 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QMetaObject>
+#include <QMetaProperty>
 #include <QSemaphore>
 #include <QScreen>
 #include <QPixmap>
@@ -83,6 +86,126 @@
 // Anonymous-namespace helpers  (everything here is file-local)
 // =============================================================================
 namespace {
+
+// ---------------------------------------------------------------------------
+// Snapshot helpers — tree-building with depth control
+// ---------------------------------------------------------------------------
+
+/// Serialize a QVariant up to *propDepth* levels for QObject sub-properties.
+static QJsonValue serializeValue(const QVariant& value, int propDepth) {
+    if (!value.isValid() || value.isNull())
+        return QJsonValue();
+
+    switch (static_cast<int>(value.type())) {
+    case QVariant::Bool:
+        return value.toBool();
+    case QVariant::Int:
+    case QVariant::UInt:
+    case QVariant::LongLong:
+    case QVariant::ULongLong:
+        return static_cast<double>(value.toLongLong());  // JSON numbers are doubles
+    case QVariant::Double:
+        return value.toDouble();
+    case QVariant::String:
+        return value.toString();
+    case QVariant::Rect:
+    case QVariant::RectF: {
+        QRect r = value.toRect();
+        return QStringLiteral("%1,%2 %3x%4")
+            .arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+    }
+    case QVariant::Point:
+    case QVariant::PointF: {
+        QPoint p = value.toPoint();
+        return QStringLiteral("%1,%2").arg(p.x()).arg(p.y());
+    }
+    case QVariant::Size:
+    case QVariant::SizeF: {
+        QSize s = value.toSize();
+        return QStringLiteral("%1x%2").arg(s.width()).arg(s.height());
+    }
+    default:
+        break;
+    }
+
+    // QObject sub-property (only if depth > 0 or unlimited)
+    if (propDepth != 0 && value.canConvert<QObject*>()) {
+        QObject* child = value.value<QObject*>();
+        if (child) {
+            const int childPropDepth = propDepth > 0 ? propDepth - 1 : propDepth;
+            QJsonObject subObj;
+            const QMetaObject* meta = child->metaObject();
+            for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
+                QMetaProperty prop = meta->property(i);
+                QVariant v = prop.read(child);
+                QJsonValue serialized = serializeValue(v, childPropDepth);
+                if (!serialized.isUndefined())
+                    subObj[QString::fromLatin1(prop.name())] = serialized;
+            }
+            return subObj;
+        }
+    }
+
+    return QJsonValue();
+}
+
+/// Collect a QObject's properties into a JSON object.
+static QJsonObject collectProperties(QObject* obj, int propDepth) {
+    QJsonObject props;
+    const QMetaObject* meta = obj->metaObject();
+    for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
+        QMetaProperty prop = meta->property(i);
+        QVariant v = prop.read(obj);
+        QJsonValue sv = serializeValue(v, propDepth);
+        if (!sv.isUndefined())
+            props[QString::fromLatin1(prop.name())] = sv;
+    }
+    return props;
+}
+
+/// Recursively collect children into a JSON array, limited by depth.
+/// Negative depth values mean "unlimited".
+static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
+                                   ElementMap* elementMap, uint64_t& nextId) {
+    QJsonArray arr;
+    if (maxDepth == 0)
+        return arr;
+    const int childDepth = maxDepth > 0 ? maxDepth - 1 : maxDepth;  // keep negative
+
+    QObjectList childList;
+    // QWidget children
+    if (QWidget* w = qobject_cast<QWidget*>(parent)) {
+        const QObjectList& raw = w->children();
+        for (QObject* o : raw) {
+            if (qobject_cast<QWidget*>(o) || o->isWidgetType())
+                childList.append(o);
+        }
+    }
+#ifdef QT_COMMANDER_WITH_QML
+    // QQuickItem children
+    if (QQuickItem* qi = qobject_cast<QQuickItem*>(parent)) {
+        const auto& items = qi->childItems();
+        for (QQuickItem* item : items)
+            childList.append(item);
+    }
+#endif
+
+    for (QObject* child : childList) {
+        const uint64_t id = nextId++;
+        elementMap->insert(id, child);
+
+        QJsonObject node;
+        node["className"] = QString::fromLatin1(child->metaObject()->className());
+        node["objID"] = static_cast<qint64>(id);
+        node["properties"] = collectProperties(child, propDepth);
+        node["children"] = collectChildren(child, childDepth, propDepth,
+                                           elementMap, nextId);
+        arr.append(node);
+    }
+    return arr;
+}
+
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // JSON-RPC protocol helpers
@@ -214,20 +337,6 @@ bool sendJsonError(socket_t fd, int id, int code, const QString& msg) {
 }
 
 } // namespace rpc_io
-
-// ---------------------------------------------------------------------------
-// Element ID parsing
-// ---------------------------------------------------------------------------
-bool parseElementId(const QJsonObject& params, uint64_t& outId) {
-    if (!params.contains(QStringLiteral("elementId")))
-        return false;
-    const QString idStr = params[QStringLiteral("elementId")].toString();
-    if (idStr.isEmpty())
-        return false;
-    bool ok = false;
-    outId = idStr.toULongLong(&ok);
-    return ok;
-}
 
 // ---------------------------------------------------------------------------
 // Widget matching helper (used by findElement in run_rpc_server)
@@ -424,7 +533,7 @@ void run_rpc_server(socket_t listen_fd,
         auto state = std::make_shared<SharedState>();
 
         uint64_t elementId = 0;
-        parseElementId(rpcParams, elementId);
+        qt_parse_element_id(rpcParams, elementId);
 
         // Extract method name without "qt." prefix for the operation switch
         QString opMethod = rpcMethod;
@@ -444,43 +553,63 @@ void run_rpc_server(socket_t listen_fd,
 
                 // ---- snapshot ----
                 if (opMethod == QStringLiteral("snapshot")) {
-                    QJsonArray elements;
-                    // QWidget top-level windows
-                    if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
-                        for (QWidget* w : app->topLevelWidgets()) {
-                            QJsonObject el;
-                            el["objectName"] = w->objectName();
-                            el["className"] = QString::fromLatin1(w->metaObject()->className());
-                            el["visible"] = w->isVisible();
-                            el["enabled"] = w->isEnabled();
-                            el["geometry"] = QStringLiteral("%1,%2 %3x%4").arg(w->x()).arg(w->y()).arg(w->width()).arg(w->height());
-                            el["windowTitle"] = w->windowTitle();
-                            elements.append(el);
-                        }
+                    const uint64_t rootId =
+                        static_cast<uint64_t>(rpcParams[QStringLiteral("rootId")].toDouble(0));
+                    const int maxDepth =
+                        rpcParams[QStringLiteral("maxDepth")].toInt(1);
+                    const int propDepth =
+                        rpcParams[QStringLiteral("propDepth")].toInt(1);
+
+                    // Look up root object from the current element map (before rebuild)
+                    QObject* rootObj = nullptr;
+                    if (rootId > 0) {
+                        rootObj = elementMap->get(rootId);
                     }
-#ifdef QT_COMMANDER_WITH_QML
-                    // QQuickWindow top-level windows
-                    for (QWindow* win : QGuiApplication::topLevelWindows()) {
-                        if (auto* qw = qobject_cast<QQuickWindow*>(win)) {
-                            QJsonObject el;
-                            el["objectName"] = win->objectName();
-                            el["className"] = QString::fromLatin1(win->metaObject()->className());
-                            el["visible"] = win->isVisible();
-                            el["geometry"] = QStringLiteral("%1,%2 %3x%4").arg(win->x()).arg(win->y()).arg(win->width()).arg(win->height());
-                            el["windowTitle"] = win->title();
-                            // Count QML children
-                            int childCount = 0;
-                            if (auto* ci = qw->contentItem()) {
-                                childCount = ci->childItems().size();
+
+                    QJsonArray nodes;
+                    locker.unlock();
+                    {
+                        QWriteLocker wlock(elementMap->rwLock());
+                        elementMap->clear();
+                        uint64_t nextId = 1;
+
+                        auto addRoot = [&](QObject* obj) {
+                            const uint64_t id = nextId++;
+                            elementMap->insert(id, obj);
+                            QJsonObject node;
+                            node["className"] = QString::fromLatin1(obj->metaObject()->className());
+                            node["objID"] = static_cast<qint64>(id);
+                            node["properties"] = collectProperties(obj, propDepth);
+                            node["children"] = collectChildren(obj, maxDepth, propDepth,
+                                                               elementMap.get(), nextId);
+                            nodes.append(node);
+                        };
+
+                        if (rootObj) {
+                            // rootId > 0: snapshot from a specific element
+                            addRoot(rootObj);
+                        } else {
+                            // rootId == 0: snapshot all top-level windows
+                            if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+                                for (QWidget* w : app->topLevelWidgets())
+                                    addRoot(w);
                             }
-                            el["qmlChildCount"] = childCount;
-                            elements.append(el);
-                        }
-                    }
+#ifdef QT_COMMANDER_WITH_QML
+                            for (QWindow* win : QGuiApplication::topLevelWindows()) {
+                                if (qobject_cast<QQuickWindow*>(win))
+                                    addRoot(win);
+                            }
 #endif
-                    result["elements"] = elements;
-                    result["count"] = elements.size();
-                    result["epoch"] = static_cast<qint64>(epoch);
+                        }
+
+                        elementMap->incrementEpoch();
+                    }
+                    locker.relock();
+                    result["rootId"] = static_cast<qint64>(rootId);
+                    result["maxDepth"] = maxDepth;
+                    result["propDepth"] = propDepth;
+                    result["nodes"] = nodes;
+                    result["epoch"] = static_cast<qint64>(elementMap->epoch());
                 }
                 // ---- findElement ----
                 else if (opMethod == QStringLiteral("findElement")) {
@@ -954,6 +1083,51 @@ void run_rpc_server(socket_t listen_fd,
                             QStringLiteral("touchRelease failed");
                     }
                 }
+                // ---- screenshot ----
+                else if (opMethod == QStringLiteral("screenshot")) {
+                    QObject* obj = elementMap->get(elementId);
+                    if (!obj && elementId == 0) {
+                        // element_id == 0 means "entire window": fall back to
+                        // the active (or first visible) top-level widget,
+                        // mirroring the snapshot rootId==0 path.
+                        if (auto* app =
+                                qobject_cast<QApplication*>(QCoreApplication::instance())) {
+                            QWidget* top = app->activeWindow();
+                            if (!top || !top->isVisible()) {
+                                const auto widgets = app->topLevelWidgets();
+                                for (QWidget* w : widgets) {
+                                    if (w->isVisible()) {
+                                        top = w;
+                                        break;
+                                    }
+                                }
+                            }
+                            obj = top;
+                        }
+                    }
+                    if (!obj) {
+                        result[QStringLiteral("ok")] = false;
+                        result[QStringLiteral("message")] =
+                            QStringLiteral("Element not found: id=%1")
+                                .arg(elementId);
+                    } else {
+                        const QString dir =
+                            rpcParams[QStringLiteral("dir")].toString();
+                        const int seq =
+                            rpcParams[QStringLiteral("seq")].toInt(0);
+                        const QString filePath =
+                            Screenshot::capture(obj, dir, seq);
+                        if (filePath.isEmpty()) {
+                            result[QStringLiteral("ok")] = false;
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("screenshot failed");
+                        } else {
+                            result[QStringLiteral("ok")] = true;
+                            result[QStringLiteral("path")] = filePath;
+                            result[QStringLiteral("seq")] = seq;
+                        }
+                    }
+                }
                 // ---- contextMenu ----
                 else if (opMethod == QStringLiteral("contextMenu")) {
                     QObject* obj = elementMap->get(elementId);
@@ -1367,7 +1541,7 @@ bool RpcServer::sendFrame(socket_t client, const std::string& data)
 RpcServer::DispatchArgs RpcServer::prepareDispatch(const QJsonObject& params)
 {
     DispatchArgs args;
-    parseElementId(params, args.elementId);
+    qt_parse_element_id(params, args.elementId);
     args.operationParams = params;
 
     // Capture the current epoch under the element map's read lock so that

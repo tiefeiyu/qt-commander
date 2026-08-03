@@ -72,6 +72,10 @@ cmake --build build/msvc
 ### On-demand build (via MCP)
 
 ```python
+# 1. Discover MSVC and Qt installations on this machine
+qt_detect_msvc_and_qt()
+
+# 2. Pick paths from the result and build
 qt_build(
     qt_env="C:/Qt/5.15.2/msvc2019_64/bin/qtenv2.bat",
     vcvars_path="C:/.../vcvars64.bat",
@@ -97,6 +101,7 @@ qt_build(
 | `qt_attach` | Inject library into a target process and open a session |
 | `qt_detach` | Disconnect from a session, optionally eject the library |
 | `qt_list_sessions` | List active sessions |
+| `qt_detect_msvc_and_qt` | Auto-detect MSVC and Qt installations available for building |
 | `qt_build` | Compile injector + library on demand |
 | `qt_snapshot` | Capture the full UI element tree |
 | `qt_find_element` | Find elements by type, text, or property query |
@@ -162,6 +167,7 @@ qt-commander/
 │   ├── rpc_client.py        Subprocess injector launcher
 │   ├── builder.py           On-demand MSVC build orchestrator
 │   ├── process_detector.py  Cross-platform Qt process discovery
+│   ├── environment_detector.py  MSVC/Qt build environment auto-detection
 │   ├── framing.py           4-byte BE length-prefix frame protocol
 │   └── errors.py            MCP error code registry
 │

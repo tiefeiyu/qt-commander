@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 from qt_commander.server import (
     _resolve_session,
+    qt_detect_msvc_and_qt,
     qt_list_processes,
     qt_list_sessions,
     qt_detach,
@@ -180,6 +181,8 @@ class TestQtAttachErrors:
         result = await srv.qt_attach(pid=1234)
         assert "error" in result
         assert "2001" in result
+        assert "qt_detect_msvc_and_qt" in result
+        assert "auto-pick" in result
 
     @pytest.mark.asyncio
     async def test_qt_attach_missing_artifacts(self, sm, monkeypatch):
@@ -286,18 +289,28 @@ class TestUiTools:
         from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("shot00000001", 6, Path("/tmp/f.dll"), workspace)
-        (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        shot_dir = sess.session_dir / "screenshots"
+        shot_dir.mkdir(parents=True, exist_ok=True)
         sess.connected = True
-        sess.snapshot_count = 0
         sess._rpc_lock = __import__('asyncio').Lock()
 
+        # The injected library saves the PNG into `dir` and returns its path.
+        fake_png = shot_dir / "000001_abcdef01.png"
+        png_bytes = b"\x89PNG\r\n\x1a\nfake"
+        fake_png.write_bytes(png_bytes)
+
         async def mock_send(m, p):
-            return {"data": "fake_png_data"}
+            return {"ok": True, "path": str(fake_png), "seq": p.get("seq", 1)}
         sess.send_rpc = mock_send
         sm._sessions[sess.id] = sess
         result = await srv.qt_screenshot("shot00000001")
         data = json.loads(result)
         assert "uri" in data
+        # The canonical file holds the raw PNG bytes read back from the target.
+        saved = shot_dir / "screenshot_00000001.png"
+        assert saved.read_bytes() == png_bytes
+        # The library's uuid-named file is tidied up.
+        assert not fake_png.exists()
 
     @pytest.mark.asyncio
     async def test_qt_mouse_click(self, sm, monkeypatch, workspace):
@@ -370,6 +383,30 @@ class TestToolErrorPaths:
 
 class TestBuildTool:
     @pytest.mark.asyncio
+    async def test_qt_detect_msvc_and_qt(self, monkeypatch):
+        from qt_commander import server as srv
+        monkeypatch.setattr(srv, "detect_vs_environments",
+                            lambda: [{"display_name": "VS 2022"}])
+        monkeypatch.setattr(srv, "detect_qt_environments",
+                            lambda: [{"version": "5.15.2"}])
+        result = await qt_detect_msvc_and_qt()
+        data = json.loads(result)
+        assert "vs_installations" in data
+        assert "qt_installations" in data
+        assert data["vs_installations"][0]["display_name"] == "VS 2022"
+        assert data["qt_installations"][0]["version"] == "5.15.2"
+
+    @pytest.mark.asyncio
+    async def test_qt_detect_msvc_and_qt_empty(self, monkeypatch):
+        from qt_commander import server as srv
+        monkeypatch.setattr(srv, "detect_vs_environments", lambda: [])
+        monkeypatch.setattr(srv, "detect_qt_environments", lambda: [])
+        result = await qt_detect_msvc_and_qt()
+        data = json.loads(result)
+        assert data["vs_installations"] == []
+        assert data["qt_installations"] == []
+
+    @pytest.mark.asyncio
     async def test_qt_build(self, monkeypatch):
         from qt_commander import server as srv
         async def mock_build(**kw):
@@ -387,9 +424,10 @@ class TestBuildTool:
             assert kw["build_type"] == "Debug"
             assert kw["qt_major"] == 6
             assert kw["generator"] == "Ninja"
+            assert kw["with_qml"] is False
             return {"injector_path": "/x", "library_path": "/y", "qt_version": "Qt6", "arch": "x86"}
         monkeypatch.setattr(srv, "run_build", mock_build)
-        result = await srv.qt_build("C:\\v.bat", "C:\\q.bat", vcvars_args="x86", build_type="Debug", qt_major=6, generator="Ninja")
+        result = await srv.qt_build("C:\\v.bat", "C:\\q.bat", vcvars_args="x86", build_type="Debug", qt_major=6, generator="Ninja", with_qml=False)
         data = json.loads(result)
         assert data["qt_version"] == "Qt6"
 
@@ -518,14 +556,12 @@ class TestServerBranchCoverage:
         import os
         monkeypatch.setattr(srv, "sessions", sm)
         monkeypatch.setattr(srv, "check_build_state", lambda: BuildState.BUILT)
-        lib_dir = sm.workspace / "library" / "build"
-        lib_dir.mkdir(parents=True)
+        bin_dir = sm.workspace / "bin"
+        bin_dir.mkdir(parents=True)
         lib_name = "libqt-commander.dll" if os.name == "nt" else "libqt-commander.so"
-        (lib_dir / lib_name).write_text("fake")
-        inj_dir = sm.workspace / "injector" / "build"
-        inj_dir.mkdir(parents=True)
+        (bin_dir / lib_name).write_text("fake")
         inj_name = "qt-injector.exe" if os.name == "nt" else "qt-injector"
-        (inj_dir / inj_name).write_text("fake")
+        (bin_dir / inj_name).write_text("fake")
         with patch.object(srv, "BUILD_DIR", sm.workspace):
             from qt_commander.errors import InjectionError
             async def fail(*a, **kw): raise InjectionError("test fail")
@@ -539,24 +575,35 @@ class TestServerBranchCoverage:
         from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("shot_e01", 88, Path("/f.dll"), workspace)
-        (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        shot_dir = sess.session_dir / "screenshots"
+        shot_dir.mkdir(parents=True, exist_ok=True)
         sess.connected = True; sess._rpc_lock = __import__('asyncio').Lock()
+        fake_png = shot_dir / "000001_x.png"
+        fake_png.write_bytes(b"\x89PNG\r\n\x1a\n")
         cp = {}
-        async def ms(m, p): cp.update(p); return {"data": "x"}
+        async def ms(m, p):
+            cp.update(p); return {"ok": True, "path": str(fake_png), "seq": 1}
         sess.send_rpc = ms
         sm._sessions[sess.id] = sess
         await srv.qt_screenshot("shot_e01", element_id=42)
         assert cp.get("element_id") == 42
+        # dir and seq are forwarded to the injected library
+        assert cp.get("dir") == str(shot_dir)
+        assert cp.get("seq") == 1
 
     @pytest.mark.asyncio
     async def test_qt_screenshot_default_no_element_id(self, sm, monkeypatch, workspace):
         from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)
         sess = Session("shot_d01", 89, Path("/g.dll"), workspace)
-        (sess.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        shot_dir = sess.session_dir / "screenshots"
+        shot_dir.mkdir(parents=True, exist_ok=True)
         sess.connected = True; sess._rpc_lock = __import__('asyncio').Lock()
+        fake_png = shot_dir / "000001_y.png"
+        fake_png.write_bytes(b"\x89PNG\r\n\x1a\n")
         cp = {}
-        async def ms(m, p): cp.update(p); return {"data": "x"}
+        async def ms(m, p):
+            cp.update(p); return {"ok": True, "path": str(fake_png), "seq": 1}
         sess.send_rpc = ms
         sm._sessions[sess.id] = sess
         await srv.qt_screenshot("shot_d01")

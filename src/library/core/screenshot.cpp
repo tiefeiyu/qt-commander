@@ -50,24 +50,25 @@ QString Screenshot::capture(QObject* target,
     // 1) QWidget
     // ----------------------------------------------------------------
     if (auto* w = qobject_cast<QWidget*>(target)) {
-        // Check for null paint engine (offscreen / not fully constructed).
+        // QWidget::grab() renders offscreen and works even when the widget
+        // has not been painted yet -- paintEngine() can legitimately be null
+        // for a visible top-level window that has not drawn its first frame.
+        // Only bail when the widget has no window at all: there is nothing
+        // to render then.
+        QWidget* grabTarget = w;
         if (!w->paintEngine()) {
-            // Try the window as fallback.
             QWidget* win = w->window();
-            if (win && win != w && win->paintEngine()) {
-                QPixmap pm = win->grab();
-                if (pm.isNull())
-                    return {};
-                return pm.save(filePath, "PNG") ? filePath : QString();
-            }
-            return {};
+            if (!win)
+                return {};
+            grabTarget = win;
         }
 
         // Zero-size check.
-        if (w->geometry().width() <= 0 || w->geometry().height() <= 0)
+        if (grabTarget->geometry().width() <= 0 ||
+            grabTarget->geometry().height() <= 0)
             return {};
 
-        QPixmap pm = w->grab();
+        QPixmap pm = grabTarget->grab();
         if (pm.isNull())
             return {};
 

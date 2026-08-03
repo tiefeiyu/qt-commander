@@ -70,6 +70,10 @@ cmake --build build/msvc
 ### 按需编译（通过 MCP 工具）
 
 ```python
+# 1. 先探测本机 MSVC 和 Qt 安装
+qt_detect_msvc_and_qt()
+
+# 2. 从返回结果中选择路径，执行编译
 qt_build(
     qt_env="C:/Qt/5.15.2/msvc2019_64/bin/qtenv2.bat",
     vcvars_path="C:/.../vcvars64.bat",
@@ -95,6 +99,7 @@ qt_build(
 | `qt_attach` | 注入库到目标进程并建立会话 |
 | `qt_detach` | 断开会话，可选卸载注入库 |
 | `qt_list_sessions` | 列出当前活跃会话 |
+| `qt_detect_msvc_and_qt` | 自动探测本机可用的 MSVC 和 Qt 安装 |
 | `qt_build` | 按需编译注入器和库 |
 | `qt_snapshot` | 捕获完整 UI 元素树 |
 | `qt_find_element` | 按类型、文本或属性查询查找元素 |
@@ -160,6 +165,7 @@ qt-commander/
 │   ├── rpc_client.py        子进程注入器启动器
 │   ├── builder.py           按需 MSVC 编译编排器
 │   ├── process_detector.py  跨平台 Qt 进程发现
+│   ├── environment_detector.py  MSVC/Qt 构建环境自动探测
 │   ├── framing.py           4 字节大端长度前缀帧协议
 │   └── errors.py            MCP 错误码注册表
 │

@@ -16,7 +16,8 @@ class BuildState(Enum):
     BUILT = "built"
 
 
-BUILD_DIR = Path(".qt-commander/build")
+BUILD_DIR = Path(".qt-commander")
+
 INJECTOR_EXE_NAME = "qt-injector.exe" if os.name == "nt" else "qt-injector"
 LIBRARY_NAME = "libqt-commander.dll" if os.name == "nt" else (
     "libqt-commander.dylib" if os.uname().sysname == "Darwin"
@@ -28,11 +29,12 @@ _build_state = BuildState.NOT_BUILT
 
 
 def detect_native_src() -> Path:
-    """Detect the native C++ source directory.
+    """Detect the project root (parent of the native C++ ``src/`` directory).
 
     Priority:
-    1. QT_COMMANDER_NATIVE_SRC env var
-    2. <package>/native/ (pip install location)
+    1. ``QT_COMMANDER_NATIVE_SRC`` env var — if set, treated as project root
+    2. ``<package>/native/`` (pip install location)
+    3. Current working directory (must contain ``src/``)
     """
     env_src = os.environ.get("QT_COMMANDER_NATIVE_SRC")
     if env_src:
@@ -44,12 +46,13 @@ def detect_native_src() -> Path:
     if pkg_src.exists():
         return pkg_src
 
-    cwd_src = Path.cwd() / "src"
-    if cwd_src.exists():
-        return cwd_src
+    cwd = Path.cwd()
+    if (cwd / "src").exists():
+        return cwd
 
     raise FileNotFoundError(
-        "Cannot find C++ source. Set QT_COMMANDER_NATIVE_SRC or ensure native/ is installed."
+        "Cannot find C++ source. Set QT_COMMANDER_NATIVE_SRC "
+        "or ensure src/ exists in the working directory."
     )
 
 
@@ -62,14 +65,24 @@ def _compute_source_hash(src_dir: Path) -> str:
     return hasher.hexdigest()
 
 
+def _out_dir(build_dir: Path | None = None) -> Path:
+    """The workspace root where cmake --install places artifacts (into bin/)."""
+    return build_dir or BUILD_DIR
+
+
 def check_build_state(build_dir: Path | None = None) -> BuildState:
-    """Check if injector and library are built and up-to-date."""
+    """Check if injector and library are built and up-to-date.
+
+    Looks for installed artifacts under ``<build_dir>/install/bin/``,
+    which is the final output of ``cmake --install``.
+    """
     global _build_state
     if build_dir is None:
         build_dir = BUILD_DIR
 
-    injector_exe = build_dir / "injector" / "build" / INJECTOR_EXE_NAME
-    library_file = build_dir / "library" / "build" / LIBRARY_NAME
+    idir = _out_dir(build_dir)
+    injector_exe = idir / "bin" / INJECTOR_EXE_NAME
+    library_file = idir / "bin" / LIBRARY_NAME
 
     if not injector_exe.exists() or injector_exe.stat().st_size == 0:
         _build_state = BuildState.NOT_BUILT
@@ -107,6 +120,23 @@ def _sanitize_path_input(value: str, name: str) -> str:
     return value
 
 
+def _find_build_script() -> Path:
+    """Find the Windows build batch script."""
+    # 1. next to the package
+    pkg_scripts = Path(__file__).resolve().parent.parent / "scripts"
+    bat = pkg_scripts / "build_windows.bat"
+    if bat.exists():
+        return bat
+    # 2. in the project root (detected from CWD)
+    cwd_bat = Path.cwd() / "scripts" / "build_windows.bat"
+    if cwd_bat.exists():
+        return cwd_bat
+    raise FileNotFoundError(
+        "Cannot find scripts/build_windows.bat. "
+        "Ensure the project is installed correctly."
+    )
+
+
 async def run_build(
     vcvars_path: str,
     qt_env: str,
@@ -114,9 +144,10 @@ async def run_build(
     build_type: str = "Release",
     qt_major: int = 5,
     generator: str = "",
+    with_qml: bool = True,
     build_dir: Path | None = None,
 ) -> dict:
-    """Build injector and library using CMake."""
+    """Build injector and library by calling the Windows build script."""
     global _build_state
     async with _build_lock:
         if _build_state == BuildState.BUILDING:
@@ -128,6 +159,7 @@ async def run_build(
             build_dir = BUILD_DIR
 
         native_src = detect_native_src()
+        build_script = _find_build_script()
 
         vcvars_path = _sanitize_path_input(vcvars_path, "vcvars_path")
         qt_env = _sanitize_path_input(qt_env, "qt_env")
@@ -136,21 +168,36 @@ async def run_build(
         generator = generator.strip()
 
         build_dir.mkdir(parents=True, exist_ok=True)
-        injector_build = build_dir / "injector" / "build"
-        library_build = build_dir / "library" / "build"
+        cmake_build_dir = build_dir / "build"
+        install_prefix = build_dir  # cmake installs to bin/ within the prefix
 
-        _run_cmake_build(
-            native_src / "src" / "injector",
-            injector_build, build_type, generator,
-            vcvars_path, vcvars_args, qt_env,
+        # Call the batch script: all absolute paths to avoid CWD issues
+        cmd = [
+            str(build_script.resolve()),
+            vcvars_path,
+            vcvars_args,
+            qt_env,
+            str(native_src.resolve()),
+            str(cmake_build_dir.resolve()),
+            str(install_prefix.resolve()),
+            build_type,
+            str(qt_major),
+            "ON" if with_qml else "OFF",
+        ]
+        if generator:
+            cmd.append(generator)
+
+        result = subprocess.run(
+            ["cmd.exe", "/c"] + cmd,
+            capture_output=True, text=True, timeout=600,
+            cwd=str(native_src.resolve()),
         )
 
-        _run_cmake_build(
-            native_src / "src" / "library",
-            library_build, build_type, generator,
-            vcvars_path, vcvars_args, qt_env,
-            extra_args=[f"-DQT_MAJOR_VERSION={qt_major}", "-DBUILD_SERVER=OFF"],
-        )
+        if result.returncode != 0:
+            raise QtCommanderError(
+                2001,
+                f"Build failed:\n{result.stderr[-500:] or result.stdout[-500:]}"
+            )
 
         manifest = {
             "source_hash": _compute_source_hash(native_src),
@@ -162,66 +209,11 @@ async def run_build(
         _build_state = BuildState.BUILT
 
         return {
-            "injector_path": str(injector_build / INJECTOR_EXE_NAME),
-            "library_path": str(library_build / LIBRARY_NAME),
+            "injector_path": str(install_prefix / "bin" / INJECTOR_EXE_NAME),
+            "library_path": str(install_prefix / "bin" / LIBRARY_NAME),
             "qt_version": f"Qt{qt_major}",
             "arch": "x64",
         }
     except Exception:
         _build_state = BuildState.NOT_BUILT
         raise
-
-
-def _run_cmake_build(
-    src_dir: Path,
-    build_dir: Path,
-    build_type: str,
-    generator: str,
-    vcvars_path: str,
-    vcvars_args: str,
-    qt_env: str,
-    extra_args: list[str] | None = None,
-) -> None:
-    """Run cmake configure + build for a single target."""
-    build_dir.mkdir(parents=True, exist_ok=True)
-
-    cmake_args = [
-        "cmake", "-S", str(src_dir), "-B", str(build_dir),
-        "-DCMAKE_BUILD_TYPE=" + build_type,
-    ]
-    if generator:
-        cmake_args.extend(["-G", generator])
-    if extra_args:
-        cmake_args.extend(extra_args)
-
-    build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type]
-
-    if os.name == "nt":
-        script = (
-            f'@echo off\r\n'
-            f'call "{vcvars_path}" {vcvars_args}\r\n'
-            f'call "{qt_env}"\r\n'
-            f'{" ".join(cmake_args)}\r\n'
-            f'{" ".join(build_cmd)}\r\n'
-        )
-        result = subprocess.run(
-            ["cmd.exe", "/c", script],
-            capture_output=True, text=True, timeout=600,
-        )
-    else:
-        script = (
-            f'source "{qt_env}" && '
-            f'{" ".join(cmake_args)} && '
-            f'{" ".join(build_cmd)}'
-        )
-        result = subprocess.run(
-            ["bash", "-c", script],
-            capture_output=True, text=True, timeout=600,
-        )
-
-    if result.returncode != 0:
-        raise QtCommanderError(
-            2001,
-            f"Build failed for {src_dir.name}:\n"
-            f"{result.stderr[-500:] or result.stdout[-500:]}"
-        )

@@ -123,6 +123,15 @@ bool EventInjector::contextMenu(QObject* /*target*/, double /*x*/, double /*y*/,
 // ============================================================================
 
 /* static */
-QString Screenshot::capture(QObject* /*target*/, const QString& /*screenshot_dir*/,
-                             int /*sequence*/)
-{ return QString(); }
+QString Screenshot::capture(QObject* target, const QString& screenshot_dir,
+                             int sequence)
+{
+    // The doScreenshot handler tests exercise the handler flow (element
+    // validation, seq/ok/error maps), not real rendering -- return a
+    // synthetic success path so capture is treated as succeeded.
+    if (!target)
+        return QString();
+    if (screenshot_dir.isEmpty())
+        return QStringLiteral("stub_%1.png").arg(sequence);
+    return screenshot_dir + QStringLiteral("/stub_%1.png").arg(sequence);
+}

@@ -3,12 +3,12 @@ cmake_minimum_required(VERSION 3.16)
 add_executable(qt-injector
     main.cpp
     injector_win.cpp
-    ${CMAKE_SOURCE_DIR}/src/common/socket_utils.cpp
+    ../common/socket_utils.cpp
 )
 
 target_include_directories(qt-injector PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/common
-    ${CMAKE_SOURCE_DIR}/src/library
+    ../common
+    ../library
 )
 
 target_compile_features(qt-injector PRIVATE cxx_std_17)
@@ -23,3 +23,5 @@ endif()
 set_target_properties(qt-injector PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+
+install(TARGETS qt-injector RUNTIME DESTINATION bin)

@@ -24,3 +24,36 @@ endif()
 set_target_properties(qt-widget-test PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
+
+install(TARGETS qt-widget-test RUNTIME DESTINATION bin)
+
+# Deploy the Qt runtime DLLs next to the exe so the app runs standalone
+# right after `cmake --install`. Platform deploy tools all share the same
+# CLI shape (windeployqt / macdeployqt / linuxdeployqt); the per-platform
+# integration is reworked when multi-platform deploy is added.
+if(WIN32)
+    if(TARGET Qt${QT_MAJOR_VERSION}::qmake)
+        get_target_property(QT_QMAKE Qt${QT_MAJOR_VERSION}::qmake IMPORTED_LOCATION)
+    endif()
+    if(NOT QT_QMAKE)
+        set(QT_QMAKE "${QT_QMAKE_EXECUTABLE}")
+    endif()
+    if(QT_QMAKE)
+        get_filename_component(QT_BIN_DIR "${QT_QMAKE}" DIRECTORY)
+        set(WINDEPLOYQT_EXE "${QT_BIN_DIR}/windeployqt.exe")
+    endif()
+    if(WINDEPLOYQT_EXE AND EXISTS "${WINDEPLOYQT_EXE}")
+        install(CODE "
+            execute_process(COMMAND \"${WINDEPLOYQT_EXE}\"
+                --release --no-translations --no-compiler-runtime
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/qt-widget-test.exe\"
+                RESULT_VARIABLE _wdq_result)
+            if(NOT _wdq_result EQUAL 0)
+                message(WARNING \"windeployqt failed (exit \${_wdq_result})\")
+            endif()
+        ")
+    else()
+        message(WARNING
+            "windeployqt not found; Qt DLLs must be deployed manually")
+    endif()
+endif()
