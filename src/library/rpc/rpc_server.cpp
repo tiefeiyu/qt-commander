@@ -14,6 +14,7 @@
 #include "../rpc/parse_utils.h"
 #include "api.h"
 #include "core/element_map.h"
+#include "selector/selector.h"
 #include "../core/event_injector.h"
 #include "../core/screenshot.h"
 #ifdef QT_COMMANDER_WITH_QML
@@ -339,51 +340,6 @@ bool sendJsonError(socket_t fd, int id, int code, const QString& msg) {
 } // namespace rpc_io
 
 // ---------------------------------------------------------------------------
-// Widget matching helper (used by findElement in run_rpc_server)
-// ---------------------------------------------------------------------------
-QJsonObject matchWidget(QWidget* w, const QJsonObject& query) {
-    // Very simple matching: check objectName, className, windowTitle, etc.
-    // Production code uses ElementSelector.
-    for (auto it = query.begin(); it != query.end(); ++it) {
-        const QString key = it.key();
-        const QJsonValue val = it.value();
-
-        if (key == QStringLiteral("objectName")) {
-            if (w->objectName() != val.toString())
-                return {};
-        } else if (key == QStringLiteral("className") ||
-                   key == QStringLiteral("type")) {
-            const QString cn =
-                QString::fromLatin1(w->metaObject()->className());
-            if (cn != val.toString())
-                return {};
-        } else if (key == QStringLiteral("windowTitle")) {
-            if (w->windowTitle() != val.toString())
-                return {};
-        } else if (key == QStringLiteral("visible")) {
-            if (w->isVisible() != val.toBool())
-                return {};
-        } else if (key == QStringLiteral("enabled")) {
-            if (w->isEnabled() != val.toBool())
-                return {};
-        }
-    }
-
-    QJsonObject result;
-    result[QStringLiteral("objectName")] = w->objectName();
-    result[QStringLiteral("className")] =
-        QString::fromLatin1(w->metaObject()->className());
-    result[QStringLiteral("windowTitle")] = w->windowTitle();
-    result[QStringLiteral("visible")] = w->isVisible();
-    result[QStringLiteral("enabled")] = w->isEnabled();
-    result[QStringLiteral("geometry")] =
-        QStringLiteral("%1,%2 %3x%4")
-            .arg(w->x()).arg(w->y())
-            .arg(w->width()).arg(w->height());
-    return result;
-}
-
-// ---------------------------------------------------------------------------
 // QJsonArray of strings -> QStringList
 // ---------------------------------------------------------------------------
 QStringList toStringList(const QJsonArray& arr) {
@@ -616,12 +572,61 @@ void run_rpc_server(socket_t listen_fd,
                     const QJsonObject query =
                         rpcParams[QStringLiteral("query")].toObject();
                     QJsonArray matches;
-                    const auto topLevels =
-                        QApplication::topLevelWidgets();
-                    for (QWidget* w : topLevels) {
-                        QJsonObject match = matchWidget(w, query);
-                        if (!match.isEmpty())
-                            matches.append(match);
+                    // ElementSelector walks the whole widget tree (not just
+                    // top-level windows) and matches the documented query
+                    // fields (type, text, object_name, window_title, ...).
+                    //
+                    // Rebuild the element map first (same id allocation as
+                    // a snapshot) so every returned id is usable with the
+                    // other operations even if the caller's previous
+                    // snapshot did not cover the matched element.
+                    // The dispatch holds the read lock; release it before
+                    // taking the write lock (read->write upgrade deadlocks).
+                    locker.unlock();
+                    {
+                        QWriteLocker wlock(elementMap->rwLock());
+                        elementMap->clear();
+                        uint64_t nextId = 1;
+                        auto addRoot = [&](QObject* obj) {
+                            elementMap->insert(nextId++, obj);
+                            collectChildren(obj, -1, 0,
+                                            elementMap.get(), nextId);
+                        };
+                        if (auto* app =
+                                qobject_cast<QApplication*>(QCoreApplication::instance())) {
+                            for (QWidget* w : app->topLevelWidgets())
+                                addRoot(w);
+                        }
+#ifdef QT_COMMANDER_WITH_QML
+                        for (QWindow* win : QGuiApplication::topLevelWindows()) {
+                            if (qobject_cast<QQuickWindow*>(win))
+                                addRoot(win);
+                        }
+#endif
+                        elementMap->incrementEpoch();
+                    }
+                    locker.relock();
+                    const auto results =
+                        ElementSelector::find(query, elementMap->snapshot());
+                    for (const SelectorResult& r : results) {
+                        QJsonObject m;
+                        m[QStringLiteral("id")] = static_cast<qint64>(r.id);
+                        m[QStringLiteral("objectName")] =
+                            r.object->objectName();
+                        m[QStringLiteral("className")] =
+                            QString::fromLatin1(
+                                r.object->metaObject()->className());
+                        if (QWidget* w = qobject_cast<QWidget*>(r.object)) {
+                            m[QStringLiteral("windowTitle")] =
+                                w->windowTitle();
+                            m[QStringLiteral("visible")] = w->isVisible();
+                            m[QStringLiteral("enabled")] = w->isEnabled();
+                            m[QStringLiteral("geometry")] =
+                                QStringLiteral("%1,%2 %3x%4")
+                                    .arg(w->x()).arg(w->y())
+                                    .arg(w->width()).arg(w->height());
+                        }
+                        matches.append(m);
                     }
                     if (matches.isEmpty()) {
                         result[QStringLiteral("ok")] = false;

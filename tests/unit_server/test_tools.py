@@ -320,13 +320,20 @@ class TestUiTools:
         sess.connected = True
         sess._rpc_lock = __import__('asyncio').Lock()
 
+        cp = {}
         async def mock_send(m, p):
+            cp["method"] = m
+            cp.update(p)
             return {"ok": True}
         sess.send_rpc = mock_send
         sm._sessions[sess.id] = sess
         result = await srv.qt_mouse_click("click0000001", 42, button="right")
         data = json.loads(result)
         assert data["ok"] is True
+        # Must match the library's dispatch branch name, not "qt.mouseClick".
+        assert cp["method"] == "qt.click"
+        assert cp["element_id"] == 42
+        assert cp["button"] == "right"
 
     @pytest.mark.asyncio
     async def test_qt_keyboard_input(self, sm, monkeypatch, workspace):

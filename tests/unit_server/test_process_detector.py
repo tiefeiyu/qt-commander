@@ -31,6 +31,55 @@ class TestListQtProcesses:
 
 
 # ============================================================================
+# _detect_arch  (PE header parsing)
+# ============================================================================
+
+def _write_pe_exe(path, machine):
+    """Write a minimal fake PE file with the given IMAGE_FILE_HEADER.Machine."""
+    dos = bytearray(b"MZ" + b"\0" * 62)
+    pe_off = 0x40
+    dos[0x3C:0x40] = (pe_off).to_bytes(4, "little")
+    nt = bytearray(b"PE\0\0")
+    nt += (machine & 0xFFFF).to_bytes(2, "little")  # Machine
+    nt += b"\0" * 18
+    path.write_bytes(bytes(dos) + bytes(nt))
+
+
+class TestDetectArch:
+    def test_x64(self, tmp_path):
+        exe = tmp_path / "app64.exe"
+        _write_pe_exe(exe, 0x8664)
+        from qt_commander.process_detector import _detect_arch
+        assert _detect_arch(str(exe)) == ("x64", 64)
+
+    def test_x86(self, tmp_path):
+        exe = tmp_path / "app32.exe"
+        _write_pe_exe(exe, 0x14C)
+        from qt_commander.process_detector import _detect_arch
+        assert _detect_arch(str(exe)) == ("x86", 32)
+
+    def test_arm64(self, tmp_path):
+        exe = tmp_path / "apparm.exe"
+        _write_pe_exe(exe, 0xAA64)
+        from qt_commander.process_detector import _detect_arch
+        assert _detect_arch(str(exe)) == ("arm64", 64)
+
+    def test_not_a_pe(self, tmp_path):
+        exe = tmp_path / "notpe.exe"
+        exe.write_text("this is not an exe")
+        from qt_commander.process_detector import _detect_arch
+        assert _detect_arch(str(exe)) == ("", 0)
+
+    def test_missing_file(self):
+        from qt_commander.process_detector import _detect_arch
+        assert _detect_arch(r"C:\no\such\file.exe") == ("", 0)
+
+    def test_empty_path(self):
+        from qt_commander.process_detector import _detect_arch
+        assert _detect_arch("") == ("", 0)
+
+
+# ============================================================================
 # Deterministic mock tests
 # ============================================================================
 

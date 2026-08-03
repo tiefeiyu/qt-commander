@@ -122,6 +122,11 @@ bool EventInjector::contextMenu(QObject* /*target*/, double /*x*/, double /*y*/,
 // Screenshot stubs
 // ============================================================================
 
+/// Last directory passed to Screenshot::capture by the handler under test.
+/// Lets tests assert that an empty dir is resolved to a usable default
+/// (see resolvePath in handler.cpp) instead of being forwarded as "".
+QString qtc_test_last_capture_dir;
+
 /* static */
 QString Screenshot::capture(QObject* target, const QString& screenshot_dir,
                              int sequence)
@@ -129,6 +134,7 @@ QString Screenshot::capture(QObject* target, const QString& screenshot_dir,
     // The doScreenshot handler tests exercise the handler flow (element
     // validation, seq/ok/error maps), not real rendering -- return a
     // synthetic success path so capture is treated as succeeded.
+    qtc_test_last_capture_dir = screenshot_dir;
     if (!target)
         return QString();
     if (screenshot_dir.isEmpty())

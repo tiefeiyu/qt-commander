@@ -200,7 +200,13 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
 
 @mcp.tool()
 async def qt_find_element(session_id: str, query: dict) -> str:
-    """Find UI elements matching a query in a session."""
+    """Find UI elements matching a query in a session.
+
+    Supported query fields: type, type_inherits, text, text_contains,
+    object_name, window_title, window_title_contains, properties,
+    ancestor_id, window_id.  The element map is refreshed (like a
+    snapshot) before matching, so returned ids are always usable.
+    """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.findElement", {"query": query})
     return json.dumps(result, indent=2)

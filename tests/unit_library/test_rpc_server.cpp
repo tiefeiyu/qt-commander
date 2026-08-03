@@ -157,6 +157,35 @@ static void test_do_screenshot_visible_widget()
     PASS();
 }
 
+// Defined in handler_test_stubs.cpp: last dir passed to Screenshot::capture.
+extern QString qtc_test_last_capture_dir;
+
+static void test_do_screenshot_empty_dir_resolved()
+{
+    TEST("doScreenshot resolves an empty dir to a usable default");
+    Handler handler(nullptr);
+
+    ElementMap map;
+    QWidget widget;
+    widget.resize(400, 300);
+    widget.setVisible(true);
+    map.insert(1, &widget);
+    map.incrementEpoch();
+    handler.setElementMap(&map);
+
+    qtc_test_last_capture_dir.clear();
+    QVariant result = handler.doScreenshot(1, QString(), 6, nullptr, 1);
+    QVariantMap m = result.toMap();
+    CHECK(m[QStringLiteral("ok")].toBool() == true, "should succeed");
+    // resolvePath("", "") must not forward "" (that wrote to the drive
+    // root); it falls back to the current directory.
+    CHECK(!qtc_test_last_capture_dir.isEmpty(),
+          "capture dir must not be empty");
+
+    handler.setElementMap(nullptr);
+    PASS();
+}
+
 // ============================================================================
 // main
 // ============================================================================
@@ -182,6 +211,7 @@ int main(int argc, char* argv[])
     // screenshot handler tests
     test_do_screenshot_not_found();
     test_do_screenshot_visible_widget();
+    test_do_screenshot_empty_dir_resolved();
 
     std::cout << "\n" << passed << " passed, " << failed << " failed\n";
     return failed > 0 ? 1 : 0;
