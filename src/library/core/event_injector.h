@@ -34,7 +34,8 @@ public:
                          const QStringList& modifiers, const QString& text);
     static bool keyRelease(QObject* target, const QString& key,
                            const QStringList& modifiers, const QString& text);
-    static bool typeText(QObject* target, const QString& text, int intervalMs);
+    static bool typeText(QObject* target, const QString& text, int intervalMs,
+                         const QStringList& modifiers = QStringList());
     static bool keyCombo(QObject* target, const QString& keys);
 
     // Touch

@@ -636,10 +636,13 @@ bool EventInjector::keyRelease(QObject* target,
 
 bool EventInjector::typeText(QObject* target,
                               const QString& text,
-                              int intervalMs)
+                              int intervalMs,
+                              const QStringList& modifiers)
 {
     if (text.isEmpty())
         return true;
+
+    const Qt::KeyboardModifiers mods = parseModifiers(modifiers);
 
     // For typeText we use synchronous dispatch to respect the interval.
     // Determine the target type.
@@ -663,11 +666,11 @@ bool EventInjector::typeText(QObject* target,
 
         auto* pressEvent = new QKeyEvent(QEvent::KeyPress,
                                           qtKey,
-                                          Qt::NoModifier,
+                                          mods,
                                           chStr);
         auto* releaseEvent = new QKeyEvent(QEvent::KeyRelease,
                                             qtKey,
-                                            Qt::NoModifier,
+                                            mods,
                                             chStr);
 
         if (widget) {

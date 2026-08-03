@@ -84,7 +84,8 @@ bool EventInjector::keyRelease(QObject* /*target*/, const QString& /*key*/,
 { return true; }
 
 /* static */
-bool EventInjector::typeText(QObject* /*target*/, const QString& /*text*/, int /*intervalMs*/)
+bool EventInjector::typeText(QObject* /*target*/, const QString& /*text*/,
+                             int /*intervalMs*/, const QStringList& /*modifiers*/)
 { return true; }
 
 /* static */

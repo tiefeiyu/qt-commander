@@ -167,7 +167,8 @@ static QJsonObject collectProperties(QObject* obj, int propDepth) {
 /// Recursively collect children into a JSON array, limited by depth.
 /// Negative depth values mean "unlimited".
 static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
-                                   ElementMap* elementMap, uint64_t& nextId) {
+                                  ElementMap* elementMap, uint64_t& nextId,
+                                  bool includeHidden) {
     QJsonArray arr;
     if (maxDepth == 0)
         return arr;
@@ -192,6 +193,15 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
 #endif
 
     for (QObject* child : childList) {
+        // Skip widgets the user cannot see (isVisible() covers the whole
+        // ancestor chain; hidden tab pages report false here too).
+        if (!includeHidden) {
+            if (QWidget* cw = qobject_cast<QWidget*>(child)) {
+                if (!cw->isVisible())
+                    continue;
+            }
+        }
+
         const uint64_t id = nextId++;
         elementMap->insert(id, child);
 
@@ -200,7 +210,7 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
         node["objID"] = static_cast<qint64>(id);
         node["properties"] = collectProperties(child, propDepth);
         node["children"] = collectChildren(child, childDepth, propDepth,
-                                           elementMap, nextId);
+                                           elementMap, nextId, includeHidden);
         arr.append(node);
     }
     return arr;
@@ -515,6 +525,8 @@ void run_rpc_server(socket_t listen_fd,
                         rpcParams[QStringLiteral("maxDepth")].toInt(1);
                     const int propDepth =
                         rpcParams[QStringLiteral("propDepth")].toInt(1);
+                    const bool includeHidden =
+                        rpcParams[QStringLiteral("include_hidden")].toBool(true);
 
                     // Look up root object from the current element map (before rebuild)
                     QObject* rootObj = nullptr;
@@ -536,8 +548,9 @@ void run_rpc_server(socket_t listen_fd,
                             node["className"] = QString::fromLatin1(obj->metaObject()->className());
                             node["objID"] = static_cast<qint64>(id);
                             node["properties"] = collectProperties(obj, propDepth);
-                            node["children"] = collectChildren(obj, maxDepth, propDepth,
-                                                               elementMap.get(), nextId);
+                            node["children"] = collectChildren(
+                                obj, maxDepth, propDepth,
+                                elementMap.get(), nextId, includeHidden);
                             nodes.append(node);
                         };
 
@@ -590,7 +603,7 @@ void run_rpc_server(socket_t listen_fd,
                         auto addRoot = [&](QObject* obj) {
                             elementMap->insert(nextId++, obj);
                             collectChildren(obj, -1, 0,
-                                            elementMap.get(), nextId);
+                                            elementMap.get(), nextId, true);
                         };
                         if (auto* app =
                                 qobject_cast<QApplication*>(QCoreApplication::instance())) {
@@ -1011,10 +1024,15 @@ void run_rpc_server(socket_t listen_fd,
                             rpcParams[QStringLiteral("text")].toString();
                         const int intervalMs =
                             rpcParams[QStringLiteral("intervalMs")].toInt(10);
+                        QStringList modifiers;
+                        const QJsonArray modArr =
+                            rpcParams[QStringLiteral("modifiers")].toArray();
+                        for (const QJsonValue& v : modArr)
+                            modifiers.append(v.toString());
 
                         result[QStringLiteral("ok")] =
                             EventInjector::typeText(
-                                obj, text, intervalMs);
+                                obj, text, intervalMs, modifiers);
                         if (!result[QStringLiteral("ok")].toBool()) {
                             result[QStringLiteral("message")] =
                                 QStringLiteral("typeText failed");
