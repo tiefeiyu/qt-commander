@@ -60,7 +60,7 @@ python -m qt_commander
 | `qt_list_sessions` | 列出当前活跃会话 |
 | `qt_detect_msvc_and_qt` | 自动探测本机可用的 MSVC 和 Qt 安装 |
 | `qt_build` | 按需编译注入器和库 |
-| `qt_snapshot` | 捕获完整 UI 元素树 |
+| `qt_snapshot` | 捕获 UI 元素树 — `detail` 选择属性档位：`core`（几何/可见性/文本，无属性）、`extended`（常用交互状态）、`full`（全部 Q_PROPERTY） |
 | `qt_find_element` | 按类型、文本或属性查询查找元素 |
 | `qt_get_property` | 读取 QObject 属性 |
 | `qt_set_property` | 写入 QObject 属性 |
@@ -97,13 +97,18 @@ ctest --test-dir build/msvc --output-on-failure
 ```
 
 `verify_preload`（部署级 E2E）会自动检测部署的 `libqt-commander.dll`
-所属的 Qt 主版本并验证对应 DLL 集合，同一脚本同时适用于 Qt5 与 Qt6
+所属的 Qt 主版本并验证对应 DLL 集合——连 windeployqt 也会跟随部署的
+Qt 主版本——因此无论从哪个构建树调用，同一脚本都能验证 Qt5 与 Qt6
 部署。
 
-`ctest` 运行 20 个套件：14 个注入器 C++ 套件（含对 widget 测试应用的
-真实注入 E2E）、4 个库 C++ 套件、完整 pytest 套件（`python_unit_tests`），
-以及 E2E 预加载验证（`verify_preload`，标记为 `e2e`，需要 `.qt-commander/bin`
-中的 `qt_build` 产物）。
+`ctest` 运行 19 个套件：14 个注入器 C++ 套件（含对 widget 测试应用的
+3 个真实注入 E2E 套件）、3 个库 C++ 套件、完整 pytest 套件
+（`python_unit_tests`），以及 E2E 预加载验证（`verify_preload`，标记为
+`e2e`，需要 `.qt-commander/bin` 中的 `qt_build` 产物）。
+
+E2E 套件会自动把工作目录锚定到自身所在的构建树
+（`test_util.h::chdir_to_exe_dir`），因此从仓库根目录直接运行与通过
+`ctest` 运行的结果完全一致。
 
 常用子集：
 
@@ -117,10 +122,10 @@ ctest --test-dir build/msvc -R "test_selector"     # 单个套件
 
 | 套件 | 位置 | 语言 | 测试数 | 依赖 |
 |------|------|------|--------|------|
-| 服务端单元 | `tests/unit_server/` | Python | 245 | Python 3.10+ |
-| 注入器单元 | `tests/unit_injector/` | C++ | 276 | MSVC |
-| 库单元 | `tests/unit_library/` | C++ | 55 | MSVC + Qt |
-| 注入 E2E | `tests/unit_injector/test_e2e*.cpp` | C++ | 16 | MSVC + Qt + 测试应用 |
+| 服务端单元 | `tests/unit_server/` | Python | 254 | Python 3.10+ |
+| 注入器单元 | `tests/unit_injector/` | C++ | 326 | MSVC |
+| 库单元 | `tests/unit_library/` | C++ | 43 | MSVC + Qt |
+| 注入 E2E | `tests/unit_injector/test_e2e*.cpp` | C++ | 48 | MSVC + Qt + 测试应用 |
 | 预加载 E2E | `tests/verify_preload.py` | Python | 3 个场景 | qt_build 产物 |
 
 ## 项目结构
@@ -128,7 +133,7 @@ ctest --test-dir build/msvc -R "test_selector"     # 单个套件
 ```
 qt-commander/
 ├── qt_commander/            Python MCP 服务器
-│   ├── server.py            FastMCP 应用，16 个工具 + 2 个资源
+│   ├── server.py            FastMCP 应用，21 个工具 + 2 个资源
 │   ├── session.py           会话/会话管理器，带 RPC 锁
 │   ├── rpc_client.py        子进程注入器启动器
 │   ├── builder.py           按需 MSVC 编译编排器
@@ -152,15 +157,15 @@ qt-commander/
 │   └── library/             注入 DLL
 │       ├── entry_win.cpp    DllMain / Windows 入口
 │       ├── api.h            InitParams 握手结构体（1024 字节）
+│       ├── compat_qt.h      Qt5/Qt6 兼容宏
 │       ├── core/            UI 扫描器、事件注入器、截图、元素映射
-│       ├── protocol/        JSON-RPC 处理器
-│       ├── rpc/             TCP RPC 服务器
+│       ├── rpc/             TCP RPC 服务器（JSON-RPC 处理器）
 │       └── selector/        元素查询引擎
 │
 ├── tests/
-│   ├── unit_server/         Python 单元测试（245 个）
-│   ├── unit_injector/       C++ 单元 + E2E 测试（276 个）
-│   ├── unit_library/        C++ 库组件测试（55 个）
+│   ├── unit_server/         Python 单元测试（254 个）
+│   ├── unit_injector/       C++ 单元 + E2E 测试（326 个）
+│   ├── unit_library/        C++ 库组件测试（43 个）
 │   ├── verify_preload.py    E2E：依赖预加载场景 A/B/C
 │   └── test-apps/           最小化 Qt 测试应用程序
 │

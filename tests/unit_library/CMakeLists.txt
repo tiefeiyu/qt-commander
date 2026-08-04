@@ -24,7 +24,7 @@ function(qtc_add_test NAME TARGET)
         TIMEOUT 300)
 endfunction()
 
-# --- ElementMap test (12 tests) ---
+# --- ElementMap test (12 cases) ---
 add_executable(test_element_map
     test_element_map.cpp
     ${CMAKE_SOURCE_DIR}/src/library/core/element_map.cpp
@@ -34,7 +34,7 @@ target_link_libraries(test_element_map PRIVATE Qt${QT_MAJOR_VERSION}::Core)
 set_target_properties(test_element_map PROPERTIES AUTOMOC ON)
 qtc_add_test(test_element_map test_element_map)
 
-# --- Selector test (12 tests) ---
+# --- Selector test (24 cases, incl. real click/drag via QPA) ---
 add_executable(test_selector
     test_selector.cpp
     ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
@@ -56,7 +56,7 @@ endif()
 set_target_properties(test_selector PROPERTIES AUTOMOC ON)
 qtc_add_test(test_selector test_selector)
 
-# --- parse_utils test (replaces the former test_rpc_server) ---
+# --- parse_utils test (7 cases; replaces the former test_rpc_server) ---
 add_executable(test_parse_utils
     test_parse_utils.cpp
 )

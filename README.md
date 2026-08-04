@@ -63,7 +63,7 @@ python -m qt_commander
 | `qt_list_sessions` | List active sessions |
 | `qt_detect_msvc_and_qt` | Auto-detect MSVC and Qt installations available for building |
 | `qt_build` | Compile injector + library on demand |
-| `qt_snapshot` | Capture the full UI element tree |
+| `qt_snapshot` | Capture the UI element tree — `detail` selects the property tier: `core` (geometry/visibility/text, no properties), `extended` (common interaction state), `full` (every Q_PROPERTY) |
 | `qt_find_element` | Find elements by type, text, or property query |
 | `qt_get_property` | Read a QObject property |
 | `qt_set_property` | Write a QObject property |
@@ -100,14 +100,19 @@ ctest --test-dir build/msvc --output-on-failure
 ```
 
 `verify_preload` (E2E deployment checks) auto-detects the Qt major of the
-deployed `libqt-commander.dll` and verifies the matching DLL set, so the
-same script validates both Qt5 and Qt6 deployments.
+deployed `libqt-commander.dll` and verifies the matching DLL set — even
+windeployqt follows the deployment's Qt major — so the same script
+validates both Qt5 and Qt6 deployments from either build tree.
 
-`ctest` runs 20 suites: 14 injector C++ suites (including real E2E
-injection against the widget test app), 4 library C++ suites, the full
-pytest suite (`python_unit_tests`), and the E2E preload verification
+`ctest` runs 19 suites: 14 injector C++ suites (including three real E2E
+injection suites against the widget test app), 3 library C++ suites, the
+full pytest suite (`python_unit_tests`), and the E2E preload verification
 (`verify_preload`, labeled `e2e`, which needs the `qt_build` artifacts in
 `.qt-commander/bin`).
+
+The E2E suites auto-anchor their working directory to their own build
+tree (`test_util.h::chdir_to_exe_dir`), so they produce identical results
+when launched directly from the repo root or through `ctest`.
 
 Quick subsets:
 
@@ -121,10 +126,10 @@ ctest --test-dir build/msvc -R "test_selector"     # one suite
 
 | Suite | Location | Language | Tests | Requires |
 |-------|----------|----------|-------|----------|
-| Server unit | `tests/unit_server/` | Python | 245 | Python 3.10+ |
-| Injector unit | `tests/unit_injector/` | C++ | 276 | MSVC |
-| Library unit | `tests/unit_library/` | C++ | 55 | MSVC + Qt |
-| E2E injection | `tests/unit_injector/test_e2e*.cpp` | C++ | 16 | MSVC + Qt + test app |
+| Server unit | `tests/unit_server/` | Python | 254 | Python 3.10+ |
+| Injector unit | `tests/unit_injector/` | C++ | 326 | MSVC |
+| Library unit | `tests/unit_library/` | C++ | 43 | MSVC + Qt |
+| E2E injection | `tests/unit_injector/test_e2e*.cpp` | C++ | 48 | MSVC + Qt + test app |
 | E2E preload | `tests/verify_preload.py` | Python | 3 scenarios | qt_build artifacts |
 
 ## Project Structure
@@ -132,7 +137,7 @@ ctest --test-dir build/msvc -R "test_selector"     # one suite
 ```
 qt-commander/
 ├── qt_commander/              Python MCP server
-│   ├── server.py            FastMCP app, 16 tools + 2 resources
+│   ├── server.py            FastMCP app, 21 tools + 2 resources
 │   ├── session.py           Session/SessionManager with RPC lock
 │   ├── rpc_client.py        Subprocess injector launcher
 │   ├── builder.py           On-demand MSVC build orchestrator
@@ -156,15 +161,15 @@ qt-commander/
 │   └── library/             Injected DLL
 │       ├── entry_win.cpp    DllMain / Windows entry
 │       ├── api.h            InitParams handshake layout (1024 bytes)
+│       ├── compat_qt.h      Qt5/Qt6 compatibility macros
 │       ├── core/            UI scanner, event injector, screenshot, element map
-│       ├── protocol/        JSON-RPC handler
-│       ├── rpc/             TCP RPC server
+│       ├── rpc/             TCP RPC server (JSON-RPC handler)
 │       └── selector/        Element query engine
 │
 ├── tests/
-│   ├── unit_server/         Python unit tests (245)
-│   ├── unit_injector/       C++ unit + E2E tests (276)
-│   ├── unit_library/        C++ library component tests (55)
+│   ├── unit_server/         Python unit tests (254)
+│   ├── unit_injector/       C++ unit + E2E tests (326)
+│   ├── unit_library/        C++ library component tests (43)
 │   ├── verify_preload.py    E2E: dependency preload scenarios A/B/C
 │   └── test-apps/           Minimal Qt test applications
 │
