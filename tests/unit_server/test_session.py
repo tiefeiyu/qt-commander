@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 from qt_commander.session import Session, SessionManager
-from qt_commander.errors import SessionExistsError, SessionNotFoundError, AuthFailedError, RpcTimeoutError
+from qt_commander.errors import (
+    SessionExistsError,
+    SessionNotFoundError,
+    AuthFailedError,
+    RpcTimeoutError,
+    RpcError,
+)
 
 
 @pytest.fixture
@@ -188,8 +194,12 @@ class TestSessionSendRpc:
         sess._frame_writer = FrameWriter(writer)
         sess._frame_reader = FrameReader(reader)
 
-        with pytest.raises(RpcTimeoutError, match="element destroyed"):
+        # A JSON-RPC error response is NOT a timeout: it surfaces as
+        # RpcError carrying the library's code + message.
+        with pytest.raises(RpcError) as excinfo:
             await sess.send_rpc("qt.snapshot", {})
+        assert excinfo.value.code == -32000
+        assert "element destroyed" in excinfo.value.message
 
     @pytest.mark.asyncio
     async def test_send_rpc_timeout(self, workspace):

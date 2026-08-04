@@ -769,7 +769,9 @@ void run_rpc_server(socket_t listen_fd,
     const QString expectedToken = QString::fromStdString(token);
 
     if (clientToken != expectedToken) {
-        rpc_io::sendJsonError(client_fd, authId, 2001,
+        // 2009 = AuthFailedError on the Python side (2001 there means
+        // BuildRequiredError -- the codes must not collide).
+        rpc_io::sendJsonError(client_fd, authId, 2009,
                       QStringLiteral("Authentication failed: invalid token"));
         tcp_close(client_fd);
         return;
@@ -919,6 +921,39 @@ void run_rpc_server(socket_t listen_fd,
                     // a snapshot) so every returned id is usable with the
                     // other operations even if the caller's previous
                     // snapshot did not cover the matched element.
+                    //
+                    // Prune the rebuild with the query's own constraints:
+                    // depth narrows the traversal, ancestor_id/window_id
+                    // restrict it to that subtree (the match set of such a
+                    // query is a subset of that subtree, so no result is
+                    // lost).  Unconstrained queries keep the old full-tree
+                    // rebuild.
+                    const QString depthStr =
+                        query.value(QStringLiteral("depth")).toString();
+                    int rebuildDepth = -1;  // unlimited
+                    if (depthStr == QLatin1String("exact"))
+                        rebuildDepth = 1;
+                    else if (depthStr == QLatin1String("shallow"))
+                        rebuildDepth = 2;
+                    else if (!depthStr.isEmpty()) {
+                        rebuildDepth = depthStr.toInt();  // 0 on failure
+                        if (rebuildDepth <= 0)
+                            rebuildDepth = -1;  // invalid -> unlimited
+                    }
+                    const uint64_t ancestorId =
+                        static_cast<uint64_t>(
+                            query.value(QStringLiteral("ancestor_id"))
+                                .toDouble(0));
+                    const uint64_t windowId =
+                        static_cast<uint64_t>(
+                            query.value(QStringLiteral("window_id"))
+                                .toDouble(0));
+                    // Resolve the constrained roots before clearing the map.
+                    QObject* ancestorObj =
+                        ancestorId > 0 ? elementMap->get(ancestorId) : nullptr;
+                    QObject* windowObj =
+                        windowId > 0 ? elementMap->get(windowId) : nullptr;
+
                     // The dispatch holds the read lock; release it before
                     // taking the write lock (read->write upgrade deadlocks).
                     locker.unlock();
@@ -930,27 +965,57 @@ void run_rpc_server(socket_t listen_fd,
                         auto addRoot = [&](QObject* obj) {
                             const uint64_t id = nextId++;
                             elementMap->insert(id, obj);
-                            collectChildren(obj, -1, 0,
+                            collectChildren(obj, rebuildDepth, 0,
                                             elementMap.get(), nextId, true,
                                             obj, id, focusW,
                                             QStringLiteral("core"));
                         };
-                        if (auto* app =
-                                qobject_cast<QApplication*>(QCoreApplication::instance())) {
-                            for (QWidget* w : app->topLevelWidgets())
-                                addRoot(w);
-                        }
+                        if (ancestorObj || windowObj) {
+                            addRoot(ancestorObj ? ancestorObj : windowObj);
+                        } else {
+                            if (auto* app = qobject_cast<QApplication*>(
+                                    QCoreApplication::instance())) {
+                                for (QWidget* w : app->topLevelWidgets())
+                                    addRoot(w);
+                            }
 #ifdef QT_COMMANDER_WITH_QML
-                        for (QWindow* win : QGuiApplication::topLevelWindows()) {
-                            if (qobject_cast<QQuickWindow*>(win))
-                                addRoot(win);
-                        }
+                            for (QWindow* win :
+                                 QGuiApplication::topLevelWindows()) {
+                                if (qobject_cast<QQuickWindow*>(win))
+                                    addRoot(win);
+                            }
 #endif
+                        }
                         elementMap->incrementEpoch();
                     }
                     locker.relock();
-                    const auto results =
-                        ElementSelector::find(query, elementMap->snapshot());
+                    // The rebuild re-allocated ids, so ancestor_id/window_id
+                    // from the caller's (pre-rebuild) map no longer resolve.
+                    // Re-map them to the new ids; if the object vanished,
+                    // drop the constraint (the match set is empty anyway).
+                    QJsonObject effectiveQuery = query;
+                    if (ancestorObj) {
+                        const uint64_t newAnc =
+                            elementMap->idFor(ancestorObj);
+                        if (newAnc != 0)
+                            effectiveQuery[QStringLiteral("ancestor_id")] =
+                                static_cast<double>(newAnc);
+                        else
+                            effectiveQuery.remove(
+                                QStringLiteral("ancestor_id"));
+                    }
+                    if (windowObj) {
+                        const uint64_t newWin =
+                            elementMap->idFor(windowObj);
+                        if (newWin != 0)
+                            effectiveQuery[QStringLiteral("window_id")] =
+                                static_cast<double>(newWin);
+                        else
+                            effectiveQuery.remove(
+                                QStringLiteral("window_id"));
+                    }
+                    const auto results = ElementSelector::find(
+                        effectiveQuery, elementMap->snapshot());
                     for (const SelectorResult& r : results) {
                         QJsonObject m;
                         m[QStringLiteral("id")] = static_cast<qint64>(r.id);

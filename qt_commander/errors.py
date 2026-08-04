@@ -12,6 +12,19 @@ class QtCommanderError(Exception):
         super().__init__(message)
 
 
+class RpcError(QtCommanderError):
+    """A JSON-RPC error response from the injected library.
+
+    Carries the library's own code + message (e.g. -32601 method not
+    found, 2009 auth failed, 2004 main-thread timeout) so callers can
+    distinguish failure modes instead of everything collapsing into a
+    timeout.
+    """
+
+    def __init__(self, code: int, message: str):
+        super().__init__(code, message)
+
+
 # Element errors (1001-1005)
 class ElementDestroyedError(QtCommanderError):
     def __init__(self, element_id: int):

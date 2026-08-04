@@ -12,6 +12,7 @@ from .errors import (
     SessionExistsError,
     AuthFailedError,
     RpcTimeoutError,
+    RpcError,
 )
 from .framing import FrameWriter, FrameReader
 
@@ -92,12 +93,20 @@ class Session:
             assert self._frame_writer is not None
             assert self._frame_reader is not None
             await self._frame_writer.write_frame(request.encode("utf-8"))
-            raw = await asyncio.wait_for(self._frame_reader.read_frame(), timeout=30.0)
+            try:
+                raw = await asyncio.wait_for(
+                    self._frame_reader.read_frame(), timeout=30.0)
+            except asyncio.TimeoutError:
+                raise RpcTimeoutError(
+                    "target process did not respond") from None
             response = json.loads(raw.decode("utf-8"))
             if "error" in response:
                 err = response["error"]
-                raise RpcTimeoutError(
-                    f"{err.get('message', 'unknown')} (code: {err.get('code', -1)})"
+                # Keep the library's code + message distinct (a JSON-RPC
+                # error response is NOT a timeout); RpcError carries both.
+                raise RpcError(
+                    err.get("code", -32603),
+                    err.get("message", "unknown RPC error"),
                 )
             return response.get("result", {})
 
