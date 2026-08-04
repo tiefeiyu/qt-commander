@@ -13,6 +13,7 @@
 #endif
 #include <winsock2.h>
 #include <windows.h>
+#include "test_util.h"
 
 static int passed = 0, total = 0;
 #define CHECK(cond, msg) do { total++; if (cond) { passed++; } else { printf("FAIL %s:%d — %s\n", __FILE__, __LINE__, msg); } } while(0)
@@ -92,6 +93,7 @@ void test_inject_fake_dll() {
 }
 
 int main() {
+    chdir_to_exe_dir();          // anchor CWD to this exe's build tree
     printf("=== injectLibrary error path coverage ===\n\n");
     test_inject_fake_dll();
     printf("\n%d/%d tests passed\n", passed, total);

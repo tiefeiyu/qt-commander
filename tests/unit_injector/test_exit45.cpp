@@ -16,6 +16,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <tlhelp32.h>
+#include "test_util.h"
 
 static int passed = 0, total = 0;
 #define CHECK(cond, msg) do { total++; if (cond) { passed++; } else { printf("FAIL %s:%d — %s\n", __FILE__, __LINE__, msg); } } while(0)
@@ -140,6 +141,7 @@ void test_exit_5_wrong_token() {
 }
 
 int main() {
+    chdir_to_exe_dir();          // anchor CWD to this exe's build tree
     printf("=== Exit 4/5 Coverage Tests ===\n\n");
     test_exit_4_delete_port_file();
     test_exit_5_wrong_token();

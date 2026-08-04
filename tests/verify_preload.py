@@ -126,6 +126,25 @@ def detect_qt_major() -> str:
                        f"{sorted(names)}")
 
 
+def qt_bin_major(bin_dir: Path) -> str | None:
+    """Probe which Qt major a bin dir belongs to (by its QtCore.dll)."""
+    if (bin_dir / "Qt6Core.dll").exists():
+        return "6"
+    if (bin_dir / "Qt5Core.dll").exists():
+        return "5"
+    return None
+
+
+# Canonical installs for each Qt major, used when the QT_BIN from the build
+# tree (ctest passes its own tree's Qt bin) does not match the deployed
+# library's Qt major.  windeployqt of the wrong major rejects the exe
+# ("does not seem to be a Qt executable"), so it must follow the deployment.
+_CANONICAL_QT_BIN = {
+    "5": Path(r"C:\Software\Qt\5.15.2\msvc2019_64\bin"),
+    "6": Path(r"C:\Software\Qt\6.8.3\msvc2022_64\bin"),
+}
+
+
 def start_app(app_exe: Path) -> subprocess.Popen:
     proc = subprocess.Popen([str(app_exe)], cwd=str(app_exe.parent))
     time.sleep(3)
@@ -252,7 +271,7 @@ def scenario_diagnostic() -> None:
 
 
 async def main() -> int:
-    global QT_MAJOR
+    global QT_MAJOR, QT_BIN, WINDEPLOYQT
     if not (INJECTOR.exists() and LIBRARY.exists()):
         print("ERROR: qt-injector.exe / libqt-commander.dll not found in "
               ".qt-commander/bin -- run qt_build first")
@@ -268,6 +287,23 @@ async def main() -> int:
         print("ERROR: Qt bin dir not found -- set QT_BIN env var or run "
               "qt_build first")
         return 2
+    # windeployqt must match the DEPLOYED Qt major, not the invoking build
+    # tree's (ctest passes its own QT_BIN; the deployment may be the other
+    # major after the last qt_build).  Wrong-major windeployqt rejects the
+    # exe outright, so fall back to the canonical install of the deployed
+    # major.
+    bin_major = qt_bin_major(QT_BIN)
+    if bin_major is not None and bin_major != QT_MAJOR:
+        alt = _CANONICAL_QT_BIN.get(QT_MAJOR)
+        if alt and alt.is_dir():
+            print(f"NOTE: QT_BIN ({QT_BIN}) is Qt{bin_major}; deployment is "
+                  f"Qt{QT_MAJOR} -- using {alt} for windeployqt")
+            QT_BIN = alt
+            WINDEPLOYQT = QT_BIN / "windeployqt.exe"
+        else:
+            print(f"ERROR: QT_BIN ({QT_BIN}) is Qt{bin_major} but deployment "
+                  f"is Qt{QT_MAJOR}; no Qt{QT_MAJOR} install at {alt}")
+            return 2
     if not WINDEPLOYQT.exists():
         print(f"ERROR: windeployqt not found at {WINDEPLOYQT}")
         return 2

@@ -13,6 +13,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <tlhelp32.h>
+#include "test_util.h"
 
 static int passed = 0, total = 0;
 #define CHECK(cond, msg) do { total++; if (cond) { passed++; } else { printf("FAIL %s:%d — %s\n", __FILE__, __LINE__, msg); } } while(0)
@@ -116,6 +117,7 @@ static double get_prop_double(SOCKET sock, long eid, const char* name, int id) {
 }
 
 int main() {
+    chdir_to_exe_dir();          // anchor CWD to this exe's build tree
     // Auto-discover binaries
     const char* bases[] = {
         ".", "..",                           // binary-dir or parent (ctest)
