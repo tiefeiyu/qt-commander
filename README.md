@@ -55,25 +55,8 @@ python -m qt_commander
 
 ## Building
 
-The injector and library require **Visual Studio 2022+**, **Qt 5.15+**, and
-**CMake 3.16+**. They can be compiled manually or on-demand via the `qt_build`
-MCP tool.
-
-### Manual build
-
-```powershell
-# Setup environment
-cmd /c "C:\...\vcvars64.bat" amd64
-cmd /c "C:\Qt\5.15.2\msvc2019_64\bin\qtenv2.bat"
-
-# Configure & build
-cmake -B build/msvc -G Ninja ^
-  -DBUILD_INJECTOR=ON -DBUILD_LIBRARY=ON ^
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build/msvc
-```
-
-### On-demand build (via MCP)
+The injector and library are compiled via the `qt_build` MCP tool
+(requires **Visual Studio 2022+**, **Qt 5.15+**, and **CMake 3.16+**):
 
 ```python
 # 1. Discover MSVC and Qt installations on this machine
@@ -86,16 +69,6 @@ qt_build(
     vcvars_args="amd64"
 )
 ```
-
-### CMake Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `BUILD_INJECTOR` | ON | Build `qt-injector.exe` |
-| `BUILD_LIBRARY` | OFF | Build `libqt-commander.dll` (auto-enabled with `BUILD_TESTS`) |
-| `BUILD_TESTS` | ON | Build all test suites |
-| `WITH_QML` | ON | Enable QML/QQuick support |
-| `QT_MAJOR_VERSION` | 5 | Qt major version (5 or 6) |
 
 ## MCP Tools
 

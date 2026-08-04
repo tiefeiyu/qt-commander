@@ -52,24 +52,8 @@ python -m qt_commander
 
 ## 编译
 
-注入器和库需要 **Visual Studio 2022+**、**Qt 5.15+** 和 **CMake 3.16+**。
-可以手动编译，也可以通过 `qt_build` MCP 工具按需编译。
-
-### 手动编译
-
-```powershell
-# 配置环境
-cmd /c "C:\...\vcvars64.bat" amd64
-cmd /c "C:\Qt\5.15.2\msvc2019_64\bin\qtenv2.bat"
-
-# 配置 & 构建
-cmake -B build/msvc -G Ninja ^
-  -DBUILD_INJECTOR=ON -DBUILD_LIBRARY=ON ^
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build/msvc
-```
-
-### 按需编译（通过 MCP 工具）
+注入器和库通过 `qt_build` MCP 工具编译（需要 **Visual Studio 2022+**、
+**Qt 5.15+** 和 **CMake 3.16+**）：
 
 ```python
 # 1. 先探测本机 MSVC 和 Qt 安装
@@ -82,16 +66,6 @@ qt_build(
     vcvars_args="amd64"
 )
 ```
-
-### CMake 选项
-
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `BUILD_INJECTOR` | ON | 构建 `qt-injector.exe` |
-| `BUILD_LIBRARY` | OFF | 构建 `libqt-commander.dll`（启用 `BUILD_TESTS` 时自动开启） |
-| `BUILD_TESTS` | ON | 构建所有测试套件 |
-| `WITH_QML` | ON | 启用 QML/QQuick 支持 |
-| `QT_MAJOR_VERSION` | 5 | Qt 主版本号（5 或 6） |
 
 ## MCP 工具列表
 
