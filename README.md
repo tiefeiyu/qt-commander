@@ -111,15 +111,19 @@ either build tree.
 
 MinGW builds are fully supported (Qt5 and Qt6 MinGW kits). Use
 `qt_build` with `toolchain="mingw"`: pass the MinGW toolchain's bin dir
-as `vcvars_path` and the Qt kit's bin dir as `qt_env` (MinGW Qt kits have
-no qtenv2.bat). `qt_detect_msvc_and_qt` reports MinGW toolchains
-(`mingw_toolchains`) and tags each Qt kit with its `kit` ("msvc"/"mingw").
+as `vcvars_path` and the kit's `qtenv2.bat` as `qt_env` (MinGW Qt kits
+ship qtenv2.bat just like MSVC kits). `qt_detect_msvc_and_qt` reports
+MinGW toolchains (`mingw_toolchains`) and tags each Qt kit with its
+`kit` ("msvc"/"mingw").
 
 Notes:
 
 - **Compiler version**: Qt 5's official MinGW kit ships GCC 8.1, whose
   libstdc++ cannot compile `std::filesystem` headers (fixed in 8.3); use
   a GCC ≥ 9 toolchain (e.g. Qt's bundled `mingw1310_64`) for Qt 5 too.
+  `qt_build` pins the compiler explicitly (`-DCMAKE_C/CXX_COMPILER`), so
+  other gcc builds on PATH (e.g. a Strawberry Perl toolchain) never get
+  picked up.
 - **Runtime DLLs**: MinGW executables need `libgcc_s_seh-1.dll`,
   `libstdc++-6.dll`, `libwinpthread-1.dll` next to them. The build
   deploys the compiler's own runtime (a Qt kit's older runtime lacks

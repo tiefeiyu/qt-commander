@@ -6,8 +6,7 @@ REM Positional args (all required, pass "" for empty ones):
 REM   %1 = vcvars bat path        (msvc; e.g. C:\...\vcvars64.bat)
 REM                             or MinGW bin dir (mingw; e.g. C:\...\mingw64\bin)
 REM   %2 = vcvars arch arg        (msvc; e.g. amd64, or "" for default)
-REM   %3 = qtenv bat path         (msvc; e.g. C:\...\qtenv2.bat)
-REM                             or Qt bin dir (mingw; e.g. C:\...\mingw_64\bin)
+REM   %3 = qtenv2.bat path        (both toolchains; MinGW Qt kits ship one too)
 REM   %4 = source root            (project root containing src/)
 REM   %5 = build output dir
 REM   %6 = install prefix
@@ -23,6 +22,11 @@ setlocal enabledelayedexpansion
 set "VCVARS=%~1"
 set "VCVARS_ARGS=%~2"
 set "QTENV=%~3"
+REM Arg 3's directory is the Qt bin dir in both modes (msvc: the dir of
+REM the qtenv bat; mingw: the qtenv bat's dir, or the bin dir itself when
+REM passed).  Capture it BEFORE the shifts below -- after shifting, %~dp3
+REM would refer to a different argument.
+set "QT_BIN_DIR=%~dp3"
 set "SRC_ROOT=%~4"
 set "BUILD_ROOT=%~5"
 set "INSTALL_PREFIX=%~6"
@@ -59,29 +63,22 @@ if /i "%TOOLCHAIN%"=="mingw" (
         echo [build] ERROR: no g++.exe in "%VCVARS%"
         exit /b 1
     )
-    if "%QTENV%"=="" (
-        echo [build] ERROR: Qt bin dir missing ^(arg 3^)
-        exit /b 1
-    )
-    if not exist "%QTENV%\qmake.exe" (
-        echo [build] ERROR: no qmake.exe in "%QTENV%"
-        exit /b 1
-    )
-    set "PATH=%VCVARS%;%QTENV%;%PATH%"
+    set "PATH=%VCVARS%;%PATH%"
+    call "%QTENV%"
+    if errorlevel 1 exit /b 1
     REM MinGW needs an explicit generator; prefer the Qt-bundled Ninja.
     REM <Qt root>/Tools/Ninja sits 3 levels above the Qt bin dir.
     if "%GENERATOR%"=="" (
-        for %%n in ("%QTENV%\..\..\..\Tools\Ninja\ninja.exe") do (
+        for %%n in ("%QT_BIN_DIR%..\..\..\Tools\Ninja\ninja.exe") do (
             if exist "%%~fn" (
                 set "GENERATOR=Ninja"
-                REM !PATH! (delayed expansion) keeps the mingw/qt prefix
-                REM just prepended above; %PATH% would resolve to the
-                REM original value and drop it.
+                REM !PATH! (delayed expansion) keeps the mingw prefix just
+                REM prepended above; %PATH% would resolve to the original
+                REM value and drop it.
                 set "PATH=%%~dpn;!PATH!"
             )
         )
     )
-    set "QT_PREFIX=%QTENV%\.."
 ) else (
     echo.
     echo === Setting up MSVC ===
@@ -92,10 +89,19 @@ if /i "%TOOLCHAIN%"=="mingw" (
     echo === Setting up Qt ===
     call "%QTENV%"
     if errorlevel 1 exit /b 1
-    set "QT_PREFIX=%~dp3\.."
 )
 
-set "CMAKE_COMMON=-DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_INSTALL_PREFIX=%INSTALL_PREFIX% -DCMAKE_PREFIX_PATH=%QT_PREFIX%"
+set "QT_PREFIX=%QT_BIN_DIR%\.."
+
+REM MinGW: pin the compiler explicitly -- several gcc builds may sit on
+REM PATH (e.g. a Strawberry Perl toolchain), and CMake would pick the
+REM first one instead of the requested toolchain.
+set "COMPILER_ARGS="
+if /i "%TOOLCHAIN%"=="mingw" (
+    set "COMPILER_ARGS=-DCMAKE_C_COMPILER=%VCVARS%\gcc.exe -DCMAKE_CXX_COMPILER=%VCVARS%\g++.exe"
+)
+
+set "CMAKE_COMMON=-DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_INSTALL_PREFIX=%INSTALL_PREFIX% -DCMAKE_PREFIX_PATH=%QT_PREFIX% %COMPILER_ARGS%"
 
 set "GEN_ARG="
 if not "%GENERATOR%"=="" set "GEN_ARG=-G %GENERATOR%"
@@ -120,28 +126,27 @@ if errorlevel 1 exit /b 1
 
 echo.
 echo === Deploying dependency closure ===
-if /i "%TOOLCHAIN%"=="mingw" (
-    REM windeployqt against the library copies its Qt closure (and the
-    REM MinGW runtime DLLs) next to it.  The injector preloads these into
-    REM the target process; without them, LoadLibraryW fails in the
-    REM target.  This automates what the MSVC flow does by hand.
-    REM Qt6's windeployqt handles DLL inputs; Qt5's only handles exes, so
-    REM the Qt5 closure is copied explicitly below.
-    if "%QT_MAJOR%"=="6" (
-        "%QTENV%\windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw "%INSTALL_PREFIX%\bin\libqt-commander.dll"
-        if errorlevel 1 (
-            echo [build] WARNING: windeployqt failed -- dependency closure may be incomplete
-        )
-    ) else (
-        for %%d in (Qt5Core.dll Qt5Gui.dll Qt5Widgets.dll Qt5Quick.dll Qt5Qml.dll Qt5QmlModels.dll Qt5Network.dll) do (
-            if exist "%QTENV%\%%d" (
-                copy /y "%QTENV%\%%d" "%INSTALL_PREFIX%\bin\" >nul
-                echo [build] closure %%d
-            ) else (
-                echo [build] WARNING: %%d not found in "%QTENV%"
-            )
+REM The injector preloads the library's Qt closure into the target; the
+REM closure DLLs must sit next to the library or LoadLibraryW fails there.
+REM Qt6's windeployqt handles DLL inputs; Qt5's only handles exes, so the
+REM Qt5 closure is copied explicitly.  %~dp3 = the Qt bin dir in both
+REM modes (msvc: dir of qtenv2.bat; mingw: the Qt bin dir itself).
+if "%QT_MAJOR%"=="6" (
+    "%QT_BIN_DIR%windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw "%INSTALL_PREFIX%\bin\libqt-commander.dll"
+    if errorlevel 1 (
+        echo [build] WARNING: windeployqt failed -- dependency closure may be incomplete
+    )
+) else (
+    for %%d in (Qt5Core.dll Qt5Gui.dll Qt5Widgets.dll Qt5Quick.dll Qt5Qml.dll Qt5QmlModels.dll Qt5Network.dll) do (
+        if exist "%QT_BIN_DIR%%%d" (
+            copy /y "%QT_BIN_DIR%%%d" "%INSTALL_PREFIX%\bin\" >nul
+            echo [build] closure %%d
+        ) else (
+            echo [build] WARNING: %%d not found in "%QT_BIN_DIR%"
         )
     )
+)
+if /i "%TOOLCHAIN%"=="mingw" (
     REM windeployqt (Qt6) ships the Qt kit's own (older) compiler runtime;
     REM the executables were built with %VCVARS%, so its runtime must win
     REM (libstdc++ is backward-compatible: older-ABI DLLs load a newer

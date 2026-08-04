@@ -115,8 +115,8 @@ async def qt_detect_msvc_and_qt() -> str:
     (``kit == "msvc"``) pass the VS ``vcvars_path`` + the kit's
     ``qtenv_path`` with ``toolchain="msvc"``; for a MinGW kit
     (``kit == "mingw"``) pass a MinGW toolchain's bin dir (from
-    ``mingw_toolchains``) + the kit's Qt bin dir
-    (``<install_prefix>/bin``) with ``toolchain="mingw"``.
+    ``mingw_toolchains``) + the kit's ``qtenv_path`` (MinGW kits ship
+    qtenv2.bat too) with ``toolchain="mingw"``.
     If detection finds nothing (or misses an installation the user knows
     about), the user can type the paths manually.
 
@@ -147,9 +147,10 @@ async def qt_build(
     """Build the Qt injection library and injector for the specified environment.
 
     ``toolchain`` selects the compiler: ``"msvc"`` (default; ``vcvars_path``
-    is a vcvars bat, ``qt_env`` a qtenv bat) or ``"mingw"`` (``vcvars_path``
-    is the MinGW bin dir, ``qt_env`` the Qt bin dir of a MinGW kit — MinGW
-    Qt kits have no qtenv2.bat; the Qt-bundled Ninja is used automatically).
+    is a vcvars bat, ``qt_env`` a qtenv2.bat) or ``"mingw"``
+    (``vcvars_path`` is the MinGW bin dir; ``qt_env`` the kit's qtenv2.bat
+    — MinGW Qt kits ship one too; the Qt-bundled Ninja is used
+    automatically).
 
     Before calling this tool, the AI MUST present available build
     environments (from ``qt_detect_msvc_and_qt``) to the user and let them

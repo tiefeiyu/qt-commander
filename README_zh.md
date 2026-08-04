@@ -107,15 +107,17 @@ ctest --test-dir build/msvc --output-on-failure
 
 MinGW 构建完全受支持（Qt5 与 Qt6 MinGW kit）。使用 `qt_build` 并传
 `toolchain="mingw"`：`vcvars_path` 传 MinGW 工具链的 bin 目录，
-`qt_env` 传 Qt kit 的 bin 目录（MinGW Qt kit 没有 qtenv2.bat）。
-`qt_detect_msvc_and_qt` 会报告 MinGW 工具链（`mingw_toolchains`），
-并为每个 Qt kit 标注 `kit`（"msvc"/"mingw"）。
+`qt_env` 传 kit 的 qtenv2.bat（MinGW Qt kit 与 MSVC kit 一样自带
+qtenv2.bat）。`qt_detect_msvc_and_qt` 会报告 MinGW 工具链
+（`mingw_toolchains`），并为每个 Qt kit 标注 `kit`（"msvc"/"mingw"）。
 
 注意事项：
 
 - **编译器版本**：Qt 5 官方 MinGW kit 配套 GCC 8.1，其 libstdc++ 头
   无法编译 `std::filesystem`（8.3 才修复）；Qt 5 也应使用 GCC ≥ 9
-  工具链（如 Qt 自带的 `mingw1310_64`）。
+  工具链（如 Qt 自带的 `mingw1310_64`）。`qt_build` 会显式固定编译器
+  （`-DCMAKE_C/CXX_COMPILER`），PATH 上的其他 gcc（如 Strawberry Perl
+  工具链）不会被误选。
 - **运行时 DLL**：MinGW 可执行文件需要 `libgcc_s_seh-1.dll`、
   `libstdc++-6.dll`、`libwinpthread-1.dll` 位于其旁。构建会自动部署
   编译器自身的运行时（Qt kit 自带的旧版运行时缺少新符号），

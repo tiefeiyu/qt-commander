@@ -163,9 +163,9 @@ async def run_build(
     """Build injector and library by calling the Windows build script.
 
     ``toolchain`` selects how the script sets up the compiler:
-      "msvc"  — ``vcvars_path`` is a vcvars bat, ``qt_env`` a qtenv bat
-      "mingw" — ``vcvars_path`` is the MinGW bin dir, ``qt_env`` the Qt bin
-                dir (MinGW Qt kits have no qtenv2.bat)
+      "msvc"  — ``vcvars_path`` is a vcvars bat, ``qt_env`` a qtenv2.bat
+      "mingw" — ``vcvars_path`` is the MinGW bin dir; ``qt_env`` the kit's
+                qtenv2.bat (MinGW Qt kits ship one too)
     """
     global _build_state
     async with _build_lock:
@@ -218,7 +218,8 @@ async def run_build(
 
         result = subprocess.run(
             ["cmd.exe", "/c"] + cmd,
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=600,
             cwd=str(native_src.resolve()),
         )
 

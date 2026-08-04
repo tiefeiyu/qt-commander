@@ -19,11 +19,6 @@ if(WIN32)
     target_link_libraries(qt-injector PRIVATE psapi bcrypt ws2_32)
     if(MSVC)
         target_compile_options(qt-injector PRIVATE /utf-8)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
-           CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-        # GCC < 9 (Qt 5's MinGW 8.1): std::filesystem lives in a separate
-        # library; GCC 9+ links it implicitly.
-        target_link_libraries(qt-injector PRIVATE stdc++fs)
     endif()
 elseif(UNIX)
     target_link_libraries(qt-injector PRIVATE pthread dl)

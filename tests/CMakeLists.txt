@@ -26,10 +26,6 @@ if(BUILD_INJECTOR)
             target_link_libraries(${NAME} PRIVATE ws2_32 psapi bcrypt)
             if(MSVC)
                 target_compile_options(${NAME} PRIVATE /utf-8)
-            elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
-                   CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-                # GCC < 9 (Qt 5's MinGW 8.1): std::filesystem is separate
-                target_link_libraries(${NAME} PRIVATE stdc++fs)
             endif()
         elseif(UNIX)
             target_link_libraries(${NAME} PRIVATE pthread dl)

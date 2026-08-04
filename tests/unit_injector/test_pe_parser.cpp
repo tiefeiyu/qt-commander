@@ -90,10 +90,14 @@ static std::vector<uint8_t> build_pe_with_export(const char* export_name, uint32
     return pe;
 }
 
-// Replicate the PE parsing logic from injector_win.cpp (same algorithm)
+// Replicate the PE parsing logic from injector_win.cpp (same algorithm,
+// including the same bounds checks).
 static uint32_t rva_to_offset_synthetic(const std::vector<uint8_t>& pe, uint32_t rva) {
+    if (pe.size() < sizeof(IMAGE_DOS_HEADER_S)) return rva;
     auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER_S*>(pe.data());
     if (dos->e_magic != 0x5A4D) return rva;
+    if (pe.size() < static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64_S))
+        return rva;
     auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64_S*>(pe.data() + dos->e_lfanew);
     if (nt->Signature != 0x00004550) return rva;
     auto* sect = reinterpret_cast<const IMAGE_SECTION_HEADER_S*>(pe.data() + dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64_S));
@@ -110,6 +114,8 @@ static uint32_t find_export_rva_synthetic(const std::vector<uint8_t>& pe, const 
     auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER_S*>(pe.data());
     if (dos->e_magic != 0x5A4D) return 0;
 
+    if (pe.size() < static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64_S))
+        return 0;
     auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64_S*>(pe.data() + dos->e_lfanew);
     if (nt->Signature != 0x00004550) return 0;
 
@@ -239,9 +245,10 @@ void test_multiple_exports() {
     CHECK(find_export_rva_synthetic(pe, "MySecondExport") == 0x3000, "second export found");
 }
 
-// Short PE file (too small for NT headers)
+// Short PE file (too small for NT headers).  The DOS header alone is 64
+// bytes -- a smaller buffer would let e_lfanew write out of bounds.
 void test_short_pe_file() {
-    std::vector<uint8_t> pe(32, 0);
+    std::vector<uint8_t> pe(64, 0);
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER_S*>(pe.data());
     dos->e_magic = 0x5A4D;
     dos->e_lfanew = 128;  // points beyond file size
