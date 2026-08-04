@@ -228,6 +228,16 @@ int main() {
     // The library's snapshot returns top-level "nodes", each with a
     // "className" -- either field proves the UI tree came back.
     CHECK(sr.find("\"nodes\"") != std::string::npos || sr.find("\"className\"") != std::string::npos, "snapshot has UI data");
+    // Snapshot nodes carry the geometry/state fields the AI plans with:
+    // objectName, rect + global_rect (logical pixels), z_order, visible,
+    // enabled, topLevelId, windowTitle, dpr.
+    CHECK(sr.find("\"objectName\"") != std::string::npos, "snapshot nodes have objectName");
+    CHECK(sr.find("\"rect\"") != std::string::npos, "snapshot nodes have rect");
+    CHECK(sr.find("\"global_rect\"") != std::string::npos, "snapshot nodes have global_rect");
+    CHECK(sr.find("\"visible\"") != std::string::npos, "snapshot nodes have visible");
+    CHECK(sr.find("\"enabled\"") != std::string::npos, "snapshot nodes have enabled");
+    CHECK(sr.find("\"topLevelId\"") != std::string::npos, "snapshot nodes have topLevelId");
+    CHECK(sr.find("\"windowTitle\"") != std::string::npos, "snapshot nodes have windowTitle");
 
     // 5b. Interaction primitives over the real wire:
     //     typeText + keyCombo ("Ctrl+A"), mousePress/mouseRelease split

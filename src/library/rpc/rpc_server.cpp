@@ -17,6 +17,7 @@
 #include "selector/selector.h"
 #include "../core/event_injector.h"
 #include "../core/screenshot.h"
+#include "../core/ui_scanner.h"
 #ifdef QT_COMMANDER_WITH_QML
 #include <QQuickWindow>
 #include <QQuickItem>
@@ -310,10 +311,89 @@ static QJsonObject collectProperties(QObject* obj, int propDepth) {
 }
 
 /// Recursively collect children into a JSON array, limited by depth.
-/// Negative depth values mean "unlimited".
+/// Negative depth values mean "unlimited".  topLevel/topLevelId name the
+/// containing top-level window, focusW the once-computed focus widget
+/// (passed down the recursion).
 static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
                                   ElementMap* elementMap, uint64_t& nextId,
-                                  bool includeHidden) {
+                                  bool includeHidden,
+                                  QObject* topLevel, uint64_t topLevelId,
+                                  QWidget* focusW);
+
+/// Build one snapshot node (top-level window or descendant).  Every node
+/// carries the stable identification and geometry the AI needs to plan
+/// operations: objectName, local + global rect (logical pixels), z-order,
+/// visibility, enabled, text, focus, and the containing top-level window's
+/// id / title / activation / devicePixelRatio.  Geometry is the same
+/// logical-pixel contract findElement uses (rect = window content area,
+/// global_rect = virtual-desktop coordinates); coordinates are computed
+/// inside the target process so mixed-DPI screens stay consistent.
+static QJsonObject makeNode(QObject* obj, uint64_t id,
+                            QObject* topLevel, uint64_t topLevelId,
+                            QWidget* focusW,
+                            int maxDepth, int propDepth,
+                            ElementMap* elementMap, uint64_t& nextId,
+                            bool includeHidden) {
+    QJsonObject node;
+    node["className"] = QString::fromLatin1(obj->metaObject()->className());
+    node["objID"] = static_cast<qint64>(id);
+    // Stable identification (QML objectName must be set explicitly; `id` is
+    // QML-internal and never visible from C++).
+    node["objectName"] = obj->objectName();
+    // Geometry: window-local logical rect + virtual-desktop global rect.
+    node["rect"] = UiScanner::rectToJson(obj);
+    node["global_rect"] = UiScanner::globalRectToJson(obj);
+    node["z_order"] = UiScanner::getZOrder(obj);
+    // Visibility / interactivity (raw values; the click tools run the real
+    // hit test so a click on an occluded element is decided by Qt itself).
+    if (auto* w = qobject_cast<QWidget*>(obj)) {
+        node["visible"] = w->isVisible();
+        node["enabled"] = w->isEnabled();
+        // focusWidget() walks the whole focus chain -- compute it once per
+        // snapshot (focusW) and compare pointers here (O(1) per node).
+        if (focusW)
+            node["focused"] = (focusW == w);
+    }
+#ifdef QT_COMMANDER_WITH_QML
+    else if (auto* item = qobject_cast<QQuickItem*>(obj)) {
+        node["visible"] = item->isVisible();
+        node["enabled"] = item->isEnabled();
+        if (QQuickWindow* qw = item->window())
+            node["focused"] = (qw->activeFocusItem() == item);
+    }
+#endif
+    // Text (non-empty only, mirrors findElement's "text" semantics).
+    const QString text = UiScanner::displayText(obj);
+    if (!text.isEmpty())
+        node["text"] = text;
+    // Containing top-level window.
+    node["topLevelId"] = static_cast<qint64>(topLevelId);
+    if (topLevel) {
+        if (auto* w = qobject_cast<QWidget*>(topLevel)) {
+            node["windowTitle"] = w->windowTitle();
+            node["isActiveWindow"] = w->isActiveWindow();
+            node["dpr"] = w->devicePixelRatio();
+        }
+#ifdef QT_COMMANDER_WITH_QML
+        else if (auto* qw = qobject_cast<QQuickWindow*>(topLevel)) {
+            node["windowTitle"] = qw->title();
+            node["isActiveWindow"] = qw->isActive();
+            node["dpr"] = qw->devicePixelRatio();
+        }
+#endif
+    }
+    node["properties"] = collectProperties(obj, propDepth);
+    node["children"] = collectChildren(obj, maxDepth, propDepth,
+                                       elementMap, nextId, includeHidden,
+                                       topLevel, topLevelId, focusW);
+    return node;
+}
+
+static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
+                                  ElementMap* elementMap, uint64_t& nextId,
+                                  bool includeHidden,
+                                  QObject* topLevel, uint64_t topLevelId,
+                                  QWidget* focusW) {
     QJsonArray arr;
     if (maxDepth == 0)
         return arr;
@@ -355,13 +435,9 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
         const uint64_t id = nextId++;
         elementMap->insert(id, child);
 
-        QJsonObject node;
-        node["className"] = QString::fromLatin1(child->metaObject()->className());
-        node["objID"] = static_cast<qint64>(id);
-        node["properties"] = collectProperties(child, propDepth);
-        node["children"] = collectChildren(child, childDepth, propDepth,
-                                           elementMap, nextId, includeHidden);
-        arr.append(node);
+        arr.append(makeNode(child, id, topLevel, topLevelId, focusW,
+                            childDepth, propDepth,
+                            elementMap, nextId, includeHidden));
     }
     return arr;
 }
@@ -691,17 +767,16 @@ void run_rpc_server(socket_t listen_fd,
                         elementMap->clear();
                         uint64_t nextId = 1;
 
+                        // QApplication::focusWidget() walks the whole focus
+                        // chain -- compute it once, compare pointers per node.
+                        QWidget* focusW = qApp ? qApp->focusWidget() : nullptr;
                         auto addRoot = [&](QObject* obj) {
                             const uint64_t id = nextId++;
                             elementMap->insert(id, obj);
-                            QJsonObject node;
-                            node["className"] = QString::fromLatin1(obj->metaObject()->className());
-                            node["objID"] = static_cast<qint64>(id);
-                            node["properties"] = collectProperties(obj, propDepth);
-                            node["children"] = collectChildren(
-                                obj, maxDepth, propDepth,
-                                elementMap.get(), nextId, includeHidden);
-                            nodes.append(node);
+                            nodes.append(makeNode(
+                                obj, id, obj, id, focusW,
+                                maxDepth, propDepth,
+                                elementMap.get(), nextId, includeHidden));
                         };
 
                         if (rootObj) {
@@ -750,10 +825,13 @@ void run_rpc_server(socket_t listen_fd,
                         QWriteLocker wlock(elementMap->rwLock());
                         elementMap->clear();
                         uint64_t nextId = 1;
+                        QWidget* focusW = qApp ? qApp->focusWidget() : nullptr;
                         auto addRoot = [&](QObject* obj) {
-                            elementMap->insert(nextId++, obj);
+                            const uint64_t id = nextId++;
+                            elementMap->insert(id, obj);
                             collectChildren(obj, -1, 0,
-                                            elementMap.get(), nextId, true);
+                                            elementMap.get(), nextId, true,
+                                            obj, id, focusW);
                         };
                         if (auto* app =
                                 qobject_cast<QApplication*>(QCoreApplication::instance())) {

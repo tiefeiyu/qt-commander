@@ -64,6 +64,10 @@ public:
     /// Alias for lookup() -- convenience for code that expects a `get` naming.
     QObject* get(uint64_t id) const { return lookup(id); }
 
+    /// Reverse lookup: id of a QObject*, 0 if not mapped.
+    /// Acquires a read lock internally.
+    uint64_t idFor(QObject* obj) const;
+
     /// Return a copy of the full map (thread-safe snapshot). Caller owns the copy.
     QHash<uint64_t, QObject*> snapshot() const {
         QReadLocker l(&lock_);
@@ -73,6 +77,7 @@ public:
 private:
     mutable QReadWriteLock lock_{QReadWriteLock::Recursive};
     QHash<uint64_t, QObject*> map_;
+    QHash<QObject*, uint64_t> revMap_;   // obj -> id (maintained by insert/clear)
     uint64_t next_id_ = 1;
     uint64_t epoch_ = 0;
 };

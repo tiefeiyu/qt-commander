@@ -6,6 +6,7 @@ void ElementMap::clear()
 {
     QWriteLocker locker(&lock_);
     map_.clear();
+    revMap_.clear();
     next_id_ = 1;
     epoch_ = 0;
 }
@@ -14,12 +15,19 @@ void ElementMap::insert(uint64_t id, QObject* obj)
 {
     QWriteLocker locker(&lock_);
     map_.insert(id, obj);
+    revMap_.insert(obj, id);
 }
 
 QObject* ElementMap::lookup(uint64_t id) const
 {
     QReadLocker locker(&lock_);
     return map_.value(id, nullptr);
+}
+
+uint64_t ElementMap::idFor(QObject* obj) const
+{
+    QReadLocker locker(&lock_);
+    return revMap_.value(obj, 0);
 }
 
 uint64_t ElementMap::epoch() const

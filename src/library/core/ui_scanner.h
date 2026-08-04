@@ -26,6 +26,16 @@ public:
                                          ElementMap* element_map,
                                          const QString& snapshot_dir);
 
+    // Shared serialization helpers -- used by findElement and the snapshot
+    // RPC path so both produce the same geometry/visibility contract.
+    static QJsonObject rectToJson(QObject* obj);
+    static QJsonObject globalRectToJson(QObject* obj);
+    static QString displayText(QObject* obj);
+    static bool isEffectivelyVisible(QObject* obj);
+    static QObject* getVisualParent(QObject* obj);
+    static int getZOrder(QObject* obj);
+    static QObject* getContainingWindow(QObject* obj);
+
 private:
     static void traverseWidgets(QJsonArray& elements,
                                 ElementMap* element_map,
@@ -66,12 +76,4 @@ private:
     static QJsonValue propertyToJson(const QVariant& value,
                                       const QString& detail,
                                       const QString& snapshot_dir);
-
-    static QJsonObject rectToJson(QObject* obj);
-    static QJsonObject globalRectToJson(QObject* obj);
-    static QString displayText(QObject* obj);
-    static bool isEffectivelyVisible(QObject* obj);
-    static QObject* getVisualParent(QObject* obj);
-    static int getZOrder(QObject* obj);
-    static QObject* getContainingWindow(QObject* obj);
 };
