@@ -17,7 +17,24 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 if sys.platform != "win32":
-    print("verify_preload: skipping (Windows-only test, requires windeployqt)")
+    # Linux: minimal verification — check that the built .so loads with Qt.
+    _qtc_bin = REPO / ".qt-commander" / "bin"
+    _so_path = _qtc_bin / "libqt-commander.so"
+    if not _so_path.exists():
+        _alt = REPO / "build" / "linux5" / "src" / "library" / "libqt-commander.so"
+        if _alt.exists():
+            _so_path = _alt
+        else:
+            print(f"verify_preload: SKIP — {_so_path} not found (run qt_build first)")
+            sys.exit(0)
+    import ctypes
+    try:
+        # os.RTLD_NOW=2, os.RTLD_GLOBAL=256 (POSIX dlopen flags)
+        _handle = ctypes.CDLL(str(_so_path), mode=os.RTLD_NOW | os.RTLD_GLOBAL)
+        print(f"verify_preload: OK — {_so_path} loaded successfully")
+    except OSError as e:
+        print(f"verify_preload: FAIL — {e}")
+        sys.exit(1)
     sys.exit(0)
 sys.path.insert(0, str(REPO))
 

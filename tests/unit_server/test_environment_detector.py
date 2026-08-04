@@ -282,6 +282,7 @@ class TestInspectQmakeEnv:
 # _find_qmake_on_path
 # ═══════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PATH/qmake detection")
 class TestFindQmakeOnPath:
     def test_finds_qmake(self, tmp_path, monkeypatch):
         """Finds qmake.exe in a PATH entry."""
@@ -404,6 +405,7 @@ class TestScanDriveForQmake:
 # VS registry detection  (SxS key for VS 2017)
 # ═══════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only registry tests")
 class TestDetectVsRegistry:
     def test_sxs_key_vs2017(self, tmp_path, monkeypatch):
         """Registry SxS key yields VS 2017 entry."""
@@ -438,6 +440,7 @@ class TestDetectVsRegistry:
 # Qt registry detection  (Trolltech keys)
 # ═══════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only registry tests")
 class TestDetectQtRegistry:
     def test_trolltech_registry(self, tmp_path, monkeypatch):
         """Trolltech registry key yields Qt entry."""
@@ -497,6 +500,7 @@ class TestDetectQtRegistry:
 # detect_qt_environments — integration
 # ═══════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only Qt detection tests")
 class TestDetectQtEnvironments:
     def test_qtdir_env_var(self, tmp_path, monkeypatch):
         """QTDIR env var is respected."""
