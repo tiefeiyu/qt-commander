@@ -31,7 +31,9 @@
 1. **AI Agent** 通过 stdio 发送 MCP 工具调用（如 `qt_snapshot`）。
 2. **MCP Server** 作为子进程启动 `qt-injector.exe`，传入目标进程 PID。
 3. **qt-injector** 通过 `CreateRemoteThread` + `LoadLibraryW` 将
-   `libqt-commander.dll` 注入目标 Qt 进程，执行令牌认证握手后，
+   `libqt-commander.dll` 注入目标 Qt 进程。注入前会**预加载库的传递依赖闭包**
+   （目标程序未链接的 Qt DLL，例如纯 QML 应用的 Qt5Widgets）— 无需在
+   目标程序旁手动拷贝任何 Qt DLL。随后执行令牌认证握手，
    将库的 TCP 端口号输出到 stdout。
 4. **MCP Server** 通过 TCP 连接到注入库，使用 4 字节大端长度前缀帧协议
    转发 RPC 调用（快照、点击、输入等）。
@@ -107,60 +109,57 @@ qt_build(
 | `qt_set_property` | 写入 QObject 属性 |
 | `qt_call_method` | 调用 QObject 方法 |
 | `qt_screenshot` | 截取指定元素或窗口的截图 |
-| `qt_mouse_click` | 发送鼠标点击事件 |
+| `qt_mouse_click` | 向 UI 元素发送鼠标点击（直接投递） |
+| `qt_mouse_click_at` | 在指定窗口坐标处点击 — 走真实 Qt 输入管线（QPA），真实场景图/控件树命中测试，与人类点击完全一致 |
+| `qt_mouse_click_region` | 点击元素屏幕区域中心 — 由真实命中测试决定实际落点（如 QML Rectangle 内的 MouseArea） |
 | `qt_keyboard_input` | 发送键盘输入 |
 | `qt_focus` | 将焦点设置到指定元素 |
 
 ## 测试
 
-```bash
-# 仅 Python — 无需编译器
-python scripts/run_all_tests.py
+全部测试（C++ 单元 + E2E 套件、pytest、部署级预加载验证）从同一个
+CMake 构建树运行：
 
-# 完整套件 — Python + C++（需要 MSVC + Qt）
-python scripts/run_all_tests.py ^
-  --vcvars "C:\...\vcvars64.bat" ^
-  --qt-env "C:\Qt\5.15.2\msvc2019_64\bin\qtenv2.bat"
+```powershell
+# 单一构建树（注入器 + 库 + 测试应用 + 全部测试）
+cmake -S . -B build/msvc -G Ninja ^
+  -DBUILD_INJECTOR=ON -DBUILD_TESTS=ON -DWITH_QML=ON ^
+  -DCMAKE_BUILD_TYPE=Release -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
 
-# 快速模式 — 跳过 CMake 配置步骤
-python scripts/run_all_tests.py --quick --vcvars "..." --qt-env "..."
+# 构建全部，然后一条命令跑完所有测试：
+cmake --build build/msvc
+ctest --test-dir build/msvc --output-on-failure
 ```
 
-### 测试矩阵
+`ctest` 运行 20 个套件：14 个注入器 C++ 套件（含对 widget 测试应用的
+真实注入 E2E）、4 个库 C++ 套件、完整 pytest 套件（`python_unit_tests`），
+以及 E2E 预加载验证（`verify_preload`，标记为 `e2e`，需要 `.qt-commander/bin`
+中的 `qt_build` 产物）。
+
+常用子集：
+
+```bash
+pytest tests/ -q                                   # 仅 Python
+ctest --test-dir build/msvc -LE e2e                # 跳过慢速 E2E
+ctest --test-dir build/msvc -R "test_selector"     # 单个套件
+```
+
+### 测试矩阵（2026-08 实测状态）
 
 | 套件 | 位置 | 语言 | 测试数 | 依赖 |
 |------|------|------|--------|------|
-| 服务端单元 | `tests/unit_server/` | Python | 169 | Python 3.10+ |
-| 注入器单元 | `tests/unit_injector/` | C++ | ~100 | MSVC |
-| 库单元 | `tests/unit_library/` | C++ | ~36 | MSVC + Qt |
-| E2E 集成 | `tests/unit_injector/test_e2e*.cpp` | C++ | ~30 | MSVC + Qt + 测试应用 |
-
-### 单独运行
-
-```bash
-# Python（95% 覆盖率）
-pytest tests/unit_server/ -q
-pytest tests/unit_server/ --cov=qt_commander --cov-report=term
-
-# C++ 通过 ctest（需要 MSVC + Qt 环境）
-cd build/msvc && ctest --output-on-failure
-```
-
-### 覆盖率目标
-
-| 范围 | 目标 | 状态 |
-|------|------|------|
-| Python (`qt_commander/`) | 整体 ≥95% | ✅ 95% |
-| C++ 主要接口（43 个公开 API） | 100% | ✅ |
-| C++ 整体 | 函数级 ≥95% | ✅ 96.5% |
-| 全部测试套件 | 100% 通过率 | ✅ 16/16 ctest |
+| 服务端单元 | `tests/unit_server/` | Python | 245 | Python 3.10+ |
+| 注入器单元 | `tests/unit_injector/` | C++ | 276 | MSVC |
+| 库单元 | `tests/unit_library/` | C++ | 55 | MSVC + Qt |
+| 注入 E2E | `tests/unit_injector/test_e2e*.cpp` | C++ | 16 | MSVC + Qt + 测试应用 |
+| 预加载 E2E | `tests/verify_preload.py` | Python | 3 个场景 | qt_build 产物 |
 
 ## 项目结构
 
 ```
 qt-commander/
 ├── qt_commander/              Python MCP 服务器
-│   ├── server.py            FastMCP 应用，14 个工具 + 2 个资源
+│   ├── server.py            FastMCP 应用，16 个工具 + 2 个资源
 │   ├── session.py           会话/会话管理器，带 RPC 锁
 │   ├── rpc_client.py        子进程注入器启动器
 │   ├── builder.py           按需 MSVC 编译编排器
@@ -175,9 +174,10 @@ qt-commander/
 │   │   ├── socket_utils.h   TCP 抽象层
 │   │   └── socket_utils.cpp
 │   ├── injector/            独立注入 CLI
-│   │   ├── main.cpp         入口点，参数解析，退出码 1-6
+│   │   ├── main.cpp         入口点，参数解析，--list-deps，退出码 1-6
 │   │   ├── injector.h       公开 API 声明
-│   │   ├── injector_win.cpp Win32 实现（CreateRemoteThread、PE 解析器）
+│   │   ├── injector_win.cpp Win32 实现（CreateRemoteThread、PE 导入表
+│   │   │                    解析、依赖闭包预加载）
 │   │   ├── injector_di.cpp  依赖注入变体（基于 IProcessOps，完全可测试）
 │   │   └── os_ops.h         IProcessOps / MockProcessOps / Win32ProcessOps
 │   └── library/             注入 DLL
@@ -189,13 +189,11 @@ qt-commander/
 │       └── selector/        元素查询引擎
 │
 ├── tests/
-│   ├── unit_server/         Python 单元测试（169 个）
-│   ├── unit_injector/       C++ 单元 + E2E 测试（~130 个）
-│   ├── unit_library/        C++ 库组件测试（~36 个）
+│   ├── unit_server/         Python 单元测试（245 个）
+│   ├── unit_injector/       C++ 单元 + E2E 测试（276 个）
+│   ├── unit_library/        C++ 库组件测试（55 个）
+│   ├── verify_preload.py    E2E：依赖预加载场景 A/B/C
 │   └── test-apps/           最小化 Qt 测试应用程序
-│
-├── scripts/
-│   └── run_all_tests.py     统一跨平台测试运行器
 │
 └── CMakeLists.txt
 ```
