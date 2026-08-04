@@ -24,7 +24,11 @@ from qt_commander.server import (
     qt_mouse_click,
     qt_mouse_click_at,
     qt_mouse_click_region,
+    qt_mouse_press,
+    qt_mouse_release,
+    qt_mouse_move,
     qt_keyboard_input,
+    qt_key_combo,
     qt_focus,
     qt_attach,
     qt_screenshot,
@@ -379,6 +383,134 @@ class TestKeyboardInputPayload:
 
         await qt_keyboard_input("keys_p02", 42, "abc")
         assert captured["params"]["modifiers"] == []
+
+
+# ============================================================================
+# qt_mouse_press / qt_mouse_release — split click + drag primitives
+# ============================================================================
+
+class TestMousePressPayload:
+    @pytest.mark.asyncio
+    async def test_press_sends_qt_mouse_press(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "prss_p01", 11, workspace)
+
+        result = await qt_mouse_press(
+            "prss_p01", 42, button="right", modifiers=["Ctrl"]
+        )
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.mousePress"
+        # No x/y -> hasCoords=false -> element center on the library side.
+        assert captured["params"] == {
+            "element_id": 42,
+            "button": "right",
+            "modifiers": ["Ctrl"],
+        }
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_press_with_coordinates(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "prss_p02", 12, workspace)
+
+        await qt_mouse_press("prss_p02", 7, x=12.5, y=30.0)
+        assert captured["method"] == "qt.mousePress"
+        assert captured["params"] == {
+            "element_id": 7,
+            "button": "left",
+            "modifiers": [],
+            "x": 12.5,
+            "y": 30.0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_press_partial_coordinates_ignored(self, sm, workspace, server_sessions):
+        """Only x AND y together are forwarded (hasCoords semantics)."""
+        sess, captured = make_session(sm, "prss_p03", 13, workspace)
+
+        await qt_mouse_press("prss_p03", 1, x=5.0)
+        assert "x" not in captured["params"]
+        assert "y" not in captured["params"]
+
+
+class TestMouseReleasePayload:
+    @pytest.mark.asyncio
+    async def test_release_sends_qt_mouse_release(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "rls_p01", 11, workspace)
+
+        result = await qt_mouse_release("rls_p01", 42, modifiers=["Shift"])
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.mouseRelease"
+        assert captured["params"] == {
+            "element_id": 42,
+            "button": "left",
+            "modifiers": ["Shift"],
+        }
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_release_with_coordinates(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "rls_p02", 12, workspace)
+
+        await qt_mouse_release("rls_p02", 7, x=1.0, y=2.0)
+        assert captured["params"] == {
+            "element_id": 7,
+            "button": "left",
+            "modifiers": [],
+            "x": 1.0,
+            "y": 2.0,
+        }
+
+
+class TestMouseMovePayload:
+    @pytest.mark.asyncio
+    async def test_move_sends_qt_mouse_move(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "move_p01", 11, workspace)
+
+        result = await qt_mouse_move("move_p01", 42, 10.0, 20.0)
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.mouseMove"
+        assert captured["params"] == {
+            "element_id": 42,
+            "x": 10.0,
+            "y": 20.0,
+        }
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_move_requires_coordinates(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "move_p02", 12, workspace)
+
+        await qt_mouse_move("move_p02", 3, 0, 0)
+        assert captured["params"] == {"element_id": 3, "x": 0.0, "y": 0.0}
+
+
+# ============================================================================
+# qt_key_combo — Ctrl+C style shortcuts ("qt.keyCombo")
+# ============================================================================
+
+class TestKeyComboPayload:
+    @pytest.mark.asyncio
+    async def test_key_combo_sends_qt_key_combo(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "cmbo_p01", 13, workspace)
+
+        result = await qt_key_combo("cmbo_p01", 42, "Ctrl+Shift+A")
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.keyCombo"
+        assert captured["params"] == {
+            "element_id": 42,
+            "keys": "Ctrl+Shift+A",
+        }
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_key_combo_focused_widget_target(self, sm, workspace, server_sessions):
+        sess, captured = make_session(sm, "cmbo_p02", 14, workspace)
+
+        await qt_key_combo("cmbo_p02", 0, "F5")
+        assert captured["params"] == {"element_id": 0, "keys": "F5"}
 
 
 # ============================================================================

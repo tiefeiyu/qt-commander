@@ -20,6 +20,50 @@
 #include <QRadioButton>
 #include <QPlainTextEdit>
 #include <QTextEdit>
+#include <QMouseEvent>
+
+// Drag probe: records press/move/release positions so injected
+// mouse-press/mouse-move/mouse-release sequences can be asserted from
+// outside the process (style-independent; plain QWidget semantics).
+class DragProbe : public QWidget {
+    Q_OBJECT
+    Q_PROPERTY(int pressX READ pressX)
+    Q_PROPERTY(int moveX READ moveX)
+    Q_PROPERTY(int releaseX READ releaseX)
+    Q_PROPERTY(int moveCount READ moveCount)
+public:
+    explicit DragProbe(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName(QStringLiteral("dragProbe"));
+        setMinimumSize(220, 60);
+        setStyleSheet(QStringLiteral("background:#FDEBD0;border:1px solid #bbb;"));
+        // Without tracking, Qt drops button-less MouseMove events; with it,
+        // hover moves are delivered too (drag moves carry the button anyway).
+        setMouseTracking(true);
+    }
+    int pressX() const { return press_x_; }
+    int moveX() const { return move_x_; }
+    int releaseX() const { return release_x_; }
+    int moveCount() const { return move_count_; }
+protected:
+    void mousePressEvent(QMouseEvent* e) override {
+        press_x_ = e->pos().x();
+        QWidget::mousePressEvent(e);
+    }
+    void mouseMoveEvent(QMouseEvent* e) override {
+        move_x_ = e->pos().x();
+        ++move_count_;
+        QWidget::mouseMoveEvent(e);
+    }
+    void mouseReleaseEvent(QMouseEvent* e) override {
+        release_x_ = e->pos().x();
+        QWidget::mouseReleaseEvent(e);
+    }
+private:
+    int press_x_ = -1;
+    int move_x_ = -1;
+    int release_x_ = -1;
+    int move_count_ = 0;
+};
 
 class WidgetTestWindow : public QMainWindow {
     Q_OBJECT
@@ -48,6 +92,7 @@ private:
     QSpinBox* spin_box_;
     QSlider* slider_;
     QWidget* dynamic_container_;
+    DragProbe* drag_probe_;
 
     QPlainTextEdit* log_view_;
 

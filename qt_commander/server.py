@@ -339,11 +339,77 @@ async def qt_mouse_click_region(session_id: str, element_id: int, button: str = 
 
 
 @mcp.tool()
+async def qt_mouse_press(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None, x: float | None = None, y: float | None = None) -> str:
+    """Press a mouse button on an element WITHOUT releasing it.
+
+    Pair with qt_mouse_release to split a click, or qt_mouse_move for a
+    drag (press -> move -> release).  x/y are optional element-local
+    coordinates (element center when omitted)."""
+    session = _resolve_session(session_id)
+    params = {
+        "element_id": element_id, "button": button,
+        "modifiers": modifiers or [],
+    }
+    if x is not None and y is not None:
+        params["x"] = float(x)
+        params["y"] = float(y)
+    result = await session.send_rpc("qt.mousePress", params)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def qt_mouse_release(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None, x: float | None = None, y: float | None = None) -> str:
+    """Release a previously pressed mouse button on an element.
+
+    Completes a press/release pair (a click) or finishes a drag started
+    with qt_mouse_press + qt_mouse_move.  x/y are optional element-local
+    coordinates (element center when omitted)."""
+    session = _resolve_session(session_id)
+    params = {
+        "element_id": element_id, "button": button,
+        "modifiers": modifiers or [],
+    }
+    if x is not None and y is not None:
+        params["x"] = float(x)
+        params["y"] = float(y)
+    result = await session.send_rpc("qt.mouseRelease", params)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def qt_mouse_move(session_id: str, element_id: int, x: float, y: float) -> str:
+    """Move the mouse pointer to an element-local position (no buttons).
+
+    Use between qt_mouse_press and qt_mouse_release to drag, or alone to
+    hover.  x/y are coordinates relative to the element's top-left corner."""
+    session = _resolve_session(session_id)
+    result = await session.send_rpc("qt.mouseMove", {
+        "element_id": element_id, "x": float(x), "y": float(y),
+    })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
 async def qt_keyboard_input(session_id: str, element_id: int, text: str, modifiers: list[str] | None = None) -> str:
     """Send keyboard input to a UI element."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.typeText", {
         "element_id": element_id, "text": text, "modifiers": modifiers or [],
+    })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def qt_key_combo(session_id: str, element_id: int, keys: str) -> str:
+    """Send a keyboard shortcut to an element, e.g. "Ctrl+C", "Ctrl+Shift+A".
+
+    Format: modifier names ("Ctrl", "Alt", "Shift", "Meta") joined with '+'
+    followed by the key name ("C", "F5", "Enter", "Tab", "Escape", "Home",
+    arrows, ...).  element_id 0 targets the widget that currently has focus.
+    Delivered as a real key press/release pair with the modifier state set."""
+    session = _resolve_session(session_id)
+    result = await session.send_rpc("qt.keyCombo", {
+        "element_id": element_id, "keys": keys,
     })
     return json.dumps(result, indent=2)
 

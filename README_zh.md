@@ -69,7 +69,11 @@ python -m qt_commander
 | `qt_mouse_click` | 向 UI 元素发送鼠标点击（直接投递） |
 | `qt_mouse_click_at` | 在指定窗口坐标处点击 — 走真实 Qt 输入管线（QPA），真实场景图/控件树命中测试，与人类点击完全一致 |
 | `qt_mouse_click_region` | 点击元素屏幕区域中心 — 由真实命中测试决定实际落点（如 QML Rectangle 内的 MouseArea） |
-| `qt_keyboard_input` | 发送键盘输入 |
+| `qt_mouse_press` | 在元素上按下鼠标按键（不松开） |
+| `qt_mouse_release` | 释放之前按下的鼠标按键（完成一次点击或拖动） |
+| `qt_mouse_move` | 将指针移动到元素局部坐标处（拖动 = press → move → release） |
+| `qt_keyboard_input` | 发送键盘输入（键入文本，可带按住的修饰键） |
+| `qt_key_combo` | 发送快捷键，如 `Ctrl+C`、`Ctrl+Shift+A`（带修饰键的真实按下/释放序列） |
 | `qt_focus` | 将焦点设置到指定元素 |
 
 ## 测试

@@ -72,7 +72,11 @@ python -m qt_commander
 | `qt_mouse_click` | Send a mouse click to a UI element (direct delivery) |
 | `qt_mouse_click_at` | Click at an exact window coordinate — routed through the real Qt input pipeline (QPA), with real scene-graph/widget hit testing, identical to a human click |
 | `qt_mouse_click_region` | Click at the center of an element's on-screen region — real hit testing decides the actual target (e.g. a QML Rectangle's MouseArea) |
-| `qt_keyboard_input` | Send keyboard input |
+| `qt_mouse_press` | Press a mouse button on an element without releasing it |
+| `qt_mouse_release` | Release a previously pressed mouse button (completes a click or a drag) |
+| `qt_mouse_move` | Move the pointer to an element-local position (drag = press → move → release) |
+| `qt_keyboard_input` | Send keyboard input (typed text, optionally with held modifiers) |
+| `qt_key_combo` | Send a shortcut such as `Ctrl+C` or `Ctrl+Shift+A` (real press/release pair with modifiers) |
 | `qt_focus` | Set focus on a specific element |
 
 ## Testing

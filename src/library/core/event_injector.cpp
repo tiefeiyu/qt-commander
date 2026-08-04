@@ -60,6 +60,14 @@ namespace {
 #else
     QTouchDevice* s_touchDevice = nullptr;
 #endif
+
+// Mouse button state across press/move/release sequences.  Real mouse move
+// events carry the pressed-button state, and QApplication::notify drops
+// button-less MouseMove events for widgets without mouse tracking -- so
+// drags (press -> move -> release) must mark the move events with the
+// currently held button.  All EventInjector calls run on the GUI thread
+// (the protocol layer dispatches there), so no locking is needed.
+Qt::MouseButtons s_pressedMouseButtons = Qt::NoButton;
 } // anonymous namespace
 
 // ============================================================================
@@ -619,6 +627,7 @@ bool EventInjector::mousePress(QObject* target, const QString& button,
                                    btn, btn, mods);
 #endif
 
+    s_pressedMouseButtons |= btn;  // so subsequent moves carry the button
     return dispatchEvent(target, event);
 }
 
@@ -655,6 +664,7 @@ bool EventInjector::mouseRelease(QObject* target, const QString& button,
                                    btn, Qt::NoButton, mods);
 #endif
 
+    s_pressedMouseButtons &= ~btn;  // drag finished; moves are hover-only
     return dispatchEvent(target, event);
 }
 
@@ -734,11 +744,13 @@ bool EventInjector::mouseMove(QObject* target, double x, double y)
 #ifdef QT_COMMANDER_QT6
     auto* event = new QMouseEvent(QEvent::MouseMove,
                                    localPos, globalPos,
-                                   Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                                   Qt::NoButton, s_pressedMouseButtons,
+                                   Qt::NoModifier);
 #else
     auto* event = new QMouseEvent(QEvent::MouseMove,
                                    localPos, localPos, globalPos,
-                                   Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                                   Qt::NoButton, s_pressedMouseButtons,
+                                   Qt::NoModifier);
 #endif
 
     return dispatchEvent(target, event);

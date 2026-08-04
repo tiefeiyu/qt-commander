@@ -25,6 +25,7 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QProgressBar>
+#include <QSlider>
 #include <QVBoxLayout>
 #ifdef QT_COMMANDER_WITH_QML
 #include <QDir>
@@ -793,6 +794,135 @@ static void test_click_at_widget_hit_test()
 }
 
 // ---------------------------------------------------------------------------
+// Mouse press/release primitives: a press alone must NOT complete a click;
+// the release does.  This is the foundation for drags.
+// ---------------------------------------------------------------------------
+static void test_mouse_press_release_split_click()
+{
+    TEST("mousePress + mouseRelease on a button = exactly one clicked()");
+
+    QWidget win;
+    win.resize(300, 200);
+    auto* btn = new QPushButton(QStringLiteral("T"), &win);
+    btn->setGeometry(50, 50, 80, 30);
+    int clicks = 0;
+    QObject::connect(btn, &QPushButton::clicked,
+                     [&clicks]() { clicks += 1; });
+    win.show();
+    QApplication::processEvents();
+
+    const QStringList noMods;
+    CHECK(EventInjector::mousePress(btn, QStringLiteral("left"),
+                                    -1.0, -1.0, noMods, false),
+          "mousePress returned success");
+    QApplication::processEvents();
+    CHECK(clicks == 0, "press alone must NOT fire clicked(), got " << clicks);
+
+    CHECK(EventInjector::mouseRelease(btn, QStringLiteral("left"),
+                                      -1.0, -1.0, noMods, false),
+          "mouseRelease returned success");
+    QApplication::processEvents();
+    CHECK(clicks == 1, "press+release must fire clicked() once, got " << clicks);
+
+    win.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Drag: a press -> move -> release sequence delivers every event with the
+// right coordinates to the target widget.  A plain QWidget records the
+// events (style-independent; QSlider's drag depends on style hit-testing
+// of the handle geometry and is intentionally not exercised here).
+// ---------------------------------------------------------------------------
+class DragProbe : public QWidget {
+public:
+    explicit DragProbe(QWidget* parent = nullptr) : QWidget(parent) {
+        // Without tracking, Qt drops button-less MouseMove events.
+        setMouseTracking(true);
+    }
+    int pressX = -1, moveX = -1, releaseX = -1, moveCount = 0;
+protected:
+    void mousePressEvent(QMouseEvent* e) override {
+        pressX = e->pos().x();
+        QWidget::mousePressEvent(e);
+    }
+    void mouseMoveEvent(QMouseEvent* e) override {
+        moveX = e->pos().x();
+        ++moveCount;
+        QWidget::mouseMoveEvent(e);
+    }
+    void mouseReleaseEvent(QMouseEvent* e) override {
+        releaseX = e->pos().x();
+        QWidget::mouseReleaseEvent(e);
+    }
+};
+
+static void test_mouse_drag_probe()
+{
+    TEST("press -> move -> release delivers coordinates to the target");
+
+    QWidget win;
+    win.resize(400, 200);
+    auto* probe = new DragProbe(&win);
+    probe->setGeometry(50, 50, 220, 60);
+    win.show();
+    QApplication::processEvents();
+
+    const QStringList noMods;
+    // Press at the probe center (hasCoords=false), then drag to the right
+    // edge with explicit coordinates, then release there.
+    CHECK(EventInjector::mousePress(probe, QStringLiteral("left"),
+                                    -1.0, -1.0, noMods, false),
+          "drag press ok");
+    CHECK(EventInjector::mouseMove(probe, 120.0, 30.0), "move 1 ok");
+    CHECK(EventInjector::mouseMove(probe, 200.0, 30.0), "move 2 ok");
+    CHECK(EventInjector::mouseRelease(probe, QStringLiteral("left"),
+                                      200.0, 30.0, noMods, true),
+          "drag release ok");
+    QApplication::processEvents();
+
+    const int cx = probe->width() / 2;
+    CHECK(probe->pressX == cx,
+          "press landed at element center, got " << probe->pressX);
+    CHECK(probe->moveCount >= 2,
+          "both move events delivered, got " << probe->moveCount);
+    CHECK(probe->moveX == 200,
+          "last move at target x, got " << probe->moveX);
+    CHECK(probe->releaseX == 200,
+          "release at target x, got " << probe->releaseX);
+
+    win.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// keyCombo: "Ctrl+A" delivers a real press/release pair with modifiers.
+// ---------------------------------------------------------------------------
+static void test_key_combo_ctrl_a_selects_all()
+{
+    TEST("keyCombo \"Ctrl+A\" selects all text in a line edit");
+
+    QLineEdit edit;
+    edit.setText(QStringLiteral("hello world"));
+    edit.resize(200, 30);
+    edit.show();
+    QApplication::processEvents();
+    edit.setFocus();
+    QApplication::processEvents();
+
+    CHECK(EventInjector::keyCombo(&edit, QStringLiteral("Ctrl+A")),
+          "keyCombo Ctrl+A returned success");
+    QApplication::processEvents();
+
+    CHECK(edit.selectedText() == QStringLiteral("hello world"),
+          "Ctrl+A must select all, got: '"
+              << edit.selectedText().toStdString() << "'");
+
+    edit.close();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[])
@@ -818,6 +948,9 @@ int main(int argc, char* argv[])
     test_callmethod_typed_int();
     test_callmethod_non_slot_not_invokable();
     test_click_at_widget_hit_test();
+    test_mouse_press_release_split_click();
+    test_mouse_drag_probe();
+    test_key_combo_ctrl_a_selects_all();
 #ifdef QT_COMMANDER_WITH_QML
     test_qml_window_root_reachable();
     test_click_at_qml_hit_test();

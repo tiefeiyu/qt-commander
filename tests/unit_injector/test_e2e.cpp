@@ -56,6 +56,65 @@ static std::string recv_frame(SOCKET s) {
     return b;
 }
 
+// --- interaction helpers ---------------------------------------------------
+
+static bool resp_ok(const std::string& r) {
+    return r.find("\"ok\":true") != std::string::npos;
+}
+
+static std::string call_rpc(SOCKET sock, const char* method,
+                            const std::string& params, int id) {
+    std::string q = std::string("{\"jsonrpc\":\"2.0\",\"method\":\"") +
+                    method + "\",\"params\":" + params + ",\"id\":" +
+                    std::to_string(id) + "}";
+    if (!send_frame(sock, q)) return "";
+    return recv_frame(sock);
+}
+
+static long find_element_id(SOCKET sock, const char* objName, int id) {
+    std::string q = std::string(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"qt.findElement\",\"params\":"
+        "{\"query\":{\"object_name\":\"") + objName + "\"}},\"id\":" +
+        std::to_string(id) + "}";
+    if (!send_frame(sock, q)) return -1;
+    std::string r = recv_frame(sock);
+    auto elems = r.find("\"elements\":[");
+    if (elems == std::string::npos) return -1;
+    auto idp = r.find("\"id\":", elems);
+    if (idp == std::string::npos) return -1;
+    return std::stol(r.substr(idp + 5));
+}
+
+static std::string get_prop_str(SOCKET sock, long eid, const char* name, int id) {
+    std::string r = call_rpc(sock, "qt.getProperty",
+        std::string("{\"element_id\":") + std::to_string(eid) +
+        ",\"name\":\"" + name + "\"}", id);
+    auto vp = r.find("\"value\":");
+    if (vp == std::string::npos) return "";
+    auto s = r.find('"', vp + 8);
+    if (s == std::string::npos) return "";
+    auto e = r.find('"', s + 1);
+    return r.substr(s + 1, e - s - 1);
+}
+
+static bool get_prop_bool(SOCKET sock, long eid, const char* name, int id) {
+    std::string r = call_rpc(sock, "qt.getProperty",
+        std::string("{\"element_id\":") + std::to_string(eid) +
+        ",\"name\":\"" + name + "\"}", id);
+    auto vp = r.find("\"value\":");
+    if (vp == std::string::npos) return false;
+    return r.find("true", vp + 8) < r.find("false", vp + 8);
+}
+
+static double get_prop_double(SOCKET sock, long eid, const char* name, int id) {
+    std::string r = call_rpc(sock, "qt.getProperty",
+        std::string("{\"element_id\":") + std::to_string(eid) +
+        ",\"name\":\"" + name + "\"}", id);
+    auto vp = r.find("\"value\":");
+    if (vp == std::string::npos) return -1;
+    return std::atof(r.c_str() + vp + 8);
+}
+
 int main() {
     // Auto-discover binaries
     const char* bases[] = {
@@ -169,6 +228,81 @@ int main() {
     // The library's snapshot returns top-level "nodes", each with a
     // "className" -- either field proves the UI tree came back.
     CHECK(sr.find("\"nodes\"") != std::string::npos || sr.find("\"className\"") != std::string::npos, "snapshot has UI data");
+
+    // 5b. Interaction primitives over the real wire:
+    //     typeText + keyCombo ("Ctrl+A"), mousePress/mouseRelease split
+    //     click, and a slider drag (press -> move -> release).
+    {
+        // --- keyCombo: type then Ctrl+A selects everything ---
+        long editId = find_element_id(sock, "lineEdit", 4);
+        CHECK(editId > 0, "findElement lineEdit");
+        if (editId > 0) {
+            std::string r = call_rpc(sock, "qt.typeText",
+                "{\"element_id\":" + std::to_string(editId) +
+                ",\"text\":\"hello\",\"modifiers\":[]}", 5);
+            CHECK(resp_ok(r), "typeText \"hello\" ok");
+            std::string text = get_prop_str(sock, editId, "text", 6);
+            CHECK(text == "hello",
+                  (std::string("lineEdit text after typeText, got: ") + text).c_str());
+            r = call_rpc(sock, "qt.keyCombo",
+                "{\"element_id\":" + std::to_string(editId) +
+                ",\"keys\":\"Ctrl+A\"}", 7);
+            CHECK(resp_ok(r), "keyCombo Ctrl+A ok");
+            std::string sel = get_prop_str(sock, editId, "selectedText", 8);
+            CHECK(sel == "hello",
+                  (std::string("Ctrl+A selects all, got: ") + sel).c_str());
+        }
+
+        // --- mousePress / mouseRelease split: checkbox flips on release ---
+        long chkId = find_element_id(sock, "checkBox", 9);
+        CHECK(chkId > 0, "findElement checkBox");
+        if (chkId > 0) {
+            CHECK(get_prop_bool(sock, chkId, "checked", 10),
+                  "checkbox starts checked");
+            std::string r = call_rpc(sock, "qt.mousePress",
+                "{\"element_id\":" + std::to_string(chkId) +
+                ",\"button\":\"left\",\"modifiers\":[]}", 11);
+            CHECK(resp_ok(r), "mousePress ok");
+            CHECK(get_prop_bool(sock, chkId, "checked", 12),
+                  "press alone must NOT flip the checkbox");
+            r = call_rpc(sock, "qt.mouseRelease",
+                "{\"element_id\":" + std::to_string(chkId) +
+                ",\"button\":\"left\",\"modifiers\":[]}", 13);
+            CHECK(resp_ok(r), "mouseRelease ok");
+            CHECK(!get_prop_bool(sock, chkId, "checked", 14),
+                  "release flips the checkbox");
+        }
+
+        // --- drag: press probe center -> move -> release ---
+        // The app's DragProbe widget records press/move/release x so the
+        // drag primitives can be asserted over the wire.
+        long probeId = find_element_id(sock, "dragProbe", 15);
+        CHECK(probeId > 0, "findElement dragProbe");
+        if (probeId > 0) {
+            std::string r = call_rpc(sock, "qt.mousePress",
+                "{\"element_id\":" + std::to_string(probeId) +
+                ",\"button\":\"left\",\"modifiers\":[]}", 16);
+            CHECK(resp_ok(r), "drag press ok");
+            r = call_rpc(sock, "qt.mouseMove",
+                "{\"element_id\":" + std::to_string(probeId) +
+                ",\"x\":120,\"y\":30}", 17);
+            CHECK(resp_ok(r), "drag move 1 ok");
+            r = call_rpc(sock, "qt.mouseMove",
+                "{\"element_id\":" + std::to_string(probeId) +
+                ",\"x\":200,\"y\":30}", 18);
+            CHECK(resp_ok(r), "drag move 2 ok");
+            r = call_rpc(sock, "qt.mouseRelease",
+                "{\"element_id\":" + std::to_string(probeId) +
+                ",\"button\":\"left\",\"modifiers\":[],\"x\":200,\"y\":30}", 19);
+            CHECK(resp_ok(r), "drag release ok");
+            double moves = get_prop_double(sock, probeId, "moveCount", 20);
+            CHECK(moves >= 2, "both move events delivered");
+            double moveX = get_prop_double(sock, probeId, "moveX", 21);
+            CHECK(moveX == 200, "last move at target x");
+            double releaseX = get_prop_double(sock, probeId, "releaseX", 22);
+            CHECK(releaseX == 200, "release at target x");
+        }
+    }
 
     // 6. Shutdown
     send_frame(sock, "{\"jsonrpc\":\"2.0\",\"method\":\"qt.shutdown\",\"params\":{},\"id\":3}");
