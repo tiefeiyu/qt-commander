@@ -78,15 +78,23 @@ python -m qt_commander
 CMake 构建树运行：
 
 ```powershell
-# 单一构建树（注入器 + 库 + 测试应用 + 全部测试）
+# 单一构建树（注入器 + 库 + 测试应用 + 全部测试）。
+# Qt5 与 Qt6 均支持，按需选择：
+#   Qt5：-DQT_MAJOR_VERSION=5 -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+#   Qt6：-DQT_MAJOR_VERSION=6 -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
 cmake -S . -B build/msvc -G Ninja ^
   -DBUILD_INJECTOR=ON -DBUILD_TESTS=ON -DWITH_QML=ON ^
-  -DCMAKE_BUILD_TYPE=Release -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+  -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6 ^
+  -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
 
 # 构建全部，然后一条命令跑完所有测试：
 cmake --build build/msvc
 ctest --test-dir build/msvc --output-on-failure
 ```
+
+`verify_preload`（部署级 E2E）会自动检测部署的 `libqt-commander.dll`
+所属的 Qt 主版本并验证对应 DLL 集合，同一脚本同时适用于 Qt5 与 Qt6
+部署。
 
 `ctest` 运行 20 个套件：14 个注入器 C++ 套件（含对 widget 测试应用的
 真实注入 E2E）、4 个库 C++ 套件、完整 pytest 套件（`python_unit_tests`），

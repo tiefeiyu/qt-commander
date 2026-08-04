@@ -40,24 +40,36 @@ def _basenames(paths: list[str]) -> set[str]:
     return {Path(p).name.lower() for p in paths}
 
 
+def _qt_prefix(names: set[str]) -> str:
+    """Derive the Qt major from the library's own import closure, so the
+    same assertions hold for Qt5 and Qt6 builds."""
+    if "qt6core.dll" in names:
+        return "qt6"
+    if "qt5core.dll" in names:
+        return "qt5"
+    raise AssertionError(f"no QtCore in closure: {sorted(names)}")
+
+
 def test_list_deps_direct_and_transitive(injector_and_library):
-    """Closure must include direct deps AND Qt5Quick's transitive deps
-    (Qt5Qml/Qt5QmlModels/Qt5Network) — the exact set that must be
-    preloaded because the loader cannot find them via the library dir."""
+    """Closure must include direct deps AND Qt<major>Quick's transitive
+    deps (Qt<major>Qml/Qt<major>QmlModels/Qt<major>Network) — the exact
+    set that must be preloaded because the loader cannot find them via
+    the library dir."""
     _, lib = injector_and_library
     deps = _run_list_deps(lib, [lib.parent])
     names = _basenames(deps)
+    p = _qt_prefix(names)
 
     # Direct imports of the library.
-    assert "qt5widgets.dll" in names
-    assert "qt5quick.dll" in names
-    assert "qt5gui.dll" in names
-    assert "qt5core.dll" in names
+    assert f"{p}widgets.dll" in names
+    assert f"{p}quick.dll" in names
+    assert f"{p}gui.dll" in names
+    assert f"{p}core.dll" in names
 
-    # Transitive deps of Qt5Quick, resolvable from the same dir.
-    assert "qt5qml.dll" in names
-    assert "qt5qmlmodels.dll" in names
-    assert "qt5network.dll" in names
+    # Transitive deps of Qt<major>Quick, resolvable from the same dir.
+    assert f"{p}qml.dll" in names
+    assert f"{p}qmlmodels.dll" in names
+    assert f"{p}network.dll" in names
 
     # No duplicates.
     assert len(names) == len(deps), f"duplicate deps: {deps}"

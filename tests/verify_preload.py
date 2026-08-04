@@ -2,16 +2,17 @@
 libqt-commander.dll into the target process, so clean windeployqt-only app
 directories attach without any manual Qt DLL copies.
 
-Scenarios:
+Scenarios (Qt major auto-detected from the library's import closure, so
+the same script verifies both Qt5 and Qt6 deployments):
   A. QML app (qt-qml-test) deployed by windeployqt ONLY -- its dir contains
-     NO Qt5Widgets.dll (the library's dependency the app itself never
+     NO Qt<major>Widgets.dll (the library's dependency the app itself never
      links).  Attach must succeed and a real click must work.
   B. Widget app (qt-widget-test) deployed by windeployqt ONLY -- its dir
-     contains NO Qt5Quick/Qt5Qml/Qt5Network.  Attach must succeed and a
-     real click must work.
-  C. Boundary: with Qt5Qml.dll removed from the qt-commander bin dir, the
-     injector must fail with a diagnostic naming Qt5Qml.dll (instead of
-     the opaque "LoadLibraryW returned NULL").
+     contains NO Qt<major>Quick/Qt<major>Qml/Qt<major>Network.  Attach must
+     succeed and a real click must work.
+  C. Boundary: with Qt<major>Qml.dll removed from the qt-commander bin dir,
+     the injector must fail with a diagnostic naming Qt<major>Qml.dll
+     (instead of the opaque "LoadLibraryW returned NULL").
 
 Usage: python tests/verify_preload.py
 Exit code 0 = all scenarios passed.
@@ -33,16 +34,20 @@ from qt_commander.errors import InjectionError  # noqa: E402
 from qt_commander.rpc_client import inject_and_connect  # noqa: E402
 from qt_commander.session import Session  # noqa: E402
 
-QTC_BIN = REPO / ".qt-commander" / "bin"
+# QTC_DIR overrides the deployment root (useful for regression runs against
+# an alternate Qt-major deployment without clobbering .qt-commander/bin).
+QTC_ROOT = Path(os.environ.get("QTC_DIR", REPO / ".qt-commander"))
+QTC_BIN = QTC_ROOT / "bin"
 INJECTOR = QTC_BIN / "qt-injector.exe"
 LIBRARY = QTC_BIN / "libqt-commander.dll"
+QT_MAJOR = ""  # filled in by detect_qt_major() inside main()
 
 # Qt bin dir: QT_BIN env var wins (run_all_tests.py sets it), otherwise the
 # Qt<major>_DIR from the test build's CMakeCache, otherwise the repo default.
 _qt_bin = Path(os.environ.get("QT_BIN", "")) if os.environ.get("QT_BIN") \
     else None
 if not _qt_bin or not _qt_bin.is_dir():
-    _cache = REPO / ".qt-commander" / "test-apps-build" / "CMakeCache.txt"
+    _cache = QTC_ROOT / "test-apps-build" / "CMakeCache.txt"
     _qt_bin = None
     if _cache.exists():
         for _key in ("Qt5_DIR", "Qt6_DIR"):
@@ -63,8 +68,8 @@ WINDEPLOYQT = QT_BIN / "windeployqt.exe" if QT_BIN else None
 QML_SRC = REPO / "tests" / "test-apps" / "qml"
 WIDGET_SRC = REPO / "tests" / "test-apps" / "widget"
 
-QML_APP = REPO / ".qt-commander" / "qml-app" / "bin" / "qt-qml-test.exe"
-WIDGET_APP = REPO / ".qt-commander" / "test-app" / "bin" / "qt-widget-test.exe"
+QML_APP = QTC_ROOT / "qml-app" / "bin" / "qt-qml-test.exe"
+WIDGET_APP = QTC_ROOT / "test-app" / "bin" / "qt-widget-test.exe"
 
 failures = []
 
@@ -98,6 +103,27 @@ def deploy_windeployqt(app_exe: Path, qmldir: Path | None, dest: Path) -> None:
 
 def missing_dlls(app_dir: Path, names: list[str]) -> list[str]:
     return [n for n in names if not (app_dir / n).exists()]
+
+
+def qdll(short: str) -> str:
+    """Qt<major><short>.dll, e.g. qdll("Widgets") -> Qt6Widgets.dll."""
+    return f"Qt{QT_MAJOR}{short}.dll"
+
+
+def detect_qt_major() -> str:
+    """Derive the Qt major from libqt-commander.dll's own import closure."""
+    proc = subprocess.run(
+        [str(INJECTOR), "--list-deps", str(LIBRARY),
+         "--search-dir", str(QTC_BIN)],
+        capture_output=True, text=True, timeout=30)
+    deps = json.loads(proc.stdout)["deps"]
+    names = {Path(p).name.lower() for p in deps}
+    if "qt6core.dll" in names:
+        return "6"
+    if "qt5core.dll" in names:
+        return "5"
+    raise RuntimeError(f"cannot determine Qt major from library closure: "
+                       f"{sorted(names)}")
 
 
 def start_app(app_exe: Path) -> subprocess.Popen:
@@ -148,15 +174,15 @@ async def attach_and_probe(session: Session, pid: int, port_file: Path,
 
 
 async def scenario_qml(work: Path) -> None:
-    print("\n[Scenario A] QML app, Qt5Widgets.dll removed from app dir")
+    print(f"\n[Scenario A] QML app, {qdll('Widgets')} removed from app dir")
     app_dir = work / "app-qml"
     deploy_windeployqt(QML_APP, QML_SRC, app_dir)
-    # windeployqt happens to deploy Qt5Widgets for QML apps, but the app
-    # never loads it.  Remove it to prove the preload covers even the
-    # worst case: a QML deploy WITHOUT Qt5Widgets anywhere near the exe.
-    (app_dir / "Qt5Widgets.dll").unlink(missing_ok=True)
-    check(missing_dlls(app_dir, ["Qt5Widgets.dll"]) == ["Qt5Widgets.dll"],
-          "A: premise -- Qt5Widgets.dll removed from clean QML deploy")
+    # windeployqt happens to deploy Qt<major>Widgets for QML apps, but the
+    # app never loads it.  Remove it to prove the preload covers even the
+    # worst case: a QML deploy WITHOUT Qt<major>Widgets near the exe.
+    (app_dir / qdll("Widgets")).unlink(missing_ok=True)
+    check(missing_dlls(app_dir, [qdll("Widgets")]) == [qdll("Widgets")],
+          f"A: premise -- {qdll('Widgets')} removed from clean QML deploy")
 
     proc = start_app(app_dir / "qt-qml-test.exe")
     try:
@@ -174,13 +200,18 @@ async def scenario_qml(work: Path) -> None:
 
 
 async def scenario_widget(work: Path) -> None:
-    print("\n[Scenario B] Widget app, windeployqt-only dir (no Qt5Quick/Qt5Qml)")
+    # The widget app never links Quick/Qml (the library's own closure
+    # dependencies) -- those must NOT appear in a clean widget deploy.
+    # Qt6's windeployqt additionally drops Qt6Network next to the exe
+    # (a Qt6Gui plugin dependency), so Network is not asserted absent.
+    qml_dlls = [qdll("Quick"), qdll("Qml")]
+    print(f"\n[Scenario B] Widget app, windeployqt-only dir "
+          f"(no {', '.join(qml_dlls)})")
     app_dir = work / "app-widget"
     deploy_windeployqt(WIDGET_APP, None, app_dir)
-    missing = missing_dlls(app_dir, ["Qt5Quick.dll", "Qt5Qml.dll",
-                                     "Qt5Network.dll"])
-    check(set(missing) == {"Qt5Quick.dll", "Qt5Qml.dll", "Qt5Network.dll"},
-          f"B: premise -- Quick/Qml/Network absent from clean widget deploy "
+    missing = missing_dlls(app_dir, qml_dlls)
+    check(set(missing) == set(qml_dlls),
+          f"B: premise -- Quick/Qml absent from clean widget deploy "
           f"(missing: {missing})")
 
     proc = start_app(app_dir / "qt-widget-test.exe")
@@ -199,11 +230,11 @@ async def scenario_widget(work: Path) -> None:
 
 
 def scenario_diagnostic() -> None:
-    print("\n[Scenario C] Missing closure DLL -> named diagnostic")
-    moved = QTC_BIN / "Qt5Qml.dll"
-    backup = QTC_BIN / "Qt5Qml.dll.bak"
+    print(f"\n[Scenario C] Missing closure DLL -> named diagnostic")
+    moved = QTC_BIN / qdll("Qml")
+    backup = QTC_BIN / f"{qdll('Qml')}.bak"
     if not moved.exists():
-        print("  [SKIP] Qt5Qml.dll not in qt-commander bin; nothing to move")
+        print(f"  [SKIP] {qdll('Qml')} not in qt-commander bin; nothing to move")
         return
     shutil.move(moved, backup)
     try:
@@ -213,18 +244,26 @@ def scenario_diagnostic() -> None:
             capture_output=True, text=True, timeout=30)
         deps = json.loads(proc.stdout)["deps"]
         names = [Path(p).name.lower() for p in deps]
-        check("qt5qml.dll" not in names,
-              "C: Qt5Qml.dll no longer in closure after removal")
+        check(f"qt{QT_MAJOR}qml.dll" not in names,
+              f"C: {qdll('Qml')} no longer in closure after removal")
         check(proc.returncode == 0, "C: --list-deps still exits 0")
     finally:
         shutil.move(backup, moved)
 
 
 async def main() -> int:
+    global QT_MAJOR
     if not (INJECTOR.exists() and LIBRARY.exists()):
         print("ERROR: qt-injector.exe / libqt-commander.dll not found in "
               ".qt-commander/bin -- run qt_build first")
         return 2
+    try:
+        QT_MAJOR = detect_qt_major()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        return 2
+    print(f"Detected Qt{QT_MAJOR} library deployment "
+          f"({QTC_BIN})")
     if QT_BIN is None:
         print("ERROR: Qt bin dir not found -- set QT_BIN env var or run "
               "qt_build first")

@@ -81,15 +81,23 @@ Everything (C++ unit + E2E suites, pytest, and the deployment-level preload
 verification) runs from one CMake build tree:
 
 ```powershell
-# Single build tree (injector + library + test apps + all tests)
+# Single build tree (injector + library + test apps + all tests).
+# Both Qt5 and Qt6 are supported; pick the Qt you want to validate:
+#   Qt5: -DQT_MAJOR_VERSION=5 -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+#   Qt6: -DQT_MAJOR_VERSION=6 -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
 cmake -S . -B build/msvc -G Ninja ^
   -DBUILD_INJECTOR=ON -DBUILD_TESTS=ON -DWITH_QML=ON ^
-  -DCMAKE_BUILD_TYPE=Release -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+  -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6 ^
+  -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
 
 # Build everything, then run ALL tests in one command:
 cmake --build build/msvc
 ctest --test-dir build/msvc --output-on-failure
 ```
+
+`verify_preload` (E2E deployment checks) auto-detects the Qt major of the
+deployed `libqt-commander.dll` and verifies the matching DLL set, so the
+same script validates both Qt5 and Qt6 deployments.
 
 `ctest` runs 20 suites: 14 injector C++ suites (including real E2E
 injection against the widget test app), 4 library C++ suites, the full

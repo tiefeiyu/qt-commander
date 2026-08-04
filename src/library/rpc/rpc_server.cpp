@@ -198,7 +198,15 @@ static bool invokeMethodTyped(QObject* obj, const QString& methodName,
         bool     bools[10];
         QString  strings[10];
         QVariant variants[10];
+        // Qt 6.8 changed Q_ARG to return QMetaMethodArgument (a plain
+        // struct, no longer derived from QGenericArgument); the templated
+        // invokeMethod overloads accept it directly.  Older Qt (5.x/6.0-6.7)
+        // still uses QArgument<T> derived from QGenericArgument.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        QMetaMethodArgument ga[10];
+#else
         QGenericArgument ga[10];
+#endif
         bool convOk = true;
 
         for (int a = 0; a < args.size(); ++a) {

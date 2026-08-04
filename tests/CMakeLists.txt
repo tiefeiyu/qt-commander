@@ -151,7 +151,8 @@ if(Python3_FOUND)
                 ${CMAKE_SOURCE_DIR}/tests/verify_preload.py)
     set_tests_properties(verify_preload PROPERTIES
         LABELS "e2e"
-        TIMEOUT 900)
+        TIMEOUT 900
+        ENVIRONMENT "QT_BIN=${QT_COMMANDER_QT_BIN}")
 endif()
 
 # --- Library component unit tests ---

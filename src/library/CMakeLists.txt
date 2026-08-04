@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+
 set(CMAKE_AUTOMOC ON)
 
 # Find Qt

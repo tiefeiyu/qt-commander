@@ -4,11 +4,16 @@
 #include <QString>
 #include <QStringList>
 #include <QHash>
+#include <QtCore/qglobal.h>
 
 class QWidget;
 class QWindow;
 class QQuickItem;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+class QPointingDevice;   // Qt6 renamed QTouchDevice -> QPointingDevice
+#else
 class QTouchDevice;
+#endif
 
 // Injects Qt events into the target application's event loop.
 class EventInjector {
@@ -77,7 +82,11 @@ private:
     static QPointF elementCenter(QObject* target);
     static void sendToWidget(QWidget* widget, QEvent* event);
     static void sendToQmlItem(QQuickItem* item, QEvent* event);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    static QPointingDevice* getTouchDevice();
+#else
     static QTouchDevice* getTouchDevice();
+#endif
 
     // Dispatch helper: route to QWidget or QQuickItem.
     static bool dispatchEvent(QObject* target, QEvent* event);

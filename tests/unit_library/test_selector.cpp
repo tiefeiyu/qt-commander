@@ -38,7 +38,7 @@
 // The QPA input interface: flushed synchronously in tests so injected
 // coordinate clicks are delivered before assertions run.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-#include <QtGui/private/qwindowsysteminterface_p.h>
+#include <QtGui/qpa/qwindowsysteminterface_p.h>
 #else
 #include <QtGui/qpa/qwindowsysteminterface.h>
 #endif
@@ -515,12 +515,13 @@ static void test_lineedit_ctrl_a_select_all()
     edit.setFocus();
     QApplication::processEvents();
 
-    QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier,
-                    QStringLiteral("a"));
-    QCoreApplication::postEvent(&edit, new QKeyEvent(press));
-    QKeyEvent release(QEvent::KeyRelease, Qt::Key_A, Qt::ControlModifier,
-                      QStringLiteral("a"));
-    QCoreApplication::postEvent(&edit, new QKeyEvent(release));
+    // Qt6 makes QEvent's copy ctor protected -- post fresh objects instead.
+    QCoreApplication::postEvent(&edit, new QKeyEvent(QEvent::KeyPress, Qt::Key_A,
+                                                     Qt::ControlModifier,
+                                                     QStringLiteral("a")));
+    QCoreApplication::postEvent(&edit, new QKeyEvent(QEvent::KeyRelease, Qt::Key_A,
+                                                     Qt::ControlModifier,
+                                                     QStringLiteral("a")));
     QApplication::processEvents();
 
     CHECK(edit.selectedText() == QStringLiteral("hello world"),
@@ -528,9 +529,9 @@ static void test_lineedit_ctrl_a_select_all()
               << edit.selectedText().toStdString() << "'");
 
     // A printable key while everything is selected replaces the text.
-    QKeyEvent tPress(QEvent::KeyPress, Qt::Key_R, Qt::NoModifier,
-                     QStringLiteral("r"));
-    QCoreApplication::postEvent(&edit, new QKeyEvent(tPress));
+    QCoreApplication::postEvent(&edit, new QKeyEvent(QEvent::KeyPress, Qt::Key_R,
+                                                     Qt::NoModifier,
+                                                     QStringLiteral("r")));
     QApplication::processEvents();
     CHECK(edit.text() == QStringLiteral("r"),
           "typing after select-all should replace, got: '"

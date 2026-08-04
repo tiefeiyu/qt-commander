@@ -14,7 +14,18 @@
 #include <QWheelEvent>
 #include <QKeyEvent>
 #include <QTouchEvent>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QPointingDevice>
+#include <QInputDevice>
+#else
+#include <QTouchDevice>
+#endif
 #include <QContextMenuEvent>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+// Qt 6.4 removed QEventPoint's public setters (setPos/setState/...);
+// QMutableEventPoint (private header) is the supported mutation path.
+#include <QtGui/private/qeventpoint_p.h>
+#endif
 #include <QThread>
 #include <QPoint>
 #include <QHash>
@@ -25,7 +36,8 @@
 // tree for widget windows), so an injected click behaves exactly like a
 // real mouse click at the given coordinate.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-#include <QtGui/private/qwindowsysteminterface_p.h>
+// Qt6: the QPA interface lives in the private qpa header.
+#include <QtGui/qpa/qwindowsysteminterface_p.h>
 #else
 #include <QtGui/qpa/qwindowsysteminterface.h>
 #endif
@@ -43,7 +55,11 @@
 QHash<int, EventInjector::TouchTarget> EventInjector::s_touchTargets;
 
 namespace {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QPointingDevice* s_touchDevice = nullptr;
+#else
     QTouchDevice* s_touchDevice = nullptr;
+#endif
 } // anonymous namespace
 
 // ============================================================================
@@ -228,9 +244,7 @@ int EventInjector::parseKey(const QString& key)
         {"Undo",          Qt::Key_Undo},
         {"Redo",          Qt::Key_Redo},
         {"Find",          Qt::Key_Find},
-#ifdef QT_COMMANDER_QT6
-        {"Replace",       Qt::Key_Replace},
-#endif
+        // Key_Replace was removed in Qt 5.15 (gone from both 5.15 and 6.x).
         {"Cut",           Qt::Key_Cut},
         {"Copy",          Qt::Key_Copy},
         {"Paste",         Qt::Key_Paste},
@@ -244,10 +258,7 @@ int EventInjector::parseKey(const QString& key)
         {"MediaRecord",   Qt::Key_MediaRecord},
         {"MediaPrevious", Qt::Key_MediaPrevious},
         {"MediaNext",     Qt::Key_MediaNext},
-    #ifdef QT_COMMANDER_QT6
-        {"MediaRewind",   Qt::Key_MediaRewind},
-        {"MediaFastForward", Qt::Key_MediaFastForward},
-    #endif
+        // Key_MediaRewind / Key_MediaFastForward were removed in Qt 5.15.
         {"Back",          Qt::Key_Back},
         {"Forward",       Qt::Key_Forward},
         {"Refresh",       Qt::Key_Refresh},
@@ -355,10 +366,15 @@ void EventInjector::sendToQmlItem(QQuickItem* item, QEvent* event)
 {
     QQuickWindow* win = item->window();
     if (win) {
-        // Qt5: sendEvent() does NOT take ownership — we must delete it.
-        // Qt6: sendEvent() takes ownership and deletes the event internally.
+        // Qt5: QQuickWindow::sendEvent delivers straight to the item and
+        // does NOT take ownership — we must delete the event afterwards.
+        // Qt6: QQuickWindow::sendEvent was removed; QCoreApplication::
+        // sendEvent delivers synchronously to the item's event handler
+        // (QQuickItem::event routes mouse/touch/key events to the
+        // corresponding QQuickItem handler).  Same ownership rule.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        win->sendEvent(item, event);  // Qt6 takes ownership
+        QCoreApplication::sendEvent(item, event);
+        delete event;
 #else
         win->sendEvent(item, event);
         delete event;
@@ -419,6 +435,19 @@ bool EventInjector::dispatchEvent(QObject* target, QEvent* event)
 // Touch device
 // ============================================================================
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+QPointingDevice* EventInjector::getTouchDevice()
+{
+    if (!s_touchDevice) {
+        // QPointingDevice replaced QTouchDevice in Qt6; the type/capability
+        // enums live on the QInputDevice base class.
+        s_touchDevice = new QPointingDevice();
+        s_touchDevice->setType(QInputDevice::DeviceType::TouchScreen);
+        s_touchDevice->setCapabilities(QInputDevice::Capability::Position);
+    }
+    return s_touchDevice;
+}
+#else
 QTouchDevice* EventInjector::getTouchDevice()
 {
     if (!s_touchDevice) {
@@ -428,6 +457,7 @@ QTouchDevice* EventInjector::getTouchDevice()
     }
     return s_touchDevice;
 }
+#endif
 
 // ============================================================================
 // Mouse operations
@@ -741,10 +771,18 @@ bool EventInjector::mouseWheel(QObject* target,
                           qRound(pixelDelta ? deltaY : 0.0));
 
     QPoint gpos = globalPos;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // Qt6 removed the orientation parameter; phase/inverted have no defaults.
+    auto* event = new QWheelEvent(QPointF(localPos), QPointF(gpos),
+                                   pixDelta, angleDelta,
+                                   Qt::NoButton, Qt::NoModifier,
+                                   Qt::NoScrollPhase, false);
+#else
     auto* event = new QWheelEvent(QPointF(localPos), QPointF(gpos),
                                    pixDelta, angleDelta,
                                    0, Qt::Vertical,
                                    Qt::NoButton, Qt::NoModifier);
+#endif
 
     return dispatchEvent(target, event);
 }
@@ -824,8 +862,12 @@ bool EventInjector::typeText(QObject* target,
             QQuickWindow* qmlWin = item->window();
             if (qmlWin) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-                qmlWin->sendEvent(item, pressEvent);   // Qt6 takes ownership
-                qmlWin->sendEvent(item, releaseEvent);
+                // Qt6 removed QQuickWindow::sendEvent -- deliver directly
+                // to the item (sendEvent does not take ownership).
+                QCoreApplication::sendEvent(item, pressEvent);
+                QCoreApplication::sendEvent(item, releaseEvent);
+                delete pressEvent;
+                delete releaseEvent;
 #else
                 qmlWin->sendEvent(item, pressEvent);
                 qmlWin->sendEvent(item, releaseEvent);
@@ -885,8 +927,10 @@ bool EventInjector::keyCombo(QObject* target, const QString& keys)
 #ifdef QT_COMMANDER_WITH_QML
         else if (item) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-            if (auto* w = item->window()) w->sendEvent(item, e);  // Qt6 takes ownership
-            else delete e;
+            if (auto* w = item->window()) {
+                QCoreApplication::sendEvent(item, e);
+                delete e;
+            } else delete e;
 #else
             if (auto* w = item->window()) { w->sendEvent(item, e); delete e; }
             else delete e;
@@ -900,8 +944,10 @@ bool EventInjector::keyCombo(QObject* target, const QString& keys)
 #ifdef QT_COMMANDER_WITH_QML
         else if (item) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-            if (auto* w = item->window()) w->sendEvent(item, e);  // Qt6 takes ownership
-            else delete e;
+            if (auto* w = item->window()) {
+                QCoreApplication::sendEvent(item, e);
+                delete e;
+            } else delete e;
 #else
             if (auto* w = item->window()) { w->sendEvent(item, e); delete e; }
             else delete e;
@@ -987,8 +1033,20 @@ bool EventInjector::touchPress(QObject* target,
     }
 #endif
 
-    QTouchDevice* dev = getTouchDevice();
+    auto* dev = getTouchDevice();
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    QEventPoint tp(touchId, QEventPoint::State(Qt::TouchPointPressed),
+                   scenePos, globalPos);
+    QMutableEventPoint::setPosition(tp, localPos);
+    QMutableEventPoint::setPressure(tp, pressure);
+    QList<QTouchEvent::TouchPoint> touchPoints;
+    touchPoints.append(tp);
+    auto* event = new QTouchEvent(QEvent::TouchBegin,
+                                   dev,
+                                   Qt::NoModifier,
+                                   touchPoints);
+#else
     QTouchEvent::TouchPoint tp;
     tp.setId(touchId);
     tp.setState(Qt::TouchPointPressed);
@@ -1005,6 +1063,7 @@ bool EventInjector::touchPress(QObject* target,
                                    Qt::NoModifier,
                                    Qt::TouchPointPressed,
                                    touchPoints);
+#endif
 
     return dispatchEvent(target, event);
 }
@@ -1034,8 +1093,20 @@ bool EventInjector::touchMove(QObject* target,
     }
 #endif
 
-    QTouchDevice* dev = getTouchDevice();
+    auto* dev = getTouchDevice();
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    QEventPoint tp(touchId, QEventPoint::State(Qt::TouchPointMoved),
+                   scenePos, globalPos);
+    QMutableEventPoint::setPosition(tp, localPos);
+    QMutableEventPoint::setPressure(tp, pressure);
+    QList<QTouchEvent::TouchPoint> touchPoints;
+    touchPoints.append(tp);
+    auto* event = new QTouchEvent(QEvent::TouchUpdate,
+                                   dev,
+                                   Qt::NoModifier,
+                                   touchPoints);
+#else
     QTouchEvent::TouchPoint tp;
     tp.setId(touchId);
     tp.setState(Qt::TouchPointMoved);
@@ -1052,6 +1123,7 @@ bool EventInjector::touchMove(QObject* target,
                                    Qt::NoModifier,
                                    Qt::TouchPointMoved,
                                    touchPoints);
+#endif
 
     return dispatchEvent(target, event);
 }
@@ -1071,8 +1143,20 @@ bool EventInjector::touchRelease(int touchId)
 
     // For release, the position doesn't matter as much.
     const QPointF localPos(0, 0);
-    QTouchDevice* dev = getTouchDevice();
+    auto* dev = getTouchDevice();
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    QEventPoint tp(touchId, QEventPoint::State(Qt::TouchPointReleased),
+                   localPos, QPointF(0, 0));
+    QMutableEventPoint::setPosition(tp, localPos);
+    QMutableEventPoint::setPressure(tp, 0);
+    QList<QTouchEvent::TouchPoint> touchPoints;
+    touchPoints.append(tp);
+    auto* event = new QTouchEvent(QEvent::TouchEnd,
+                                   dev,
+                                   Qt::NoModifier,
+                                   touchPoints);
+#else
     QTouchEvent::TouchPoint tp;
     tp.setId(touchId);
     tp.setState(Qt::TouchPointReleased);
@@ -1089,6 +1173,7 @@ bool EventInjector::touchRelease(int touchId)
                                    Qt::NoModifier,
                                    Qt::TouchPointReleased,
                                    touchPoints);
+#endif
 
     return dispatchEvent(target, event);
 }
@@ -1208,14 +1293,14 @@ bool EventInjector::contextMenu(QObject* target,
                                            Qt::NoModifier);
 #endif
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        win->sendEvent(item, pressEv);    // Qt6 takes ownership
-        win->sendEvent(item, releaseEv);
+        QCoreApplication::sendEvent(item, pressEv);
+        QCoreApplication::sendEvent(item, releaseEv);
 #else
         win->sendEvent(item, pressEv);
         win->sendEvent(item, releaseEv);
+#endif
         delete pressEv;
         delete releaseEv;
-#endif
         return true;
     }
 #endif
