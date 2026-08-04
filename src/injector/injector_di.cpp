@@ -24,6 +24,8 @@
 // Win32ProcessOps — delegates to real Windows APIs
 // ============================================================================
 
+#ifdef _WIN32
+
 bool Win32ProcessOps::open_process(int pid, void*& out_handle) {
     HANDLE h = OpenProcess(
         PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE |
@@ -136,6 +138,8 @@ std::string Win32ProcessOps::last_error() {
         msg.pop_back();
     return msg;
 }
+
+#endif // _WIN32
 
 // ============================================================================
 // PosixProcessOps — delegates to ptrace / procfs on Linux

@@ -2,20 +2,7 @@
 libqt-commander.dll into the target process, so clean windeployqt-only app
 directories attach without any manual Qt DLL copies.
 
-Scenarios (Qt major auto-detected from the library's import closure, so
-the same script verifies both Qt5 and Qt6 deployments):
-  A. QML app (qt-qml-test) deployed by windeployqt ONLY -- its dir contains
-     NO Qt<major>Widgets.dll (the library's dependency the app itself never
-     links).  Attach must succeed and a real click must work.
-  B. Widget app (qt-widget-test) deployed by windeployqt ONLY -- its dir
-     contains NO Qt<major>Quick/Qt<major>Qml/Qt<major>Network.  Attach must
-     succeed and a real click must work.
-  C. Boundary: with Qt<major>Qml.dll removed from the qt-commander bin dir,
-     the injector must fail with a diagnostic naming Qt<major>Qml.dll
-     (instead of the opaque "LoadLibraryW returned NULL").
-
-Usage: python tests/verify_preload.py
-Exit code 0 = all scenarios passed.
+Windows-only test (requires windeployqt + PE DLLs).  On Linux, exits 0.
 """
 import asyncio
 import json
@@ -28,6 +15,10 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+
+if sys.platform != "win32":
+    print("verify_preload: skipping (Windows-only test, requires windeployqt)")
+    sys.exit(0)
 sys.path.insert(0, str(REPO))
 
 from qt_commander.errors import InjectionError  # noqa: E402
