@@ -61,8 +61,8 @@ python -m qt_commander
 | `qt_attach` | Inject library into a target process and open a session |
 | `qt_detach` | Disconnect from a session, optionally eject the library |
 | `qt_list_sessions` | List active sessions |
-| `qt_detect_msvc_and_qt` | Auto-detect MSVC and Qt installations available for building |
-| `qt_build` | Compile injector + library on demand |
+| `qt_detect_msvc_and_qt` | Auto-detect MSVC, MinGW toolchains, and Qt installations available for building |
+| `qt_build` | Compile injector + library on demand — `toolchain` selects `msvc` (vcvars + qtenv bat) or `mingw` (MinGW bin dir + Qt bin dir) |
 | `qt_snapshot` | Capture the UI element tree — `detail` selects the property tier: `core` (geometry/visibility/text, no properties), `extended` (common interaction state), `full` (every Q_PROPERTY) |
 | `qt_find_element` | Find elements by type, text, or property query |
 | `qt_get_property` | Read a QObject property |
@@ -87,8 +87,10 @@ verification) runs from one CMake build tree:
 ```powershell
 # Single build tree (injector + library + test apps + all tests).
 # Both Qt5 and Qt6 are supported; pick the Qt you want to validate:
-#   Qt5: -DQT_MAJOR_VERSION=5 -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
-#   Qt6: -DQT_MAJOR_VERSION=6 -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
+#   Qt5 MSVC: -DQT_MAJOR_VERSION=5 -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+#   Qt6 MSVC: -DQT_MAJOR_VERSION=6 -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
+#   Qt6 MinGW: same, but Qt6_DIR=C:/Qt/6.8.3/mingw_64/lib/cmake/Qt6
+#              with the MinGW toolchain on PATH (see "MinGW" below)
 cmake -S . -B build/msvc -G Ninja ^
   -DBUILD_INJECTOR=ON -DBUILD_TESTS=ON -DWITH_QML=ON ^
   -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6 ^
@@ -99,10 +101,34 @@ cmake --build build/msvc
 ctest --test-dir build/msvc --output-on-failure
 ```
 
-`verify_preload` (E2E deployment checks) auto-detects the Qt major of the
-deployed `libqt-commander.dll` and verifies the matching DLL set — even
-windeployqt follows the deployment's Qt major — so the same script
-validates both Qt5 and Qt6 deployments from either build tree.
+`verify_preload` (E2E deployment checks) auto-detects the Qt major AND
+toolchain kit (msvc/mingw) of the deployed `libqt-commander.dll` and
+verifies the matching DLL set — even windeployqt follows the deployment's
+kit — so the same script validates Qt5/Qt6 × msvc/mingw deployments from
+either build tree.
+
+## MinGW
+
+MinGW builds are fully supported (Qt5 and Qt6 MinGW kits). Use
+`qt_build` with `toolchain="mingw"`: pass the MinGW toolchain's bin dir
+as `vcvars_path` and the Qt kit's bin dir as `qt_env` (MinGW Qt kits have
+no qtenv2.bat). `qt_detect_msvc_and_qt` reports MinGW toolchains
+(`mingw_toolchains`) and tags each Qt kit with its `kit` ("msvc"/"mingw").
+
+Notes:
+
+- **Compiler version**: Qt 5's official MinGW kit ships GCC 8.1, whose
+  libstdc++ cannot compile `std::filesystem` headers (fixed in 8.3); use
+  a GCC ≥ 9 toolchain (e.g. Qt's bundled `mingw1310_64`) for Qt 5 too.
+- **Runtime DLLs**: MinGW executables need `libgcc_s_seh-1.dll`,
+  `libstdc++-6.dll`, `libwinpthread-1.dll` next to them. The build
+  deploys the compiler's own runtime (a Qt kit's older runtime lacks
+  newer symbols), and `verify_preload` matches the deployed app's runtime
+  to the library's.
+- **Kit matching**: the injector library, its deployment, and the target
+  application must share the same Qt kit (all MSVC or all MinGW) —
+  mixing kits loads two Qt module sets into one process and breaks the
+  preload closure.
 
 `ctest` runs 19 suites: 14 injector C++ suites (including three real E2E
 injection suites against the widget test app), 3 library C++ suites, the

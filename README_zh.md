@@ -58,8 +58,8 @@ python -m qt_commander
 | `qt_attach` | 注入库到目标进程并建立会话 |
 | `qt_detach` | 断开会话，可选卸载注入库 |
 | `qt_list_sessions` | 列出当前活跃会话 |
-| `qt_detect_msvc_and_qt` | 自动探测本机可用的 MSVC 和 Qt 安装 |
-| `qt_build` | 按需编译注入器和库 |
+| `qt_detect_msvc_and_qt` | 自动探测本机可用的 MSVC、MinGW 工具链和 Qt 安装 |
+| `qt_build` | 按需编译注入器和库 — `toolchain` 选择 `msvc`（vcvars + qtenv bat）或 `mingw`（MinGW bin 目录 + Qt bin 目录） |
 | `qt_snapshot` | 捕获 UI 元素树 — `detail` 选择属性档位：`core`（几何/可见性/文本，无属性）、`extended`（常用交互状态）、`full`（全部 Q_PROPERTY） |
 | `qt_find_element` | 按类型、文本或属性查询查找元素 |
 | `qt_get_property` | 读取 QObject 属性 |
@@ -84,8 +84,10 @@ CMake 构建树运行：
 ```powershell
 # 单一构建树（注入器 + 库 + 测试应用 + 全部测试）。
 # Qt5 与 Qt6 均支持，按需选择：
-#   Qt5：-DQT_MAJOR_VERSION=5 -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
-#   Qt6：-DQT_MAJOR_VERSION=6 -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
+#   Qt5 MSVC：-DQT_MAJOR_VERSION=5 -DQt5_DIR=C:/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+#   Qt6 MSVC：-DQT_MAJOR_VERSION=6 -DQt6_DIR=C:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6
+#   Qt6 MinGW：同上，但 Qt6_DIR=C:/Qt/6.8.3/mingw_64/lib/cmake/Qt6
+#              且 MinGW 工具链在 PATH 上（见下方「MinGW」）
 cmake -S . -B build/msvc -G Ninja ^
   -DBUILD_INJECTOR=ON -DBUILD_TESTS=ON -DWITH_QML=ON ^
   -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6 ^
@@ -97,9 +99,30 @@ ctest --test-dir build/msvc --output-on-failure
 ```
 
 `verify_preload`（部署级 E2E）会自动检测部署的 `libqt-commander.dll`
-所属的 Qt 主版本并验证对应 DLL 集合——连 windeployqt 也会跟随部署的
-Qt 主版本——因此无论从哪个构建树调用，同一脚本都能验证 Qt5 与 Qt6
-部署。
+所属的 Qt 主版本**和工具链类型**（msvc/mingw）并验证对应 DLL 集合——
+连 windeployqt 也会跟随部署的工具链——因此同一脚本能从任一构建树
+验证 Qt5/Qt6 × msvc/mingw 的全部组合。
+
+## MinGW
+
+MinGW 构建完全受支持（Qt5 与 Qt6 MinGW kit）。使用 `qt_build` 并传
+`toolchain="mingw"`：`vcvars_path` 传 MinGW 工具链的 bin 目录，
+`qt_env` 传 Qt kit 的 bin 目录（MinGW Qt kit 没有 qtenv2.bat）。
+`qt_detect_msvc_and_qt` 会报告 MinGW 工具链（`mingw_toolchains`），
+并为每个 Qt kit 标注 `kit`（"msvc"/"mingw"）。
+
+注意事项：
+
+- **编译器版本**：Qt 5 官方 MinGW kit 配套 GCC 8.1，其 libstdc++ 头
+  无法编译 `std::filesystem`（8.3 才修复）；Qt 5 也应使用 GCC ≥ 9
+  工具链（如 Qt 自带的 `mingw1310_64`）。
+- **运行时 DLL**：MinGW 可执行文件需要 `libgcc_s_seh-1.dll`、
+  `libstdc++-6.dll`、`libwinpthread-1.dll` 位于其旁。构建会自动部署
+  编译器自身的运行时（Qt kit 自带的旧版运行时缺少新符号），
+  `verify_preload` 也会让部署应用的运行时与库保持一致。
+- **工具链匹配**：注入库、部署目录与目标应用必须使用同一 Qt kit
+  （全部 MSVC 或全部 MinGW）——混用会在一个进程里加载两套 Qt 模块，
+  破坏预加载闭包。
 
 `ctest` 运行 19 个套件：14 个注入器 C++ 套件（含对 widget 测试应用的
 3 个真实注入 E2E 套件）、3 个库 C++ 套件、完整 pytest 套件
