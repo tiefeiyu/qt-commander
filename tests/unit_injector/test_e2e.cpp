@@ -77,6 +77,15 @@ int main() {
         if (tp.empty() && GetFileAttributesA((b + "/qt-widget-test.exe").c_str()) != INVALID_FILE_ATTRIBUTES) tp = b + "/qt-widget-test.exe";
         if (tp.empty() && GetFileAttributesA((b + "/tests/test-apps/widget/qt-widget-test.exe").c_str()) != INVALID_FILE_ATTRIBUTES) tp = b + "/tests/test-apps/widget/qt-widget-test.exe";
     }
+    // CreateProcess cannot reliably resolve relative paths with directory
+    // separators (it searches PATH, not the CWD); absolutize everything.
+    auto absolutize = [](std::string& p) {
+        if (p.empty()) return;
+        char full[MAX_PATH];
+        if (GetFullPathNameA(p.c_str(), MAX_PATH, full, nullptr) > 0)
+            p = full;
+    };
+    absolutize(ip); absolutize(lp); absolutize(tp);
     if (ip.empty()) { printf("SKIP: qt-injector.exe not found\n"); return 0; }
     if (lp.empty()) { printf("SKIP: libqt-commander.dll not found\n"); return 0; }
     if (tp.empty()) { printf("SKIP: qt-widget-test.exe not found\n"); return 0; }
@@ -157,7 +166,9 @@ int main() {
     std::string sr = recv_frame(sock);
     CHECK(!sr.empty(), "snapshot response received");
     CHECK(sr.find("\"result\"") != std::string::npos, "snapshot result OK");
-    CHECK(sr.find("\"elements\"") != std::string::npos || sr.find("\"type\"") != std::string::npos, "snapshot has UI data");
+    // The library's snapshot returns top-level "nodes", each with a
+    // "className" -- either field proves the UI tree came back.
+    CHECK(sr.find("\"nodes\"") != std::string::npos || sr.find("\"className\"") != std::string::npos, "snapshot has UI data");
 
     // 6. Shutdown
     send_frame(sock, "{\"jsonrpc\":\"2.0\",\"method\":\"qt.shutdown\",\"params\":{},\"id\":3}");

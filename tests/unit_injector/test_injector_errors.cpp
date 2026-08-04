@@ -31,7 +31,14 @@ static std::string find_binary(const char* name) {
     };
     for (int i = 0; bases[i]; i++) {
         std::string p = std::string(bases[i]) + "/" + name;
-        if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) return p;
+        if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            // CreateProcess cannot reliably resolve relative paths with
+            // directory separators; return an absolute path.
+            char full[MAX_PATH];
+            if (GetFullPathNameA(p.c_str(), MAX_PATH, full, nullptr) > 0)
+                return full;
+            return p;
+        }
     }
     return "";
 }

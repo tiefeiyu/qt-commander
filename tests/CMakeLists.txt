@@ -1,3 +1,15 @@
+# Qt bin dir (tests that spawn Qt processes or link Qt DLLs need it on PATH
+# -- ctest does not inherit the developer shell's PATH).
+if(BUILD_LIBRARY AND DEFINED Qt${QT_MAJOR_VERSION}_DIR)
+    get_filename_component(QT_COMMANDER_QT_BIN
+        "${Qt${QT_MAJOR_VERSION}_DIR}" DIRECTORY)   # .../lib/cmake/Qt5
+    get_filename_component(QT_COMMANDER_QT_BIN
+        "${QT_COMMANDER_QT_BIN}" DIRECTORY)         # .../lib
+    get_filename_component(QT_COMMANDER_QT_BIN
+        "${QT_COMMANDER_QT_BIN}" DIRECTORY)         # .../<Qt root>
+    set(QT_COMMANDER_QT_BIN "${QT_COMMANDER_QT_BIN}/bin")
+endif()
+
 # --- Injector unit tests ---
 if(BUILD_INJECTOR)
     # Common settings for injector tests
@@ -17,6 +29,23 @@ if(BUILD_INJECTOR)
             target_link_libraries(${NAME} PRIVATE pthread dl)
         endif()
         add_test(NAME ${NAME} COMMAND ${NAME})
+        # The E2E suites spawn qt-injector / the test apps; put their
+        # output directories (and the Qt bin dir, for the apps' Qt DLLs)
+        # on PATH so they resolve from any build tree layout.
+        set(_qtc_bin_dirs
+            "${CMAKE_BINARY_DIR}/src/injector"
+            "${CMAKE_BINARY_DIR}/src/library"
+            "${CMAKE_BINARY_DIR}/tests/test-apps/widget"
+            "${CMAKE_BINARY_DIR}/tests/test-apps/qml"
+            "${QT_COMMANDER_QT_BIN}")
+        string(JOIN ";" _qtc_path ${_qtc_bin_dirs})
+        # Semicolons inside the PATH value must be escaped, otherwise CMake
+        # splits the ENVIRONMENT property into multiple list entries and
+        # ctest applies only the first one.
+        set(_qtc_env "PATH=${_qtc_path}\;$ENV{PATH}")
+        string(REPLACE ";" "\\;" _qtc_env "${_qtc_env}")
+        set_tests_properties(${NAME} PROPERTIES
+            ENVIRONMENT "${_qtc_env}")
     endfunction()
 
     # --- Unit: DI injector logic (35 tests) ---
@@ -84,7 +113,6 @@ if(BUILD_INJECTOR)
     )
     set_tests_properties(test_e2e PROPERTIES
         DEPENDS "qt-injector;qt-widget-test"
-        ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}\;$ENV{PATH}"
     )
 
     # --- E2E: Exit codes 3 + 6 (2 tests) ---
@@ -93,7 +121,6 @@ if(BUILD_INJECTOR)
     )
     set_tests_properties(test_e2e_exit_codes PROPERTIES
         DEPENDS "qt-injector;qt-widget-test"
-        ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}\;$ENV{PATH}"
     )
 
     # --- E2E: Exit codes 4 + 5 (2 tests) ---
@@ -102,8 +129,29 @@ if(BUILD_INJECTOR)
     )
     set_tests_properties(test_exit45 PROPERTIES
         DEPENDS "qt-injector;qt-widget-test"
-        ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}\;$ENV{PATH}"
     )
+endif()
+
+# --- Python unit tests + E2E preload verification ---------------------------
+# Registered here so `ctest` runs EVERYTHING (C++ suites, pytest, and the
+# E2E preload scenarios) from one build tree.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    add_test(NAME python_unit_tests
+        COMMAND ${Python3_EXECUTABLE} -m pytest
+                ${CMAKE_SOURCE_DIR}/tests -q)
+    set_tests_properties(python_unit_tests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        LABELS "python")
+
+    # Deployment-level E2E: needs the qt_build artifacts in .qt-commander/bin
+    # (injector + library + Qt dependency closure DLLs).
+    add_test(NAME verify_preload
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/verify_preload.py)
+    set_tests_properties(verify_preload PROPERTIES
+        LABELS "e2e"
+        TIMEOUT 900)
 endif()
 
 # --- Library component unit tests ---

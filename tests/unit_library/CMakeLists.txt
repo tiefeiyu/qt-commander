@@ -15,6 +15,14 @@ get_filename_component(_qt_prefix "${_qt_prefix}" DIRECTORY)
 set(QT_BIN_PATH "${_qt_prefix}/bin")
 message(STATUS "Qt bin path: ${QT_BIN_PATH}")
 
+# Every test links Qt DLLs; ctest does not inherit a developer shell PATH,
+# so each test gets the Qt bin dir on its PATH explicitly.
+function(qtc_add_test NAME TARGET)
+    add_test(NAME ${NAME} COMMAND ${TARGET})
+    set_tests_properties(${NAME} PROPERTIES
+        ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")
+endfunction()
+
 # --- ElementMap test (12 tests) ---
 add_executable(test_element_map
     test_element_map.cpp
@@ -23,7 +31,7 @@ add_executable(test_element_map
 target_include_directories(test_element_map PRIVATE ${CMAKE_SOURCE_DIR}/src/library/core)
 target_link_libraries(test_element_map PRIVATE Qt${QT_MAJOR_VERSION}::Core)
 set_target_properties(test_element_map PROPERTIES AUTOMOC ON)
-add_test(NAME test_element_map COMMAND test_element_map)
+qtc_add_test(test_element_map test_element_map)
 
 # --- Selector test (12 tests) ---
 add_executable(test_selector
@@ -44,8 +52,7 @@ if(WITH_QML)
     target_compile_definitions(test_selector PRIVATE QT_COMMANDER_WITH_QML)
 endif()
 set_target_properties(test_selector PROPERTIES AUTOMOC ON)
-add_test(NAME test_selector COMMAND test_selector)
-set_tests_properties(test_selector PROPERTIES ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")
+qtc_add_test(test_selector test_selector)
 
 # --- Handler test (12 tests) ---
 add_executable(test_handler
@@ -58,8 +65,7 @@ add_executable(test_handler
 target_include_directories(test_handler PRIVATE ${CMAKE_SOURCE_DIR}/src/library ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_handler PRIVATE Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Gui Qt${QT_MAJOR_VERSION}::Widgets)
 set_target_properties(test_handler PROPERTIES AUTOMOC ON)
-add_test(NAME test_handler COMMAND test_handler)
-set_tests_properties(test_handler PROPERTIES ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")
+qtc_add_test(test_handler test_handler)
 
 # --- RPC server test (parse_utils + screenshot) ---
 add_executable(test_rpc_server
@@ -72,5 +78,4 @@ add_executable(test_rpc_server
 target_include_directories(test_rpc_server PRIVATE ${CMAKE_SOURCE_DIR}/src/library ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_rpc_server PRIVATE Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Gui Qt${QT_MAJOR_VERSION}::Widgets)
 set_target_properties(test_rpc_server PROPERTIES AUTOMOC ON)
-add_test(NAME test_rpc_server COMMAND test_rpc_server)
-set_tests_properties(test_rpc_server PROPERTIES ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")
+qtc_add_test(test_rpc_server test_rpc_server)

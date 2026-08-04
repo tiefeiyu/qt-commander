@@ -18,6 +18,7 @@ Exit code 0 = all scenarios passed.
 """
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -36,8 +37,29 @@ QTC_BIN = REPO / ".qt-commander" / "bin"
 INJECTOR = QTC_BIN / "qt-injector.exe"
 LIBRARY = QTC_BIN / "libqt-commander.dll"
 
-QT_ROOT = Path(r"C:\Software\Qt\5.15.2\msvc2019_64")
-WINDEPLOYQT = QT_ROOT / "bin" / "windeployqt.exe"
+# Qt bin dir: QT_BIN env var wins (run_all_tests.py sets it), otherwise the
+# Qt<major>_DIR from the test build's CMakeCache, otherwise the repo default.
+_qt_bin = Path(os.environ.get("QT_BIN", "")) if os.environ.get("QT_BIN") \
+    else None
+if not _qt_bin or not _qt_bin.is_dir():
+    _cache = REPO / ".qt-commander" / "test-apps-build" / "CMakeCache.txt"
+    _qt_bin = None
+    if _cache.exists():
+        for _key in ("Qt5_DIR", "Qt6_DIR"):
+            for _line in _cache.read_text(encoding="utf-8",
+                                          errors="ignore").splitlines():
+                if _line.startswith(f"{_key}="):
+                    _cand = Path(_line.split("=", 1)[1]).parents[2] / "bin"
+                    if _cand.is_dir():
+                        _qt_bin = _cand
+                        break
+            if _qt_bin:
+                break
+    if not _qt_bin:
+        _default = Path(r"C:\Software\Qt\5.15.2\msvc2019_64\bin")
+        _qt_bin = _default if _default.is_dir() else None
+QT_BIN = _qt_bin
+WINDEPLOYQT = QT_BIN / "windeployqt.exe" if QT_BIN else None
 QML_SRC = REPO / "tests" / "test-apps" / "qml"
 WIDGET_SRC = REPO / "tests" / "test-apps" / "widget"
 
@@ -202,6 +224,10 @@ async def main() -> int:
     if not (INJECTOR.exists() and LIBRARY.exists()):
         print("ERROR: qt-injector.exe / libqt-commander.dll not found in "
               ".qt-commander/bin -- run qt_build first")
+        return 2
+    if QT_BIN is None:
+        print("ERROR: Qt bin dir not found -- set QT_BIN env var or run "
+              "qt_build first")
         return 2
     if not WINDEPLOYQT.exists():
         print(f"ERROR: windeployqt not found at {WINDEPLOYQT}")
