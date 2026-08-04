@@ -24,6 +24,7 @@
 #include <QMetaMethod>
 #include <QListWidget>
 #include <QMouseEvent>
+#include <QPoint>
 #include <QProgressBar>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -830,7 +831,8 @@ static void test_mouse_press_release_split_click()
 
 // ---------------------------------------------------------------------------
 // Drag: a press -> move -> release sequence delivers every event with the
-// right coordinates to the target widget.  A plain QWidget records the
+// right coordinates to the target widget AND moves the probe (real drag
+// semantics: the widget follows the pointer).  A plain QWidget records the
 // events (style-independent; QSlider's drag depends on style hit-testing
 // of the handle geometry and is intentionally not exercised here).
 // ---------------------------------------------------------------------------
@@ -842,24 +844,40 @@ public:
     }
     int pressX = -1, moveX = -1, releaseX = -1, moveCount = 0;
 protected:
+    // QMouseEvent::globalPosition() is Qt6-only; Qt5.15 has globalPos().
+    static QPoint eventGlobalPos(const QMouseEvent* e) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        return e->globalPosition().toPoint();
+#else
+        return e->globalPos();
+#endif
+    }
     void mousePressEvent(QMouseEvent* e) override {
         pressX = e->pos().x();
+        grab_offset_ = e->pos();
         QWidget::mousePressEvent(e);
     }
     void mouseMoveEvent(QMouseEvent* e) override {
         moveX = e->pos().x();
         ++moveCount;
+        // Follow the pointer while the left button is held.  move() takes
+        // parent coordinates: mapFromGlobal gives the pointer in *this*
+        // widget's coordinates, so add pos() to translate into the parent's.
+        if (e->buttons() & Qt::LeftButton)
+            move(mapFromGlobal(eventGlobalPos(e)) + pos() - grab_offset_);
         QWidget::mouseMoveEvent(e);
     }
     void mouseReleaseEvent(QMouseEvent* e) override {
         releaseX = e->pos().x();
         QWidget::mouseReleaseEvent(e);
     }
+private:
+    QPoint grab_offset_;
 };
 
 static void test_mouse_drag_probe()
 {
-    TEST("press -> move -> release delivers coordinates to the target");
+    TEST("press -> move -> release delivers coordinates AND moves the probe");
 
     QWidget win;
     win.resize(400, 200);
@@ -890,6 +908,19 @@ static void test_mouse_drag_probe()
           "last move at target x, got " << probe->moveX);
     CHECK(probe->releaseX == 200,
           "release at target x, got " << probe->releaseX);
+    // Visible effect: the probe followed the pointer.  All three events are
+    // queued (postEvent) and processed at the final processEvents(), each
+    // mapping its own global point through the probe's position at the time
+    // it is processed; the probe's top-left ends at (50 + (200-110), 50).
+    const int expectedX = 50 + (200 - cx);
+    const int expectedY = 50;
+    CHECK(probe->x() == expectedX,
+          "probe moved with the pointer: x()=" << probe->x()
+                                               << " expected " << expectedX);
+    CHECK(probe->y() == expectedY,
+          "probe followed the pointer vertically: y()=" << probe->y()
+                                                        << " expected "
+                                                        << expectedY);
 
     win.close();
     PASS();

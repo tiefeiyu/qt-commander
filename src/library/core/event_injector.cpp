@@ -492,13 +492,19 @@ bool EventInjector::mouseClick(QObject* target, const QString& button,
 // ---------------------------------------------------------------------------
 // mouseClickAt / mouseClickRegion  --  real QPA input pipeline
 //
-// Unlike the element-based ops above (which post events straight to the
-// element via QCoreApplication/QQuickWindow::sendEvent), these route the
-// click through QWindowSystemInterface::handleMouseEvent -- the entry point
-// the platform plugins use for OS mouse messages.  The GUI thread then
-// delivers the events with real hit testing: the scene graph for QML
-// windows, the widget tree for widget windows.  Behavior is identical to a
-// real mouse click at the given position.
+// The click is routed through QWindowSystemInterface::handleMouseEvent --
+// the entry point the platform plugins use for OS mouse messages.  The GUI
+// thread then delivers the events with the full real handling: the scene
+// graph / QQuickPointerDelivery for QML windows, QWidgetWindow's widget
+// hit test and QApplication's event machinery for widget windows.
+// Behavior is identical to a real mouse click at the given position.
+//
+// One platform quirk is compensated: on Qt6/Windows, the QPA pipeline
+// divides the window-local position of synthetic events by the window's
+// devicePixelRatio, so on scaled (dpr != 1) screens a click sent at (x, y)
+// lands at (x/dpr, y/dpr) and misses its target.  The local position is
+// therefore pre-scaled by dpr on that platform (the global position stays
+// in logical pixels -- that is what QApplication::widgetAt expects).
 // ---------------------------------------------------------------------------
 
 bool EventInjector::mouseClickAt(QWindow* window, double x, double y,
@@ -508,10 +514,15 @@ bool EventInjector::mouseClickAt(QWindow* window, double x, double y,
     if (!window)
         return false;
 
-    const QPointF local(x, y);
-    const QPointF global(window->mapToGlobal(local.toPoint()));
     const Qt::MouseButton btn = parseButton(button);
     const Qt::KeyboardModifiers mods = parseModifiers(modifiers);
+
+    double localScale = 1.0;
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    localScale = window->devicePixelRatio();
+#endif
+    const QPointF local(x * localScale, y * localScale);
+    const QPointF global(window->mapToGlobal(QPoint(qRound(x), qRound(y))));
 
     // A real click sequence: move the pointer, press, release.  The events
     // are queued (thread-safe) and delivered on the GUI thread; for the

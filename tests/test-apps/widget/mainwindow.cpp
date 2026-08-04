@@ -189,9 +189,10 @@ void WidgetTestWindow::setupUI()
     label_->setObjectName(QStringLiteral("statusLabel"));
     mainLayout->addWidget(label_);
 
-    // ---- Drag probe (records injected press/move/release coordinates) ----
-    drag_probe_ = new DragProbe();
-    mainLayout->addWidget(drag_probe_);
+    // ---- Drag probe (draggable; placed manually so a drag visibly moves it
+    //      instead of the layout snapping it back) ----
+    drag_probe_ = new DragProbe(central);
+    drag_probe_->setGeometry(9, 520, 850, 60);
 
     mainLayout->addStretch();
 

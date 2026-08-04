@@ -1,4 +1,5 @@
 #pragma once
+#include <QtGlobal>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QLineEdit>
@@ -21,21 +22,26 @@
 #include <QPlainTextEdit>
 #include <QTextEdit>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPoint>
 
-// Drag probe: records press/move/release positions so injected
-// mouse-press/mouse-move/mouse-release sequences can be asserted from
-// outside the process (style-independent; plain QWidget semantics).
+// Drag probe: a draggable widget.  Press inside it, then move -- the probe
+// follows the mouse (like dragging an icon) so injected press/move/release
+// sequences have a visible effect: the widget's geometry changes and the
+// on-screen text reports the drag distance.  Style-independent (plain
+// QWidget semantics) so drag assertions work with any Windows style.
 class DragProbe : public QWidget {
     Q_OBJECT
     Q_PROPERTY(int pressX READ pressX)
     Q_PROPERTY(int moveX READ moveX)
     Q_PROPERTY(int releaseX READ releaseX)
     Q_PROPERTY(int moveCount READ moveCount)
+    Q_PROPERTY(int dragDX READ dragDX)
+    Q_PROPERTY(int dragDY READ dragDY)
 public:
     explicit DragProbe(QWidget* parent = nullptr) : QWidget(parent) {
         setObjectName(QStringLiteral("dragProbe"));
         setMinimumSize(220, 60);
-        setStyleSheet(QStringLiteral("background:#FDEBD0;border:1px solid #bbb;"));
         // Without tracking, Qt drops button-less MouseMove events; with it,
         // hover moves are delivered too (drag moves carry the button anyway).
         setMouseTracking(true);
@@ -44,25 +50,59 @@ public:
     int moveX() const { return move_x_; }
     int releaseX() const { return release_x_; }
     int moveCount() const { return move_count_; }
+    int dragDX() const { return x() - drag_start_x_; }
+    int dragDY() const { return y() - drag_start_y_; }
 protected:
+    // QMouseEvent::globalPosition() is Qt6-only; Qt5.15 has globalPos().
+    static QPoint eventGlobalPos(const QMouseEvent* e) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        return e->globalPosition().toPoint();
+#else
+        return e->globalPos();
+#endif
+    }
     void mousePressEvent(QMouseEvent* e) override {
         press_x_ = e->pos().x();
+        drag_start_x_ = x();
+        drag_start_y_ = y();
+        // Where in the probe the press landed (probe-local); stays fixed
+        // for the whole drag.
+        grab_offset_ = e->pos();
         QWidget::mousePressEvent(e);
     }
     void mouseMoveEvent(QMouseEvent* e) override {
         move_x_ = e->pos().x();
         ++move_count_;
+        // Follow the mouse while the left button is held.  move() takes
+        // parent coordinates: mapFromGlobal gives the pointer in *this*
+        // widget's coordinates, so add pos() to translate it into the
+        // parent's, then drop the fixed grab point -- the probe moves by
+        // exactly the pointer delta (real drag semantics).
+        if (e->buttons() & Qt::LeftButton)
+            move(mapFromGlobal(eventGlobalPos(e)) + pos() - grab_offset_);
         QWidget::mouseMoveEvent(e);
     }
     void mouseReleaseEvent(QMouseEvent* e) override {
         release_x_ = e->pos().x();
         QWidget::mouseReleaseEvent(e);
     }
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.fillRect(rect(), QColor(0xFD, 0xEB, 0xD0));
+        p.setPen(QColor(0x88, 0x50, 0x00));
+        p.drawText(rect(), Qt::AlignCenter,
+                   QStringLiteral("DragProbe  dx=%1  dy=%2   press=%3  move=%4  release=%5")
+                       .arg(dragDX()).arg(dragDY()).arg(press_x_)
+                       .arg(move_x_).arg(release_x_));
+    }
 private:
     int press_x_ = -1;
     int move_x_ = -1;
     int release_x_ = -1;
     int move_count_ = 0;
+    int drag_start_x_ = 0;
+    int drag_start_y_ = 0;
+    QPoint grab_offset_;
 };
 
 class WidgetTestWindow : public QMainWindow {

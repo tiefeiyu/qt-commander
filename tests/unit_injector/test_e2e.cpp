@@ -274,33 +274,50 @@ int main() {
         }
 
         // --- drag: press probe center -> move -> release ---
-        // The app's DragProbe widget records press/move/release x so the
-        // drag primitives can be asserted over the wire.
+        // The app's DragProbe follows the pointer while pressed, so the
+        // drag has a visible effect: geometry changes by exactly the
+        // pointer delta.  Each RPC is processed by the target's event
+        // loop before the next arrives (live path): press at center
+        // (425,30) grabs the probe; move(600,30) puts it at
+        // (9+600-425, 520) = (184,520); move(700,30) -> (459,520).
+        // dragDX = 459-9 = 450, dragDY = 0.
         long probeId = find_element_id(sock, "dragProbe", 15);
         CHECK(probeId > 0, "findElement dragProbe");
         if (probeId > 0) {
+            double startX = get_prop_double(sock, probeId, "x", 16);
+            CHECK(startX == 9, (std::string("probe starts at x=9, got ") +
+                                std::to_string((int)startX)).c_str());
             std::string r = call_rpc(sock, "qt.mousePress",
                 "{\"element_id\":" + std::to_string(probeId) +
-                ",\"button\":\"left\",\"modifiers\":[]}", 16);
+                ",\"button\":\"left\",\"modifiers\":[]}", 17);
             CHECK(resp_ok(r), "drag press ok");
             r = call_rpc(sock, "qt.mouseMove",
                 "{\"element_id\":" + std::to_string(probeId) +
-                ",\"x\":120,\"y\":30}", 17);
+                ",\"x\":600,\"y\":30}", 18);
             CHECK(resp_ok(r), "drag move 1 ok");
             r = call_rpc(sock, "qt.mouseMove",
                 "{\"element_id\":" + std::to_string(probeId) +
-                ",\"x\":200,\"y\":30}", 18);
+                ",\"x\":700,\"y\":30}", 19);
             CHECK(resp_ok(r), "drag move 2 ok");
             r = call_rpc(sock, "qt.mouseRelease",
                 "{\"element_id\":" + std::to_string(probeId) +
-                ",\"button\":\"left\",\"modifiers\":[],\"x\":200,\"y\":30}", 19);
+                ",\"button\":\"left\",\"modifiers\":[],\"x\":700,\"y\":30}", 20);
             CHECK(resp_ok(r), "drag release ok");
-            double moves = get_prop_double(sock, probeId, "moveCount", 20);
+            double moves = get_prop_double(sock, probeId, "moveCount", 21);
             CHECK(moves >= 2, "both move events delivered");
-            double moveX = get_prop_double(sock, probeId, "moveX", 21);
-            CHECK(moveX == 200, "last move at target x");
-            double releaseX = get_prop_double(sock, probeId, "releaseX", 22);
-            CHECK(releaseX == 200, "release at target x");
+            double moveX = get_prop_double(sock, probeId, "moveX", 22);
+            CHECK(moveX == 700, "last move at target x");
+            double releaseX = get_prop_double(sock, probeId, "releaseX", 23);
+            CHECK(releaseX == 700, "release at target x");
+            double endX = get_prop_double(sock, probeId, "x", 24);
+            CHECK(endX == 459, (std::string("visible effect: probe moved to x=459, got ") +
+                                std::to_string((int)endX)).c_str());
+            double ddx = get_prop_double(sock, probeId, "dragDX", 25);
+            CHECK(ddx == 450, (std::string("dragDX reports the pointer delta, got ") +
+                               std::to_string((int)ddx)).c_str());
+            double endY = get_prop_double(sock, probeId, "y", 26);
+            CHECK(endY == 520, (std::string("probe stayed at y=520, got ") +
+                                std::to_string((int)endY)).c_str());
         }
     }
 
