@@ -10,6 +10,7 @@
 #endif
 #include <vector>
 #include <string>
+#include <set>
 #include <fstream>
 #include <algorithm>
 #include <chrono>
@@ -161,6 +162,117 @@ static DWORD findExportRva(const std::vector<uint8_t>& dllBytes,
 }
 
 // ---------------------------------------------------------------------------
+// PE import directory parser -- list a DLL's direct dependencies.
+// ---------------------------------------------------------------------------
+
+// Parse the import table of a PE image and return the imported DLL names
+// (e.g. "Qt5Widgets.dll") in file order, de-duplicated.
+static std::vector<std::string> parseImportDependencies(
+    const std::vector<uint8_t>& dllBytes)
+{
+    std::vector<std::string> deps;
+    if (dllBytes.size() < sizeof(IMAGE_DOS_HEADER))
+        return deps;
+
+    const auto* dos =
+        reinterpret_cast<const IMAGE_DOS_HEADER*>(dllBytes.data());
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return deps;
+
+    DWORD ntOffset = dos->e_lfanew;
+    if (dllBytes.size() < static_cast<size_t>(ntOffset) + sizeof(IMAGE_NT_HEADERS))
+        return deps;
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+        dllBytes.data() + ntOffset);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return deps;
+
+    const IMAGE_DATA_DIRECTORY& impDir =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (impDir.Size == 0 || impDir.VirtualAddress == 0)
+        return deps;
+
+    const uint8_t* base = dllBytes.data();
+    DWORD impOffset = rvaToOffset(nt, impDir.VirtualAddress);
+
+    // The import descriptor array is terminated by an all-zero entry.
+    for (DWORD i = 0; ; ++i) {
+        const auto* desc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(
+            base + impOffset + i * sizeof(IMAGE_IMPORT_DESCRIPTOR));
+        if (desc->Name == 0)
+            break;
+        DWORD nameOffset = rvaToOffset(nt, desc->Name);
+        if (nameOffset >= dllBytes.size())
+            continue;
+        const char* name =
+            reinterpret_cast<const char*>(base + nameOffset);
+        if (std::find(deps.begin(), deps.end(), std::string(name)) ==
+            deps.end())
+            deps.emplace_back(name);
+    }
+    return deps;
+}
+
+// Resolve the transitive dependency closure of a DLL: every dependency
+// found in the search directories is resolved to a path (their own
+// dependencies are resolved recursively); dependencies not found are
+// skipped -- they are either already loaded in the target process or
+// resolvable from the system search path.  Result order is breadth-first;
+// the DLL itself is not included.
+std::vector<fs::path> resolveDependencyClosure(
+    const fs::path& dllPath,
+    const std::vector<fs::path>& searchDirs)
+{
+    std::vector<fs::path> result;
+    std::vector<fs::path> queue;
+    std::vector<std::string> seen;  // lowercase base names already handled
+
+    auto lowerName = [](const std::string& s) {
+        std::string t = s;
+        std::transform(t.begin(), t.end(), t.begin(),
+                       [](unsigned char c) { return static_cast<char>(
+                           std::tolower(c)); });
+        return t;
+    };
+    auto isSeen = [&](const std::string& key) {
+        return std::find(seen.begin(), seen.end(), key) != seen.end();
+    };
+
+    seen.push_back(lowerName(dllPath.filename().string()));
+    queue.push_back(dllPath);
+
+    while (!queue.empty()) {
+        const fs::path cur = queue.back();
+        queue.pop_back();
+
+        std::vector<uint8_t> bytes;
+        if (!readFileBytes(cur, bytes))
+            continue;
+        for (const std::string& dep : parseImportDependencies(bytes)) {
+            const std::string key = lowerName(dep);
+            if (isSeen(key))
+                continue;
+            seen.push_back(key);
+
+            fs::path found;
+            for (const fs::path& dir : searchDirs) {
+                const fs::path cand = dir / dep;
+                if (fs::exists(cand)) {
+                    found = cand;
+                    break;
+                }
+            }
+            if (found.empty())
+                continue;  // not in search dirs -- process/system resolves it
+            result.push_back(found);
+            queue.push_back(found);
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // InitParams -- must match src/library/api.h exactly (1024-byte fixed layout)
 // ---------------------------------------------------------------------------
 #pragma pack(push, 1)
@@ -177,21 +289,21 @@ struct InitParams {
 static_assert(sizeof(InitParams) == 1024, "InitParams size must be 1024 bytes");
 
 // ---------------------------------------------------------------------------
-// injectLibrary
+// injectDll  --  load a single DLL into the target via CreateRemoteThread
 // ---------------------------------------------------------------------------
-InjectResult injectLibrary(int pid, const fs::path& lib_path) {
+static InjectResult injectDll(int pid, const fs::path& dllPath) {
     // 1. Open target process with minimal required rights
     HANDLE hProcess = OpenProcess(
         PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE |
             PROCESS_QUERY_INFORMATION,
         FALSE, static_cast<DWORD>(pid));
     if (!hProcess) {
-        return {false, "injectLibrary: OpenProcess failed for PID " +
+        return {false, "OpenProcess failed for PID " +
                            std::to_string(pid) + ": " + lastErrorString()};
     }
 
     // 2. Convert DLL path to wide string
-    std::wstring libPathW = lib_path.wstring();
+    std::wstring libPathW = dllPath.wstring();
     size_t pathBytes = (libPathW.size() + 1) * sizeof(wchar_t);
 
     // 3. Allocate memory in target for the path string
@@ -200,8 +312,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                                        PAGE_READWRITE);
     if (!remotePath) {
         CloseHandle(hProcess);
-        return {false, "injectLibrary: VirtualAllocEx failed: " +
-                           lastErrorString()};
+        return {false, "VirtualAllocEx failed: " + lastErrorString()};
     }
 
     // 4. Write DLL path into target memory
@@ -209,8 +320,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                             nullptr)) {
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false, "injectLibrary: WriteProcessMemory failed: " +
-                           lastErrorString()};
+        return {false, "WriteProcessMemory failed: " + lastErrorString()};
     }
 
     // 5. Get address of LoadLibraryW in kernel32
@@ -218,7 +328,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
     if (!kernel32) {
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false, "injectLibrary: GetModuleHandle(kernel32) failed: " +
+        return {false, "GetModuleHandle(kernel32) failed: " +
                            lastErrorString()};
     }
 
@@ -226,7 +336,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
     if (!loadLibAddr) {
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false, "injectLibrary: GetProcAddress(LoadLibraryW) failed: " +
+        return {false, "GetProcAddress(LoadLibraryW) failed: " +
                            lastErrorString()};
     }
 
@@ -238,8 +348,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
     if (!hThread) {
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false, "injectLibrary: CreateRemoteThread failed: " +
-                           lastErrorString()};
+        return {false, "CreateRemoteThread failed: " + lastErrorString()};
     }
 
     // 7. Wait for thread to finish
@@ -249,14 +358,13 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
         CloseHandle(hThread);
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false, "injectLibrary: remote thread timed out (30 s)"};
+        return {false, "remote thread timed out (30 s)"};
     }
     if (waitResult == WAIT_FAILED) {
         CloseHandle(hThread);
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false, "injectLibrary: WaitForSingleObject failed: " +
-                           lastErrorString()};
+        return {false, "WaitForSingleObject failed: " + lastErrorString()};
     }
 
     // 8. Get the HMODULE (DLL base) from the thread exit code
@@ -265,8 +373,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
         CloseHandle(hThread);
         VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        return {false,
-                "injectLibrary: LoadLibraryW returned NULL in target process"};
+        return {false, "LoadLibraryW returned NULL in target process"};
     }
 
     // 9. Clean up
@@ -275,6 +382,113 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
     CloseHandle(hProcess);
 
     return {true, ""};
+}
+
+// ---------------------------------------------------------------------------
+// injectLibrary  --  preload dependencies, then inject the library
+//
+// LoadLibraryW resolves the library's imports against modules already
+// loaded in the target process.  Every dependency found next to the library
+// that is NOT yet loaded in the target is loaded up front (transitively --
+// the loader does not search the parent DLL's directory for ITS
+// dependencies, so the whole closure must be preloaded).  This keeps
+// deployed app directories clean: no manual Qt DLL copies next to the
+// target executable.
+//
+// Modules already loaded in the target are skipped: re-loading them would
+// re-run their static initializers (Qt5Quick re-registers the "QtQuick 2"
+// QML module and qFatal's on the duplicate registration, killing the
+// target process), and the main library's implicit imports reuse the
+// already-loaded instances anyway.
+// ---------------------------------------------------------------------------
+// Recursively preload the dependencies of `dll` (in topological order:
+// a dependency is loaded before the DLL that imports it, because the
+// loader resolves imports from the target's search path, not from the
+// preloaded DLL's own directory).  `loaded` tracks modules already in the
+// target OR preloaded by us; `handled` guards against cycles.
+// Returns false with `err` set on failure.
+static bool preloadDepsRecursive(int pid,
+                                 const fs::path& dll,
+                                 const std::vector<fs::path>& searchDirs,
+                                 std::set<std::wstring>& loaded,
+                                 std::set<std::wstring>& handled,
+                                 std::string& err)
+{
+    std::vector<uint8_t> bytes;
+    if (!readFileBytes(dll, bytes))
+        return true;  // unreadable -- skip (unexpected; closure is pre-validated)
+
+    for (const std::string& depName : parseImportDependencies(bytes)) {
+        fs::path depPath;
+        for (const fs::path& dir : searchDirs) {
+            const fs::path cand = dir / depName;
+            if (fs::exists(cand)) {
+                depPath = cand;
+                break;
+            }
+        }
+        if (depPath.empty())
+            continue;  // system DLL or already-resolvable -- skip
+
+        const std::wstring key = depPath.filename().wstring();
+        if (handled.count(key))
+            continue;
+        handled.insert(key);
+        if (loaded.count(key))
+            continue;  // already in the target -- implicit reuse is enough
+
+        if (!preloadDepsRecursive(pid, depPath, searchDirs,
+                                  loaded, handled, err))
+            return false;  // a transitive dependency failed
+        if (!loaded.count(key)) {
+            InjectResult r = injectDll(pid, depPath);
+            if (!r.ok) {
+                err = "preload dependency " + depPath.filename().string() +
+                      " (" + depPath.string() + "): " + r.error;
+                return false;
+            }
+            loaded.insert(key);
+        }
+    }
+    return true;
+}
+
+InjectResult injectLibrary(int pid, const fs::path& lib_path) {
+    // The remote thread's LoadLibraryW resolves relative paths against the
+    // TARGET process's current directory -- not ours -- so preload and
+    // library paths must be absolute.
+    const fs::path absLib = fs::absolute(lib_path).lexically_normal();
+
+    // Base names of modules already loaded in the target process.
+    std::set<std::wstring> loaded;
+    {
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION |
+                                          PROCESS_VM_READ,
+                                      FALSE, static_cast<DWORD>(pid));
+        if (hProcess) {
+            DWORD needed = 0;
+            EnumProcessModules(hProcess, nullptr, 0, &needed);
+            std::vector<HMODULE> modules(needed / sizeof(HMODULE));
+            if (EnumProcessModules(hProcess, modules.data(),
+                                   static_cast<DWORD>(
+                                       modules.size() * sizeof(HMODULE)),
+                                   &needed)) {
+                for (HMODULE hMod : modules) {
+                    wchar_t modName[MAX_PATH]{};
+                    if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH))
+                        loaded.insert(std::wstring(modName));
+                }
+            }
+            CloseHandle(hProcess);
+        }
+    }
+
+    std::set<std::wstring> handled;
+    std::string err;
+    if (!preloadDepsRecursive(pid, absLib, {absLib.parent_path()},
+                              loaded, handled, err))
+        return {false, err};
+    return injectDll(pid, absLib);
 }
 
 // ---------------------------------------------------------------------------

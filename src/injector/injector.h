@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <cstdint>
 #include <filesystem>
 
@@ -12,6 +13,14 @@ struct InjectResult {
 
 // Inject a shared library into a running process using CreateRemoteThread + LoadLibrary.
 InjectResult injectLibrary(int pid, const fs::path& lib_path);
+
+// Resolve the transitive dependency closure of a DLL: every dependency
+// found in the search directories (recursively).  Dependencies not found
+// in any search dir are skipped (already loaded in the target or resolvable
+// from the system search path).  The DLL itself is not included.
+std::vector<fs::path> resolveDependencyClosure(
+    const fs::path& dllPath,
+    const std::vector<fs::path>& searchDirs);
 
 // Eject (unload) a shared library from a process via EnumProcessModules + FreeLibrary.
 InjectResult ejectLibrary(int pid, const fs::path& lib_path);

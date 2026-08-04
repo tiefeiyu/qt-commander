@@ -12,7 +12,8 @@ namespace fs = std::filesystem;
 static void print_usage() {
     std::cerr << "Usage:\n"
               << "  qt-injector <pid> <library_path> <port_file_path> [--sleep-before-check <ms>]\n"
-              << "  qt-injector --eject <pid> <library_path>\n";
+              << "  qt-injector --eject <pid> <library_path>\n"
+              << "  qt-injector --list-deps <dll_path> [--search-dir <dir> ...]\n";
 }
 
 static void print_error_and_exit(int code, const std::string& msg) {
@@ -24,6 +25,38 @@ int main(int argc, char* argv[]) {
     if (argc < 2) { print_usage(); return 1; }
 
     std::string mode = argv[1];
+
+    if (mode == "--list-deps") {
+        // qt-injector --list-deps <dll> [--search-dir <dir> ...]
+        if (argc < 3) { print_usage(); return 1; }
+        fs::path dll(argv[2]);
+        if (!fs::exists(dll))
+            print_error_and_exit(2, "DLL not found: " + dll.string());
+        std::vector<fs::path> searchDirs;
+        for (int i = 3; i + 1 < argc; ++i) {
+            if (std::string(argv[i]) == "--search-dir")
+                searchDirs.emplace_back(argv[i + 1]);
+        }
+        const std::vector<fs::path> deps =
+            resolveDependencyClosure(dll, searchDirs);
+        // Escape backslashes/quote for JSON output (Windows paths).
+        auto escape = [](const std::string& s) {
+            std::string out;
+            for (char c : s) {
+                if (c == '\\' || c == '"')
+                    out += '\\';
+                out += c;
+            }
+            return out;
+        };
+        std::cout << "{\"deps\":[";
+        for (size_t i = 0; i < deps.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << escape(deps[i].string()) << "\"";
+        }
+        std::cout << "]}\n";
+        return 0;
+    }
 
     if (mode == "--eject") {
         if (argc < 4) { print_usage(); return 1; }

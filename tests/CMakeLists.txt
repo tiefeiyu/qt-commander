@@ -72,6 +72,11 @@ if(BUILD_INJECTOR)
         unit_injector/test_pe_parser.cpp
     )
 
+    # --- Unit: PE import parser + dependency closure (16 tests) ---
+    add_injector_test(test_import_parser
+        unit_injector/test_import_parser.cpp
+    )
+
     # --- E2E: Full lifecycle (12 tests) ---
     # Depends on: qt-injector, libqt-commander, qt-widget-test
     add_injector_test(test_e2e
