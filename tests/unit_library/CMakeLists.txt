@@ -19,8 +19,11 @@ message(STATUS "Qt bin path: ${QT_BIN_PATH}")
 # so each test gets the Qt bin dir on its PATH explicitly.
 function(qtc_add_test NAME TARGET)
     add_test(NAME ${NAME} COMMAND ${TARGET})
+    # The compiler-runtime dir (configured with the GCC runtime DLLs next
+    # to the injector output) must precede the Qt kit's bin: MinGW tests
+    # built with a newer compiler crash on the kit's older libstdc++.
     set_tests_properties(${NAME} PROPERTIES
-        ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}"
+        ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}/src/injector\;${QT_BIN_PATH}\;$ENV{PATH}"
         TIMEOUT 300)
 endfunction()
 

@@ -6,7 +6,11 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from .builder import BUILD_DIR, check_build_state, run_build, BuildState
-from .environment_detector import detect_vs_environments, detect_qt_environments
+from .environment_detector import (
+    detect_vs_environments,
+    detect_qt_environments,
+    detect_mingw_toolchains,
+)
 from .errors import BuildRequiredError, SessionNotFoundError, tool_error
 from .process_detector import list_qt_processes
 from .rpc_client import inject_and_connect
@@ -99,43 +103,58 @@ async def qt_list_sessions() -> str:
 
 @mcp.tool()
 async def qt_detect_msvc_and_qt() -> str:
-    """Detect MSVC (Visual Studio) and Qt installations available for building.
+    """Detect MSVC (Visual Studio), MinGW toolchains, and Qt installations
+    available for building.
 
     IMPORTANT — this tool only *discovers* and *displays* what is found on
     this machine.  It does NOT select an environment automatically.
 
     After calling this tool, the AI MUST use ``AskUserQuestion`` to present
-    the found installations to the user and let them choose which VS
-    (``vcvars_path``) and Qt (``qtenv_path``) to use with ``qt_build``.
+    the found installations to the user and let them choose which compiler
+    and Qt to use with ``qt_build``.  For an MSVC Qt kit
+    (``kit == "msvc"``) pass the VS ``vcvars_path`` + the kit's
+    ``qtenv_path`` with ``toolchain="msvc"``; for a MinGW kit
+    (``kit == "mingw"``) pass a MinGW toolchain's bin dir (from
+    ``mingw_toolchains``) + the kit's Qt bin dir
+    (``<install_prefix>/bin``) with ``toolchain="mingw"``.
     If detection finds nothing (or misses an installation the user knows
     about), the user can type the paths manually.
 
-    Returns two lists: ``vs_installations`` and ``qt_installations``.
+    Returns three lists: ``vs_installations``, ``mingw_toolchains``, and
+    ``qt_installations``.
     """
     vs_list = detect_vs_environments()
+    mingw_list = detect_mingw_toolchains()
     qt_list = detect_qt_environments()
     return json.dumps({
         "vs_installations": vs_list,
+        "mingw_toolchains": mingw_list,
         "qt_installations": qt_list,
     }, indent=2)
 
 
 @mcp.tool()
 async def qt_build(
-    vcvars_path: str,
-    qt_env: str,
+    vcvars_path: str = "",
+    qt_env: str = "",
     vcvars_args: str = "",
     build_type: str = "Release",
     qt_major: int = 5,
     generator: str = "",
     with_qml: bool = True,
+    toolchain: str = "msvc",
 ) -> str:
     """Build the Qt injection library and injector for the specified environment.
+
+    ``toolchain`` selects the compiler: ``"msvc"`` (default; ``vcvars_path``
+    is a vcvars bat, ``qt_env`` a qtenv bat) or ``"mingw"`` (``vcvars_path``
+    is the MinGW bin dir, ``qt_env`` the Qt bin dir of a MinGW kit — MinGW
+    Qt kits have no qtenv2.bat; the Qt-bundled Ninja is used automatically).
 
     Before calling this tool, the AI MUST present available build
     environments (from ``qt_detect_msvc_and_qt``) to the user and let them
     choose.  Do NOT guess or auto-pick paths — the user decides which VS
-    and Qt installation to use.
+    or MinGW toolchain and which Qt installation to use.
 
     The AI MUST also ask the user whether to enable QML/QQuick support
     (``with_qml``).  QML support is required for inspecting QML/Qt Quick
@@ -153,6 +172,7 @@ async def qt_build(
         qt_major=qt_major,
         generator=generator,
         with_qml=with_qml,
+        toolchain=toolchain,
     )
     return json.dumps(result, indent=2)
 

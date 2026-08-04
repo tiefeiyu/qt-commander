@@ -15,7 +15,9 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <crtdbg.h>  // _set_abort_behavior
+#ifdef _MSC_VER
+#include <crtdbg.h>  // _set_abort_behavior (UCRT-only; MinGW lacks it)
+#endif
 #include <psapi.h>
 
 #include "common/socket_utils.h"
@@ -636,8 +638,10 @@ auto cp = launchApp(g_exe);
 
 int main() {
     // Suppress Windows crash dialogs during testing
+#ifdef _MSC_VER
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
     std::cout << "=== qt-commander Integration Test ===\n";
     test_01_binaries();
     test_05_tcp_framed_rpc();        // always runs (no Qt needed)

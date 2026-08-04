@@ -553,9 +553,16 @@ def detect_qt_environments() -> list[dict]:
         prefix = info.get("install_prefix", "")
         if prefix and prefix not in seen:
             seen.add(prefix)
+            compiler = info.get("compiler", "").lower()
+            kit = ""
+            if "mingw" in compiler:
+                kit = "mingw"
+            elif "msvc" in compiler:
+                kit = "msvc"
             sorted_info = {
                 "version": info.get("version", ""),
                 "compiler": info.get("compiler", ""),
+                "kit": kit,  # "msvc" | "mingw" | "" — which qt_build toolchain to use
                 "install_prefix": info.get("install_prefix", ""),
                 "qmake_path": info.get("qmake_path", ""),
                 "qtenv_path": info.get("qtenv_path", ""),
@@ -586,4 +593,66 @@ def detect_qt_environments() -> list[dict]:
     for info in _detect_qt_drive_scan():
         _add(info)
 
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MinGW toolchain detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+_MINGW_RE = re.compile(r"^(?:llvm-)?mingw", re.IGNORECASE)
+
+
+def _gcc_version(gpp: Path) -> str:
+    """Extract the g++ version string (e.g. '13.1.0'), or '' on failure."""
+    try:
+        proc = subprocess.run(
+            [str(gpp), "--version"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        line = proc.stdout.splitlines()[0] if proc.stdout else ""
+        m = re.search(r"\d+\.\d+\.\d+", line)
+        return m.group(0) if m else ""
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def detect_mingw_toolchains() -> list[dict]:
+    """Locate MinGW toolchains bundled with Qt installers.
+
+    The Qt online installer places them under ``<Qt root>/Tools/`` with
+    names like ``mingw810_64`` / ``mingw1310_64`` / ``llvm-mingw1706_64``.
+    Each candidate is validated by the presence of ``g++.exe`` in its
+    ``bin`` dir, and the gcc version is probed via ``g++ --version``.
+
+    Each entry:
+      name        – toolchain directory name (e.g. "mingw1310_64")
+      path        – bin dir (the value to pass as vcvars_path for
+                    toolchain="mingw" in qt_build)
+      root        – toolchain root directory
+      gcc_version – gcc version string (e.g. "13.1.0"), '' if unprobed
+    """
+    results: list[dict] = []
+    seen: set[str] = set()
+    for qt_root in (Path("C:/Qt"), Path("C:/Software/Qt")):
+        tools = qt_root / "Tools"
+        if not tools.is_dir():
+            continue
+        for entry in sorted(tools.iterdir()):
+            if not _MINGW_RE.match(entry.name):
+                continue
+            bin_dir = entry / "bin"
+            gpp = bin_dir / "g++.exe"
+            if not gpp.exists():
+                continue
+            key = str(bin_dir).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "name": entry.name,
+                "path": str(bin_dir),
+                "root": str(entry),
+                "gcc_version": _gcc_version(gpp),
+            })
     return results

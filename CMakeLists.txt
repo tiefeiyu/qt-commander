@@ -11,6 +11,23 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# MinGW: the compiler runtime (libgcc_s_seh-1.dll / libstdc++-6.dll /
+# libwinpthread-1.dll) must match the compiler used to BUILD, not the Qt
+# kit's bundled (possibly older) runtime.  Drop the compiler's runtime next
+# to the injector output dir, which is first on every test's PATH; the Qt
+# kit's runtime may lack symbols the newer compiler emits.
+if(MINGW)
+    get_filename_component(_qtc_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    foreach(_rt libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll)
+        if(EXISTS "${_qtc_compiler_bin}/${_rt}")
+            file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/src/injector")
+            configure_file(
+                "${_qtc_compiler_bin}/${_rt}"
+                "${CMAKE_BINARY_DIR}/src/injector/${_rt}" COPYONLY)
+        endif()
+    endforeach()
+endif()
+
 # --- Options ---
 option(BUILD_INJECTOR   "Build qt-injector standalone CLI"  ON)
 option(BUILD_INJECTOR   "Build qt-injector standalone CLI"  ON)

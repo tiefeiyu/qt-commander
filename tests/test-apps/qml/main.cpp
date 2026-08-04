@@ -10,7 +10,9 @@
 #include <QDateTime>
 #include <QDebug>
 
-#ifdef _WIN32
+#if defined(_WIN32) && defined(_MSC_VER)
+// MSVC-only: UCRT abort-behavior tweaks; crtdbg/_set_abort_behavior are
+// not available on MinGW's msvcrt.
 #include <windows.h>
 #include <crtdbg.h>
 #endif
@@ -33,7 +35,7 @@ static void logMessageHandler(QtMsgType type, const QMessageLogContext&,
 }
 
 int main(int argc, char *argv[]) {
-#ifdef _WIN32
+#if defined(_WIN32) && defined(_MSC_VER)
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif

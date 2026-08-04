@@ -13,7 +13,8 @@
 #include <iostream>
 #include <cstdint>
 
-#ifdef _WIN32
+#if defined(_WIN32) && defined(_MSC_VER)
+// MSVC-only: crtdbg/_set_abort_behavior are UCRT-only (no MinGW msvcrt)
 #include <windows.h>
 #include <crtdbg.h>
 #endif
@@ -245,7 +246,7 @@ static void test_rwlock_accessor()
 // ---------------------------------------------------------------------------
 int main()
 {
-#ifdef _WIN32
+#if defined(_WIN32) && defined(_MSC_VER)
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif

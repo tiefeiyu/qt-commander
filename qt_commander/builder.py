@@ -146,6 +146,9 @@ def _find_build_script() -> Path:
     )
 
 
+_TOOLCHAINS = ("msvc", "mingw")
+
+
 async def run_build(
     vcvars_path: str,
     qt_env: str,
@@ -154,9 +157,16 @@ async def run_build(
     qt_major: int = 5,
     generator: str = "",
     with_qml: bool = True,
+    toolchain: str = "msvc",
     build_dir: Path | None = None,
 ) -> dict:
-    """Build injector and library by calling the Windows build script."""
+    """Build injector and library by calling the Windows build script.
+
+    ``toolchain`` selects how the script sets up the compiler:
+      "msvc"  — ``vcvars_path`` is a vcvars bat, ``qt_env`` a qtenv bat
+      "mingw" — ``vcvars_path`` is the MinGW bin dir, ``qt_env`` the Qt bin
+                dir (MinGW Qt kits have no qtenv2.bat)
+    """
     global _build_state
     async with _build_lock:
         if _build_state == BuildState.BUILDING:
@@ -169,6 +179,12 @@ async def run_build(
 
         native_src = detect_native_src()
         build_script = _find_build_script()
+
+        toolchain = toolchain.strip().lower()
+        if toolchain not in _TOOLCHAINS:
+            raise ValueError(
+                f"Invalid toolchain '{toolchain}' — expected one of "
+                f"{', '.join(_TOOLCHAINS)}")
 
         vcvars_path = _sanitize_path_input(vcvars_path, "vcvars_path")
         qt_env = _sanitize_path_input(qt_env, "qt_env")
@@ -193,8 +209,12 @@ async def run_build(
             str(qt_major),
             "ON" if with_qml else "OFF",
         ]
-        if generator:
-            cmd.append(generator)
+        # Always append the generator slot (empty string included): the bat
+        # reads positional args %10 (generator) and %11 (toolchain) after
+        # shifting, so dropping the empty generator would misalign
+        # toolchain into the generator slot and silently fall back to msvc.
+        cmd.append(generator)
+        cmd.append(toolchain)
 
         result = subprocess.run(
             ["cmd.exe", "/c"] + cmd,

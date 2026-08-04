@@ -40,7 +40,8 @@ QTC_ROOT = Path(os.environ.get("QTC_DIR", REPO / ".qt-commander"))
 QTC_BIN = QTC_ROOT / "bin"
 INJECTOR = QTC_BIN / "qt-injector.exe"
 LIBRARY = QTC_BIN / "libqt-commander.dll"
-QT_MAJOR = ""  # filled in by detect_qt_major() inside main()
+QT_MAJOR = ""  # filled in by detect_deployment() inside main()
+QT_KIT = ""    # "msvc" | "mingw"
 
 # Qt bin dir: QT_BIN env var wins (run_all_tests.py sets it), otherwise the
 # Qt<major>_DIR from the test build's CMakeCache, otherwise the repo default.
@@ -85,18 +86,66 @@ def check(cond: bool, msg: str):
 # Deploy helpers
 # ---------------------------------------------------------------------------
 
+_QT5_CLOSURE = ("Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll", "Qt5Quick.dll",
+                "Qt5Qml.dll", "Qt5QmlModels.dll", "Qt5Network.dll")
+_COMPILER_RUNTIME = ("libgcc_s_seh-1.dll", "libstdc++-6.dll",
+                     "libwinpthread-1.dll")
+
+
+def deploy_closure_qt5_minqw(app_exe: Path, qmldir: Path | None,
+                             dest: Path) -> None:
+    """Qt 5's MinGW windeployqt cannot start at all (its QGuiApplication
+    never finds the platform plugin), so deploy the app's closure manually:
+    the Qt DLL set the app actually links (qmldir apps take the QML set,
+    others just Core/Gui/Widgets), the compiler runtime (from the
+    deployment dir), the platform plugin, and the QML modules."""
+    dlls = _QT5_CLOSURE if qmldir else _QT5_CLOSURE[:3]
+    for dll in dlls:
+        src = QT_BIN / dll
+        if src.exists():
+            shutil.copy2(src, dest / dll)
+    for rt in _COMPILER_RUNTIME:
+        src = QTC_BIN / rt
+        if src.exists():
+            shutil.copy2(src, dest / rt)
+    qt_root = QT_BIN.parent
+    shutil.copytree(qt_root / "plugins" / "platforms", dest / "platforms")
+    if qmldir:
+        qml_root = qt_root / "qml"
+        shutil.copytree(qml_root / "QtQuick.2", dest / "qml" / "QtQuick.2")
+        shutil.copytree(qml_root / "QtQuick" / "Window.2",
+                        dest / "qml" / "QtQuick" / "Window.2")
+        shutil.copytree(qml_root / "QtQml", dest / "qml" / "QtQml")
+
+
 def deploy_windeployqt(app_exe: Path, qmldir: Path | None, dest: Path) -> None:
     """Fresh windeployqt-only deployment into dest (clean dir)."""
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     shutil.copy2(app_exe, dest / app_exe.name)
-    args = [str(WINDEPLOYQT), "--release", "--no-translations",
-            "--no-compiler-runtime"]
+    if QT_KIT == "mingw" and QT_MAJOR == "5":
+        deploy_closure_qt5_minqw(app_exe, qmldir, dest)
+        return
+    args = [str(WINDEPLOYQT), "--release", "--no-translations"]
+    if QT_KIT != "mingw":
+        # MSVC apps find their CRT in the system; MinGW apps need
+        # libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
+        # deployed next to them (the preload closure covers the *library*,
+        # not the app's own startup).
+        args += ["--no-compiler-runtime"]
     if qmldir:
         args += ["--qmldir", str(qmldir)]
     args.append(str(dest / app_exe.name))
     subprocess.run(args, check=True, capture_output=True)
+    if QT_KIT == "mingw":
+        # The deployed app must run on the same compiler runtime as the
+        # injected library; windeployqt ships the Qt kit's (possibly older)
+        # runtime.  Take the runtime from the deployment dir.
+        for rt in _COMPILER_RUNTIME:
+            src = QTC_BIN / rt
+            if src.exists():
+                shutil.copy2(src, dest / rt)
     # The widget app loads its UI from code; the QML app embeds the scene in
     # a qrc, so no extra source files are needed.
 
@@ -110,8 +159,16 @@ def qdll(short: str) -> str:
     return f"Qt{QT_MAJOR}{short}.dll"
 
 
-def detect_qt_major() -> str:
-    """Derive the Qt major from libqt-commander.dll's own import closure."""
+_MINGW_RUNTIME_DLLS = ("libgcc_s_seh-1.dll", "libstdc++-6.dll",
+                       "libwinpthread-1.dll")
+
+
+def detect_deployment() -> tuple[str, str]:
+    """Derive (Qt major, kit) from libqt-commander.dll's import closure.
+
+    kit is "msvc" or "mingw", identified by the CRT runtime DLLs the
+    library imports (MinGW Qt DLLs import libgcc_s_seh-1.dll etc.).
+    """
     proc = subprocess.run(
         [str(INJECTOR), "--list-deps", str(LIBRARY),
          "--search-dir", str(QTC_BIN)],
@@ -119,11 +176,14 @@ def detect_qt_major() -> str:
     deps = json.loads(proc.stdout)["deps"]
     names = {Path(p).name.lower() for p in deps}
     if "qt6core.dll" in names:
-        return "6"
-    if "qt5core.dll" in names:
-        return "5"
-    raise RuntimeError(f"cannot determine Qt major from library closure: "
-                       f"{sorted(names)}")
+        major = "6"
+    elif "qt5core.dll" in names:
+        major = "5"
+    else:
+        raise RuntimeError(f"cannot determine Qt major from library closure: "
+                           f"{sorted(names)}")
+    kit = "mingw" if any(n in names for n in _MINGW_RUNTIME_DLLS) else "msvc"
+    return major, kit
 
 
 def qt_bin_major(bin_dir: Path) -> str | None:
@@ -135,13 +195,25 @@ def qt_bin_major(bin_dir: Path) -> str | None:
     return None
 
 
-# Canonical installs for each Qt major, used when the QT_BIN from the build
-# tree (ctest passes its own tree's Qt bin) does not match the deployed
-# library's Qt major.  windeployqt of the wrong major rejects the exe
-# ("does not seem to be a Qt executable"), so it must follow the deployment.
+def qt_bin_kit(bin_dir: Path) -> str | None:
+    """Probe whether a Qt bin dir is MinGW or MSVC (by its runtime DLLs)."""
+    if qt_bin_major(bin_dir) is None:
+        return None
+    if any((bin_dir / n).exists() for n in _MINGW_RUNTIME_DLLS):
+        return "mingw"
+    return "msvc"
+
+
+# Canonical installs for each (major, kit), used when the QT_BIN from the
+# build tree (ctest passes its own tree's Qt bin) does not match the
+# deployed library.  A wrong-major windeployqt rejects the exe outright,
+# and a wrong-kit one deploys DLLs that crash the app (entry point not
+# found), so windeployqt must follow the deployment exactly.
 _CANONICAL_QT_BIN = {
-    "5": Path(r"C:\Software\Qt\5.15.2\msvc2019_64\bin"),
-    "6": Path(r"C:\Software\Qt\6.8.3\msvc2022_64\bin"),
+    ("5", "msvc"):  Path(r"C:\Software\Qt\5.15.2\msvc2019_64\bin"),
+    ("5", "mingw"): Path(r"C:\Software\Qt\5.15.2\mingw81_64\bin"),
+    ("6", "msvc"):  Path(r"C:\Software\Qt\6.8.3\msvc2022_64\bin"),
+    ("6", "mingw"): Path(r"C:\Software\Qt\6.8.3\mingw_64\bin"),
 }
 
 
@@ -271,38 +343,43 @@ def scenario_diagnostic() -> None:
 
 
 async def main() -> int:
-    global QT_MAJOR, QT_BIN, WINDEPLOYQT
+    global QT_MAJOR, QT_KIT, QT_BIN, WINDEPLOYQT
     if not (INJECTOR.exists() and LIBRARY.exists()):
         print("ERROR: qt-injector.exe / libqt-commander.dll not found in "
               ".qt-commander/bin -- run qt_build first")
         return 2
     try:
-        QT_MAJOR = detect_qt_major()
+        QT_MAJOR, QT_KIT = detect_deployment()
     except RuntimeError as e:
         print(f"ERROR: {e}")
         return 2
-    print(f"Detected Qt{QT_MAJOR} library deployment "
+    print(f"Detected Qt{QT_MAJOR} ({QT_KIT}) library deployment "
           f"({QTC_BIN})")
     if QT_BIN is None:
         print("ERROR: Qt bin dir not found -- set QT_BIN env var or run "
               "qt_build first")
         return 2
-    # windeployqt must match the DEPLOYED Qt major, not the invoking build
-    # tree's (ctest passes its own QT_BIN; the deployment may be the other
-    # major after the last qt_build).  Wrong-major windeployqt rejects the
-    # exe outright, so fall back to the canonical install of the deployed
-    # major.
+    # windeployqt must match the DEPLOYED Qt major AND kit, not the invoking
+    # build tree's (ctest passes its own QT_BIN; the deployment may be the
+    # other major/kit after the last qt_build).  A wrong-major windeployqt
+    # rejects the exe outright; a wrong-kit one deploys DLLs that crash the
+    # app at startup (entry point not found).  Fall back to the canonical
+    # install of the deployment's (major, kit).
     bin_major = qt_bin_major(QT_BIN)
-    if bin_major is not None and bin_major != QT_MAJOR:
-        alt = _CANONICAL_QT_BIN.get(QT_MAJOR)
+    bin_kit = qt_bin_kit(QT_BIN)
+    if (bin_major is not None and bin_major != QT_MAJOR) or (
+            bin_kit is not None and bin_kit != QT_KIT):
+        alt = _CANONICAL_QT_BIN.get((QT_MAJOR, QT_KIT))
         if alt and alt.is_dir():
-            print(f"NOTE: QT_BIN ({QT_BIN}) is Qt{bin_major}; deployment is "
-                  f"Qt{QT_MAJOR} -- using {alt} for windeployqt")
+            print(f"NOTE: QT_BIN ({QT_BIN}) is Qt{bin_major or '?'} "
+                  f"({bin_kit or '?'}); deployment is Qt{QT_MAJOR} "
+                  f"({QT_KIT}) -- using {alt} for windeployqt")
             QT_BIN = alt
             WINDEPLOYQT = QT_BIN / "windeployqt.exe"
         else:
-            print(f"ERROR: QT_BIN ({QT_BIN}) is Qt{bin_major} but deployment "
-                  f"is Qt{QT_MAJOR}; no Qt{QT_MAJOR} install at {alt}")
+            print(f"ERROR: QT_BIN ({QT_BIN}) is Qt{bin_major or '?'} "
+                  f"({bin_kit or '?'}) but deployment is Qt{QT_MAJOR} "
+                  f"({QT_KIT}); no matching install at {alt}")
             return 2
     if not WINDEPLOYQT.exists():
         print(f"ERROR: windeployqt not found at {WINDEPLOYQT}")
