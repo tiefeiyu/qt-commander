@@ -118,24 +118,11 @@ extern "C" int qt_commander_init(const InitParams* params)
     const std::string token(params->token);
     const std::string port_file_path(params->port_file_path);
 
-    // ---- write port handshake file: "port\ntoken\n" ------------------------
-    {
-        std::ofstream ofs(port_file_path,
-                          std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open()) {
-            tcp_close(listen_fd);
-            return -1;
-        }
-
-        ofs << port << '\n';
-        ofs << token << '\n';
-        ofs.flush();
-
-        if (!ofs) {
-            tcp_close(listen_fd);
-            std::remove(port_file_path.c_str());
-            return -1;
-        }
+    // ---- write port handshake file: "port\ntoken\n" (atomic) ---------------
+    if (!qt_commander::writePortFileAtomic(port_file_path,
+                             std::to_string(port) + '\n' + token + '\n')) {
+        tcp_close(listen_fd);
+        return -1;
     }
 
     // ---- start the RPC server thread (detached) ---------------------------

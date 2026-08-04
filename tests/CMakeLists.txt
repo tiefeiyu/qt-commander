@@ -29,6 +29,10 @@ if(BUILD_INJECTOR)
             target_link_libraries(${NAME} PRIVATE pthread dl)
         endif()
         add_test(NAME ${NAME} COMMAND ${NAME})
+        # Every test gets a timeout so a hang fails instead of blocking
+        # the whole ctest run forever.  E2E suites (which spawn injector
+        # + test apps) are given a longer budget by their callers.
+        set_tests_properties(${NAME} PROPERTIES TIMEOUT 120)
         # The E2E suites spawn qt-injector / the test apps; put their
         # output directories (and the Qt bin dir, for the apps' Qt DLLs)
         # on PATH so they resolve from any build tree layout.
@@ -113,6 +117,7 @@ if(BUILD_INJECTOR)
     )
     set_tests_properties(test_e2e PROPERTIES
         DEPENDS "qt-injector;qt-widget-test"
+        TIMEOUT 300
     )
 
     # --- E2E: Exit codes 3 + 6 (2 tests) ---
@@ -121,6 +126,7 @@ if(BUILD_INJECTOR)
     )
     set_tests_properties(test_e2e_exit_codes PROPERTIES
         DEPENDS "qt-injector;qt-widget-test"
+        TIMEOUT 300
     )
 
     # --- E2E: Exit codes 4 + 5 (2 tests) ---
@@ -129,6 +135,7 @@ if(BUILD_INJECTOR)
     )
     set_tests_properties(test_exit45 PROPERTIES
         DEPENDS "qt-injector;qt-widget-test"
+        TIMEOUT 300
     )
 endif()
 
@@ -142,7 +149,8 @@ if(Python3_FOUND)
                 ${CMAKE_SOURCE_DIR}/tests -q)
     set_tests_properties(python_unit_tests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        LABELS "python")
+        LABELS "python"
+        TIMEOUT 300)
 
     # Deployment-level E2E: needs the qt_build artifacts in .qt-commander/bin
     # (injector + library + Qt dependency closure DLLs).

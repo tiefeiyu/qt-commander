@@ -5,6 +5,10 @@
 void ElementMap::clear()
 {
     QWriteLocker locker(&lock_);
+    // Disconnect destruction tracking for the objects we still own (they
+    // are about to be re-inserted by the next rebuild).
+    for (QObject* obj : map_)
+        QObject::disconnect(obj, nullptr, this, nullptr);
     map_.clear();
     revMap_.clear();
     next_id_ = 1;
@@ -16,6 +20,26 @@ void ElementMap::insert(uint64_t id, QObject* obj)
     QWriteLocker locker(&lock_);
     map_.insert(id, obj);
     revMap_.insert(obj, id);
+    // Track destruction so stale ids never dangle: when the target widget
+    // is destroyed (dialog closed, deleteLater, ...) we drop it from the
+    // map and bump the epoch so in-flight operations fail cleanly instead
+    // of dereferencing a freed object.  destroyed() fires on the GUI
+    // thread, so this is safe with the map's locking.
+    if (!destroyTracked_.contains(obj)) {
+        destroyTracked_.insert(obj);
+        QObject::connect(obj, &QObject::destroyed, this,
+                         &ElementMap::onObjectDestroyed);
+    }
+}
+
+void ElementMap::onObjectDestroyed(QObject* obj)
+{
+    QWriteLocker locker(&lock_);
+    const uint64_t id = revMap_.take(obj);
+    if (id != 0)
+        map_.remove(id);
+    destroyTracked_.remove(obj);
+    ++epoch_;  // invalidate ids that pointed at the destroyed object
 }
 
 QObject* ElementMap::lookup(uint64_t id) const

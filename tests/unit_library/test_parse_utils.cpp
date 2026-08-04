@@ -1,14 +1,10 @@
-// RPC server unit tests
+// parse_utils unit tests
 //
 // Tests:
 //   - qt_parse_element_id (camelCase, snake_case, integer, missing)
-//   - Screenshot dispatch path (handler.do_screenshot)
-//
-// A QApplication is required for QWidget creation.
 
-#include <QApplication>
+#include <QCoreApplication>
 #include <QObject>
-#include <QWidget>
 #include <QVariant>
 #include <QJsonObject>
 #include <QJsonDocument>
@@ -20,9 +16,7 @@
 #include <crtdbg.h>
 #endif
 
-#include "protocol/handler.h"
 #include "rpc/parse_utils.h"
-#include "core/element_map.h"
 
 static int passed = 0, failed = 0, skipped = 0;
 #define TEST(n)  do { std::cout << "  " << n << "... "; } while(0)
@@ -109,82 +103,6 @@ static void test_parse_element_id_snake_preferred()
     PASS();
 }
 
-// ============================================================================
-// Screenshot handler test via doScreenshot
-// ============================================================================
-
-static void test_do_screenshot_not_found()
-{
-    TEST("doScreenshot returns error when element not found");
-    Handler handler(nullptr);
-
-    ElementMap map;
-    map.incrementEpoch();
-    handler.setElementMap(&map);
-
-    QVariant result = handler.doScreenshot(999, QString(), 0, nullptr, 1);
-    QVariantMap m = result.toMap();
-    CHECK(m[QStringLiteral("ok")].toBool() == false, "should fail for missing element");
-    CHECK(m[QStringLiteral("error")].toMap()
-             [QStringLiteral("code")].toInt() == -3,
-          "error code should be -3");
-
-    handler.setElementMap(nullptr);
-    PASS();
-}
-
-static void test_do_screenshot_visible_widget()
-{
-    TEST("doScreenshot returns ok for valid visible widget");
-    Handler handler(nullptr);
-
-    ElementMap map;
-    QWidget widget;
-    widget.resize(400, 300);
-    widget.setVisible(true);
-    widget.setEnabled(true);
-    map.insert(1, &widget);
-    map.incrementEpoch();
-
-    handler.setElementMap(&map);
-
-    QVariant result = handler.doScreenshot(1, QString(), 5, nullptr, 1);
-    QVariantMap m = result.toMap();
-    CHECK(m[QStringLiteral("ok")].toBool() == true, "should succeed for valid widget");
-    CHECK(m[QStringLiteral("seq")].toInt() == 5, "seq should be 5");
-
-    handler.setElementMap(nullptr);
-    PASS();
-}
-
-// Defined in handler_test_stubs.cpp: last dir passed to Screenshot::capture.
-extern QString qtc_test_last_capture_dir;
-
-static void test_do_screenshot_empty_dir_resolved()
-{
-    TEST("doScreenshot resolves an empty dir to a usable default");
-    Handler handler(nullptr);
-
-    ElementMap map;
-    QWidget widget;
-    widget.resize(400, 300);
-    widget.setVisible(true);
-    map.insert(1, &widget);
-    map.incrementEpoch();
-    handler.setElementMap(&map);
-
-    qtc_test_last_capture_dir.clear();
-    QVariant result = handler.doScreenshot(1, QString(), 6, nullptr, 1);
-    QVariantMap m = result.toMap();
-    CHECK(m[QStringLiteral("ok")].toBool() == true, "should succeed");
-    // resolvePath("", "") must not forward "" (that wrote to the drive
-    // root); it falls back to the current directory.
-    CHECK(!qtc_test_last_capture_dir.isEmpty(),
-          "capture dir must not be empty");
-
-    handler.setElementMap(nullptr);
-    PASS();
-}
 
 // ============================================================================
 // main
@@ -195,11 +113,10 @@ int main(int argc, char* argv[])
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
-    QApplication app(argc, argv);
+    QCoreApplication app(argc, argv);
 
-    std::cout << "test_rpc_server\n";
+    std::cout << "test_parse_utils\n";
 
-    // parse_element_id tests
     test_parse_element_id_camel_case();
     test_parse_element_id_snake_case();
     test_parse_element_id_integer();
@@ -207,11 +124,6 @@ int main(int argc, char* argv[])
     test_parse_element_id_empty_string();
     test_parse_element_id_zero();
     test_parse_element_id_snake_preferred();
-
-    // screenshot handler tests
-    test_do_screenshot_not_found();
-    test_do_screenshot_visible_widget();
-    test_do_screenshot_empty_dir_resolved();
 
     std::cout << "\n" << passed << " passed, " << failed << " failed\n";
     return failed > 0 ? 1 : 0;

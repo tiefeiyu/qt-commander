@@ -22,5 +22,4 @@ private:
     static QVariant getPropertyValue(QObject* obj, const QString& name);
     static QString getDisplayText(QObject* obj);
     static QObject* getContainingWindow(QObject* obj);
-    static int getDepthFromAncestor(QObject* obj, QObject* ancestor);
 };

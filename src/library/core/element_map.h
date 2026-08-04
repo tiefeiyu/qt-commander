@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QHash>
+#include <QSet>
 #include <QReadWriteLock>
 #include <QReadLocker>
 #include <cstdint>
@@ -20,8 +21,15 @@
 /// QPointer is deliberately NOT used:  QPointer is not thread-safe (it can
 /// auto-null from any thread, corrupting concurrent reads).  Raw QObject*
 /// with explicit lock protection is the correct pattern here.
-class ElementMap
+///
+/// Destruction is tracked via QObject::destroyed (fires on the GUI thread):
+/// when a mapped object dies it is removed from the map and the epoch is
+/// bumped, so stale ids fail cleanly instead of dangling.  ElementMap is a
+/// QObject so it can be the receiver of those connections (it outlives all
+/// mapped objects).
+class ElementMap : public QObject
 {
+    Q_OBJECT
 public:
     /// Clear all entries, reset next_id to 1, reset epoch to 0.
     /// Acquires a write lock internally.
@@ -74,10 +82,15 @@ public:
         return map_;
     }
 
+private slots:
+    /// Remove a destroyed object and invalidate ids that pointed at it.
+    void onObjectDestroyed(QObject* obj);
+
 private:
     mutable QReadWriteLock lock_{QReadWriteLock::Recursive};
     QHash<uint64_t, QObject*> map_;
     QHash<QObject*, uint64_t> revMap_;   // obj -> id (maintained by insert/clear)
+    QSet<QObject*> destroyTracked_;      // objects with an active destroyed() hook
     uint64_t next_id_ = 1;
     uint64_t epoch_ = 0;
 };

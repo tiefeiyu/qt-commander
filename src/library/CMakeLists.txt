@@ -25,13 +25,11 @@ set(LIB_SOURCES
     core/element_map.cpp
     core/screenshot.cpp
     selector/selector.cpp
-    protocol/handler.cpp
     ../common/socket_utils.cpp
 )
 
 add_library(qt-commander-lib SHARED ${LIB_SOURCES}
     rpc/rpc_server.h
-    protocol/handler.h
 )
 
 target_include_directories(qt-commander-lib PRIVATE

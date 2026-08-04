@@ -20,7 +20,8 @@ message(STATUS "Qt bin path: ${QT_BIN_PATH}")
 function(qtc_add_test NAME TARGET)
     add_test(NAME ${NAME} COMMAND ${TARGET})
     set_tests_properties(${NAME} PROPERTIES
-        ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}")
+        ENVIRONMENT "PATH=${QT_BIN_PATH}\;$ENV{PATH}"
+        TIMEOUT 300)
 endfunction()
 
 # --- ElementMap test (12 tests) ---
@@ -37,6 +38,7 @@ qtc_add_test(test_element_map test_element_map)
 add_executable(test_selector
     test_selector.cpp
     ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
+    ${CMAKE_SOURCE_DIR}/src/library/core/ui_scanner.cpp
 )
 if(WITH_QML)
     target_sources(test_selector PRIVATE
@@ -54,28 +56,10 @@ endif()
 set_target_properties(test_selector PROPERTIES AUTOMOC ON)
 qtc_add_test(test_selector test_selector)
 
-# --- Handler test (12 tests) ---
-add_executable(test_handler
-    test_handler.cpp
-    handler_test_stubs.cpp
-    ${CMAKE_SOURCE_DIR}/src/library/protocol/handler.cpp
-    ${CMAKE_SOURCE_DIR}/src/library/core/element_map.cpp
-    ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
+# --- parse_utils test (replaces the former test_rpc_server) ---
+add_executable(test_parse_utils
+    test_parse_utils.cpp
 )
-target_include_directories(test_handler PRIVATE ${CMAKE_SOURCE_DIR}/src/library ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_handler PRIVATE Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Gui Qt${QT_MAJOR_VERSION}::Widgets)
-set_target_properties(test_handler PROPERTIES AUTOMOC ON)
-qtc_add_test(test_handler test_handler)
-
-# --- RPC server test (parse_utils + screenshot) ---
-add_executable(test_rpc_server
-    test_rpc_server.cpp
-    handler_test_stubs.cpp
-    ${CMAKE_SOURCE_DIR}/src/library/protocol/handler.cpp
-    ${CMAKE_SOURCE_DIR}/src/library/core/element_map.cpp
-    ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
-)
-target_include_directories(test_rpc_server PRIVATE ${CMAKE_SOURCE_DIR}/src/library ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_rpc_server PRIVATE Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Gui Qt${QT_MAJOR_VERSION}::Widgets)
-set_target_properties(test_rpc_server PROPERTIES AUTOMOC ON)
-qtc_add_test(test_rpc_server test_rpc_server)
+target_include_directories(test_parse_utils PRIVATE ${CMAKE_SOURCE_DIR}/src/library)
+target_link_libraries(test_parse_utils PRIVATE Qt${QT_MAJOR_VERSION}::Core)
+qtc_add_test(test_parse_utils test_parse_utils)

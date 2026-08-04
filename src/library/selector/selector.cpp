@@ -1,5 +1,6 @@
 #include "selector.h"
 #include "../compat_qt.h"
+#include "../core/ui_scanner.h"
 
 #include <QApplication>
 #include <QGuiApplication>
@@ -510,120 +511,15 @@ QVariant ElementSelector::getPropertyValue(QObject* obj, const QString& name)
 }
 
 // -----------------------------------------------------------------------
-// getDisplayText
+// getDisplayText / getContainingWindow  --  delegated to UiScanner so the
+// snapshot and findElement paths share one text/window contract.
 // -----------------------------------------------------------------------
 QString ElementSelector::getDisplayText(QObject* obj)
 {
-    if (!obj) return {};
-
-    // QWindow immediate.
-    if (QWindow* win = qobject_cast<QWindow*>(obj)) {
-        const QString t = win->title();
-        if (!t.isEmpty()) return t;
-    }
-
-    // QWidget: window title for top-levels, otherwise text property.
-    if (QWidget* w = qobject_cast<QWidget*>(obj)) {
-        // Top-level widget -> windowTitle.
-        if (w->isWindow()) {
-            const QString wt = w->windowTitle();
-            if (!wt.isEmpty()) return wt;
-        }
-        // Common QAbstractButton / QLabel / QLineEdit / QComboBox path.
-        const QVariant textProp = getPropertyValue(obj, QStringLiteral("text"));
-        if (textProp.isValid() && textProp.userType() == QMetaType::QString) {
-            const QString s = textProp.toString();
-            if (!s.isEmpty()) return s;
-        }
-        // currentText for QComboBox-like widgets.
-        const QVariant curText = getPropertyValue(obj,
-                                                   QStringLiteral("currentText"));
-        if (curText.isValid() && curText.userType() == QMetaType::QString) {
-            const QString s = curText.toString();
-            if (!s.isEmpty()) return s;
-        }
-    }
-
-#ifdef QT_COMMANDER_WITH_QML
-    // QQuickItem: check common QML properties.
-    if (QQuickItem* item = qobject_cast<QQuickItem*>(obj)) {
-        const QVariant t = item->property("text");
-        if (t.isValid() && t.userType() == QMetaType::QString) {
-            const QString s = t.toString();
-            if (!s.isEmpty()) return s;
-        }
-        const QVariant title = item->property("title");
-        if (title.isValid() && title.userType() == QMetaType::QString) {
-            const QString s = title.toString();
-            if (!s.isEmpty()) return s;
-        }
-    }
-#endif
-
-    // Fallback: objectName.
-    return obj->objectName();
+    return UiScanner::displayText(obj);
 }
 
-// -----------------------------------------------------------------------
-// getContainingWindow
-// -----------------------------------------------------------------------
 QObject* ElementSelector::getContainingWindow(QObject* obj)
 {
-    if (!obj) return nullptr;
-
-    // QWidget: window() returns the top-level QWidget (may be itself).
-    if (QWidget* w = qobject_cast<QWidget*>(obj)) {
-        QWidget* tlw = w->window();
-        return tlw ? static_cast<QObject*>(tlw) : nullptr;
-    }
-
-#ifdef QT_COMMANDER_WITH_QML
-    // QQuickItem: window() returns the QQuickWindow.
-    if (QQuickItem* item = qobject_cast<QQuickItem*>(obj)) {
-        return item->window();   // QQuickWindow* -> QObject*
-    }
-#endif
-
-    // QWindow: if it's a top-level, it IS the window.
-    if (QWindow* win = qobject_cast<QWindow*>(obj)) {
-        return win;
-    }
-
-    // Generic QObject: walk parent chain looking for a window-like ancestor.
-    QObject* parent = obj->parent();
-    while (parent) {
-        if (qobject_cast<QWidget*>(parent)) {
-            QWidget* w = static_cast<QWidget*>(parent);
-            return w->window();   // may be itself if it's top-level
-        }
-#ifdef QT_COMMANDER_WITH_QML
-        if (qobject_cast<QQuickWindow*>(parent)) {
-            return parent;
-        }
-#endif
-        if (qobject_cast<QWindow*>(parent)) {
-            return parent;
-        }
-        parent = parent->parent();
-    }
-
-    return nullptr;
-}
-
-// -----------------------------------------------------------------------
-// getDepthFromAncestor
-// -----------------------------------------------------------------------
-int ElementSelector::getDepthFromAncestor(QObject* obj, QObject* ancestor)
-{
-    if (!obj || !ancestor) return -1;
-    if (obj == ancestor) return 0;
-
-    int depth = 0;
-    QObject* cur = obj;
-    while (cur) {
-        if (cur == ancestor) return depth;
-        cur = cur->parent();
-        ++depth;
-    }
-    return -1;   // not found in ancestor chain
+    return UiScanner::getContainingWindow(obj);
 }

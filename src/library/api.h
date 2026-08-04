@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 
 // ---------------------------------------------------------------------------
 // InitParams -- POD struct passed from injector to injected library via
@@ -43,3 +44,14 @@ static_assert(sizeof(InitParams) == INIT_PARAMS_TOTAL_SIZE,
 //   6. Return immediately -- the RPC thread owns the accept/listen lifetime
 // ---------------------------------------------------------------------------
 extern "C" int qt_commander_init(const InitParams* params);
+
+namespace qt_commander {
+
+// ---------------------------------------------------------------------------
+// Atomic port-file write (temp file + rename)
+// ---------------------------------------------------------------------------
+// Writes content (typically "<port>\n<token>\n") so the injector polling the
+// file never observes a half-written port.  Implemented in rpc_server.cpp.
+bool writePortFileAtomic(const std::string& path, const std::string& content);
+
+} // namespace qt_commander

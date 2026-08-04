@@ -176,6 +176,10 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
     ``prop_depth`` — how many levels of QObject property values to expand.
     0 = no properties, 1 = direct properties only, etc.
     Use -1 for unlimited depth.
+    ``detail`` — property tier on each node: "core" (default; first-class
+    fields only — geometry, visibility, text, window info — no properties),
+    "extended" (plus common interaction-state properties like text/checked/
+    value), or "full" (every Q_PROPERTY; slow on large UIs).
     """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.snapshot", {

@@ -136,22 +136,12 @@ extern "C" int qt_commander_init(const InitParams* params)
     std::string tok(params->token);
     std::string pf(params->port_file_path);
 
-    // Write port file
-    {
-        std::ofstream ofs(pf, std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open()) {
-            tcp_close(listen_fd);
-            abortInit();
-            return -1;
-        }
-        ofs << port << '\n' << tok << '\n';
-        ofs.flush();
-        if (!ofs) {
-            tcp_close(listen_fd);
-            std::remove(pf.c_str());
-            abortInit();
-            return -1;
-        }
+    // Write port file (atomic: temp file + rename, so the injector's
+    // polling never observes a half-written port).
+    if (!qt_commander::writePortFileAtomic(pf, std::to_string(port) + '\n' + tok + '\n')) {
+        tcp_close(listen_fd);
+        abortInit();
+        return -1;
     }
 
     // Start RPC thread.  When the session ends (shutdown RPC or client

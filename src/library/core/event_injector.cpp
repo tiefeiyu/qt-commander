@@ -1033,8 +1033,13 @@ bool EventInjector::touchPress(QObject* target,
     if (!target)
         return false;
 
-    // Save target for later release.
+    // Save target for later release; track destruction so touchRelease
+    // never dereferences a freed object (same pattern as ElementMap).
     s_touchTargets[touchId] = {target};
+    QObject::connect(target, &QObject::destroyed, target, [touchId](QObject* obj) {
+        Q_UNUSED(obj);
+        s_touchTargets.remove(touchId);
+    });
 
     const QPointF localPos(x, y);
 

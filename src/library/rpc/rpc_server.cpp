@@ -4,10 +4,6 @@
 // TCP JSON-RPC server running inside the injected Qt library.
 // Accepts one connection, authenticates, and dispatches widget operations
 // to the main thread via Qt::QueuedConnection.
-//
-// Implements two entry points:
-//   1. RpcServer QObject class   -- for direct use by library consumers
-//   2. qt_commander::run_rpc_server() -- free function called by entry_*.cpp
 // =============================================================================
 
 #include "rpc/rpc_server.h"
@@ -24,13 +20,13 @@
 #endif
 #include "../common/socket_utils.h"
 #include "../common/framing.h"
-#include "protocol/handler.h"
 
 #include <QApplication>
 #include <QWidget>
 #include <QWindow>
 #include <QJsonArray>
 #include <QJsonValue>
+#include <QJsonDocument>
 #include <QMetaObject>
 #include <QMetaMethod>
 #include <QMetaProperty>
@@ -172,6 +168,68 @@ static QJsonValue serializeValue(const QVariant& value, int propDepth) {
 }
 
 // ---------------------------------------------------------------------------
+// validatedElement — resolve an element id and reject unusable targets
+// ---------------------------------------------------------------------------
+// Ported from the former protocol::Handler: after the object resolves,
+// hidden / disabled / zero-size targets are rejected so operations fail
+// predictably instead of silently no-op'ing.  (The destroyed-tracking in
+// ElementMap already guarantees a resolved pointer is alive.)
+QObject* validatedElement(ElementMap* elementMap, uint64_t elementId,
+                          QJsonObject& result)
+{
+    QObject* obj = elementMap->get(elementId);
+    if (!obj) {
+        result[QStringLiteral("ok")] = false;
+        result[QStringLiteral("message")] =
+            QStringLiteral("Element not found: id=%1").arg(elementId);
+        return nullptr;
+    }
+    if (auto* w = qobject_cast<QWidget*>(obj)) {
+        if (!w->isVisible()) {
+            result[QStringLiteral("ok")] = false;
+            result[QStringLiteral("message")] =
+                QStringLiteral("Element is not visible: id=%1").arg(elementId);
+            return nullptr;
+        }
+        if (!w->isEnabled()) {
+            result[QStringLiteral("ok")] = false;
+            result[QStringLiteral("message")] =
+                QStringLiteral("Element is not enabled: id=%1").arg(elementId);
+            return nullptr;
+        }
+        if (w->size().isEmpty()) {
+            result[QStringLiteral("ok")] = false;
+            result[QStringLiteral("message")] =
+                QStringLiteral("Element has zero size: id=%1").arg(elementId);
+            return nullptr;
+        }
+    }
+#ifdef QT_COMMANDER_WITH_QML
+    if (auto* qi = qobject_cast<QQuickItem*>(obj)) {
+        if (!qi->isVisible()) {
+            result[QStringLiteral("ok")] = false;
+            result[QStringLiteral("message")] =
+                QStringLiteral("QQuickItem is not visible: id=%1").arg(elementId);
+            return nullptr;
+        }
+        if (!qi->isEnabled()) {
+            result[QStringLiteral("ok")] = false;
+            result[QStringLiteral("message")] =
+                QStringLiteral("QQuickItem is not enabled: id=%1").arg(elementId);
+            return nullptr;
+        }
+        if (qi->width() <= 0.0 || qi->height() <= 0.0) {
+            result[QStringLiteral("ok")] = false;
+            result[QStringLiteral("message")] =
+                QStringLiteral("QQuickItem has zero size: id=%1").arg(elementId);
+            return nullptr;
+        }
+    }
+#endif
+    return obj;
+}
+
+// ---------------------------------------------------------------------------
 // Method invocation with typed arguments
 // ---------------------------------------------------------------------------
 
@@ -191,7 +249,10 @@ static bool invokeMethodTyped(QObject* obj, const QString& methodName,
     // declared in the concrete class.
     for (int i = 0; i < mo->methodCount(); ++i) {
         const QMetaMethod m = mo->method(i);
-        if (m.name() != name || m.parameterCount() != args.size())
+        // >10 arguments would overflow the fixed conversion buffers below;
+        // reject such overloads and let the QVariantList fallback handle it.
+        if (m.name() != name || m.parameterCount() != args.size() ||
+            args.size() > 10)
             continue;
 
         int      ints[10];      uint     uints[10];
@@ -297,11 +358,35 @@ static bool invokeMethodTyped(QObject* obj, const QString& methodName,
 }
 
 /// Collect a QObject's properties into a JSON object.
-static QJsonObject collectProperties(QObject* obj, int propDepth) {
+///
+/// detail tiers (same contract the snapshot tool documents):
+///   "core"     -- no properties (the first-class fields on the node are
+///                 enough: geometry, visibility, text, window info)
+///   "extended" -- a whitelist of common interaction-state properties
+///                 (text/checked/value/placeholderText/...), cheap to read
+///   "full"     -- every Q_PROPERTY (expensive: ~70 reads per widget)
+/// The default is "core": reading all properties of every node dominates
+/// snapshot cost (seconds of GUI-thread time and megabytes of JSON on
+/// large UIs), and most properties are noise for the AI.
+static QJsonObject collectProperties(QObject* obj, int propDepth,
+                                     const QString& detail) {
     QJsonObject props;
+    if (detail == QStringLiteral("core"))
+        return props;
     const QMetaObject* meta = obj->metaObject();
     for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
         QMetaProperty prop = meta->property(i);
+        if (detail == QStringLiteral("extended")) {
+            static const QSet<QByteArray> whitelist = {
+                "text", "checked", "checkState", "enabled", "visible",
+                "placeholderText", "currentText", "currentIndex", "value",
+                "minimum", "maximum", "singleStep", "readOnly", "echoMode",
+                "pressed", "selected", "expanded", "title", "windowTitle",
+                "toolTip", "accessibleName", "maxLength", "modified",
+            };
+            if (!whitelist.contains(prop.name()))
+                continue;
+        }
         QVariant v = prop.read(obj);
         QJsonValue sv = serializeValue(v, propDepth);
         if (!sv.isUndefined())
@@ -318,7 +403,7 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
                                   ElementMap* elementMap, uint64_t& nextId,
                                   bool includeHidden,
                                   QObject* topLevel, uint64_t topLevelId,
-                                  QWidget* focusW);
+                                  QWidget* focusW, const QString& detail);
 
 /// Build one snapshot node (top-level window or descendant).  Every node
 /// carries the stable identification and geometry the AI needs to plan
@@ -333,7 +418,7 @@ static QJsonObject makeNode(QObject* obj, uint64_t id,
                             QWidget* focusW,
                             int maxDepth, int propDepth,
                             ElementMap* elementMap, uint64_t& nextId,
-                            bool includeHidden) {
+                            bool includeHidden, const QString& detail) {
     QJsonObject node;
     node["className"] = QString::fromLatin1(obj->metaObject()->className());
     node["objID"] = static_cast<qint64>(id);
@@ -382,10 +467,10 @@ static QJsonObject makeNode(QObject* obj, uint64_t id,
         }
 #endif
     }
-    node["properties"] = collectProperties(obj, propDepth);
+    node["properties"] = collectProperties(obj, propDepth, detail);
     node["children"] = collectChildren(obj, maxDepth, propDepth,
                                        elementMap, nextId, includeHidden,
-                                       topLevel, topLevelId, focusW);
+                                       topLevel, topLevelId, focusW, detail);
     return node;
 }
 
@@ -393,7 +478,7 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
                                   ElementMap* elementMap, uint64_t& nextId,
                                   bool includeHidden,
                                   QObject* topLevel, uint64_t topLevelId,
-                                  QWidget* focusW) {
+                                  QWidget* focusW, const QString& detail) {
     QJsonArray arr;
     if (maxDepth == 0)
         return arr;
@@ -437,7 +522,7 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
 
         arr.append(makeNode(child, id, topLevel, topLevelId, focusW,
                             childDepth, propDepth,
-                            elementMap, nextId, includeHidden));
+                            elementMap, nextId, includeHidden, detail));
     }
     return arr;
 }
@@ -467,11 +552,101 @@ QByteArray jsonRpcError(int id, int code, const QString& message) {
 }
 
 // ---------------------------------------------------------------------------
+// Frame-level socket I/O  (named namespace to avoid clashing with
+// RpcServer::readFrame / RpcServer::sendFrame member functions)
+// ---------------------------------------------------------------------------
+namespace rpc_io {
+
+std::string readFrame(socket_t fd) {
+    // Read header (4 bytes — big-endian length)
+    uint8_t header[FRAME_HEADER_SIZE];
+    if (!tcp_recv_all(fd, header, FRAME_HEADER_SIZE))
+        return {};
+
+    // Parse 4-byte big-endian payload length (no magic/version in new protocol)
+
+    uint32_t payloadLen = (static_cast<uint32_t>(header[0]) << 24) |
+                           (static_cast<uint32_t>(header[1]) << 16) |
+                           (static_cast<uint32_t>(header[2]) << 8)  |
+                           (static_cast<uint32_t>(header[3]));
+    if (payloadLen == 0 || payloadLen > MAX_FRAME_PAYLOAD)
+        return {};
+
+    // Read payload
+    std::vector<uint8_t> payload(payloadLen);
+    if (!tcp_recv_all(fd, payload.data(), payloadLen))
+        return {};
+
+    return std::string(reinterpret_cast<const char*>(payload.data()),
+                       payloadLen);
+}
+
+bool sendFrame(socket_t fd, const std::string& data) {
+    // frame_encode throws for payloads over MAX_FRAME_PAYLOAD; the worker
+    // thread has no exception handler, so an uncaught throw would call
+    // std::terminate and kill the whole target process.  Catch it and
+    // report failure (callers treat a failed send as a disconnect).
+    std::vector<uint8_t> frame;
+    try {
+        frame = frame_encode(
+            reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    } catch (const std::exception&) {
+        return false;
+    }
+    return tcp_send_all(fd, frame.data(), frame.size());
+}
+
+bool sendJsonResponse(socket_t fd, int id, const QJsonObject& result) {
+    QByteArray json = jsonRpcResponse(id, result);
+    return sendFrame(fd, std::string(json.constData(), json.size()));
+}
+
+bool sendJsonError(socket_t fd, int id, int code, const QString& msg) {
+    QByteArray json = jsonRpcError(id, code, msg);
+    return sendFrame(fd, std::string(json.constData(), json.size()));
+}
+
+} // namespace rpc_io
+
+// ---------------------------------------------------------------------------
+// QJsonArray of strings -> QStringList
+// ---------------------------------------------------------------------------
+QStringList toStringList(const QJsonArray& arr) {
+    QStringList result;
+    result.reserve(arr.size());
+    for (const QJsonValue& v : arr)
+        result.append(v.toString());
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Register Qt meta-types once at library load
+// ---------------------------------------------------------------------------
+bool ensureMetaTypes() {
+    static bool registered = false;
+    if (!registered) {
+        qRegisterMetaType<QSemaphore*>("QSemaphore*");
+        registered = true;
+    }
+    return true;
+}
+
+} // anonymous namespace
+
+// =============================================================================
+// qt_commander::run_rpc_server  --  free function called by entry_*.cpp
+//
+// Runs on a detached thread.  Takes ownership of listen_fd.  Accepts one
+// connection, authenticates, then dispatches RPC operations until the
+// shutdown flag is set or the peer disconnects.
+// =============================================================================
+namespace qt_commander {
+// ---------------------------------------------------------------------------
 // Port file writer -- atomic via temp-file + rename
 // ---------------------------------------------------------------------------
-bool writePortFileAtomic(const std::string& path, uint16_t port) {
+bool writePortFileAtomic(const std::string& path, const std::string& content) {
     const std::string tmpPath = path + ".tmp";
-    const std::string portStr = std::to_string(port) + '\n';
+    const std::string& portStr = content;
 
 #ifdef _WIN32
     int fd = ::_open(tmpPath.c_str(),
@@ -527,87 +702,6 @@ bool writePortFileAtomic(const std::string& path, uint16_t port) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Frame-level socket I/O  (named namespace to avoid clashing with
-// RpcServer::readFrame / RpcServer::sendFrame member functions)
-// ---------------------------------------------------------------------------
-namespace rpc_io {
-
-std::string readFrame(socket_t fd) {
-    // Read header (4 bytes — big-endian length)
-    uint8_t header[FRAME_HEADER_SIZE];
-    if (!tcp_recv_all(fd, header, FRAME_HEADER_SIZE))
-        return {};
-
-    // Parse 4-byte big-endian payload length (no magic/version in new protocol)
-
-    uint32_t payloadLen = (static_cast<uint32_t>(header[0]) << 24) |
-                           (static_cast<uint32_t>(header[1]) << 16) |
-                           (static_cast<uint32_t>(header[2]) << 8)  |
-                           (static_cast<uint32_t>(header[3]));
-    if (payloadLen == 0 || payloadLen > MAX_FRAME_PAYLOAD)
-        return {};
-
-    // Read payload
-    std::vector<uint8_t> payload(payloadLen);
-    if (!tcp_recv_all(fd, payload.data(), payloadLen))
-        return {};
-
-    return std::string(reinterpret_cast<const char*>(payload.data()),
-                       payloadLen);
-}
-
-bool sendFrame(socket_t fd, const std::string& data) {
-    auto frame = frame_encode(
-        reinterpret_cast<const uint8_t*>(data.data()), data.size());
-    return tcp_send_all(fd, frame.data(), frame.size());
-}
-
-bool sendJsonResponse(socket_t fd, int id, const QJsonObject& result) {
-    QByteArray json = jsonRpcResponse(id, result);
-    return sendFrame(fd, std::string(json.constData(), json.size()));
-}
-
-bool sendJsonError(socket_t fd, int id, int code, const QString& msg) {
-    QByteArray json = jsonRpcError(id, code, msg);
-    return sendFrame(fd, std::string(json.constData(), json.size()));
-}
-
-} // namespace rpc_io
-
-// ---------------------------------------------------------------------------
-// QJsonArray of strings -> QStringList
-// ---------------------------------------------------------------------------
-QStringList toStringList(const QJsonArray& arr) {
-    QStringList result;
-    result.reserve(arr.size());
-    for (const QJsonValue& v : arr)
-        result.append(v.toString());
-    return result;
-}
-
-// ---------------------------------------------------------------------------
-// Register Qt meta-types once at library load
-// ---------------------------------------------------------------------------
-bool ensureMetaTypes() {
-    static bool registered = false;
-    if (!registered) {
-        qRegisterMetaType<QSemaphore*>("QSemaphore*");
-        registered = true;
-    }
-    return true;
-}
-
-} // anonymous namespace
-
-// =============================================================================
-// qt_commander::run_rpc_server  --  free function called by entry_*.cpp
-//
-// Runs on a detached thread.  Takes ownership of listen_fd.  Accepts one
-// connection, authenticates, then dispatches RPC operations until the
-// shutdown flag is set or the peer disconnects.
-// =============================================================================
-namespace qt_commander {
 
 void run_rpc_server(socket_t listen_fd,
                     std::string port_file_path,
@@ -751,6 +845,12 @@ void run_rpc_server(socket_t listen_fd,
                         rpcParams[QStringLiteral("maxDepth")].toInt(1);
                     const int propDepth =
                         rpcParams[QStringLiteral("propDepth")].toInt(1);
+                    // Property tier: "core" (default; no properties --
+                    // first-class fields only), "extended" (whitelist), or
+                    // "full" (every Q_PROPERTY).
+                    const QString detail =
+                        rpcParams[QStringLiteral("detail")].toString(
+                            QStringLiteral("core"));
                     const bool includeHidden =
                         rpcParams[QStringLiteral("include_hidden")].toBool(true);
 
@@ -776,7 +876,8 @@ void run_rpc_server(socket_t listen_fd,
                             nodes.append(makeNode(
                                 obj, id, obj, id, focusW,
                                 maxDepth, propDepth,
-                                elementMap.get(), nextId, includeHidden));
+                                elementMap.get(), nextId, includeHidden,
+                                detail));
                         };
 
                         if (rootObj) {
@@ -831,7 +932,8 @@ void run_rpc_server(socket_t listen_fd,
                             elementMap->insert(id, obj);
                             collectChildren(obj, -1, 0,
                                             elementMap.get(), nextId, true,
-                                            obj, id, focusW);
+                                            obj, id, focusW,
+                                            QStringLiteral("core"));
                         };
                         if (auto* app =
                                 qobject_cast<QApplication*>(QCoreApplication::instance())) {
@@ -885,7 +987,7 @@ void run_rpc_server(socket_t listen_fd,
                 else if (opMethod == QStringLiteral("getProperty")) {
                     const QString propName =
                         rpcParams[QStringLiteral("name")].toString();
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -911,7 +1013,7 @@ void run_rpc_server(socket_t listen_fd,
                         rpcParams[QStringLiteral("name")].toString();
                     const QJsonValue propVal =
                         rpcParams[QStringLiteral("value")];
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -934,7 +1036,7 @@ void run_rpc_server(socket_t listen_fd,
                         rpcParams[QStringLiteral("method")].toString();
                     const QJsonArray args =
                         rpcParams[QStringLiteral("args")].toArray();
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -957,7 +1059,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- focus ----
                 else if (opMethod == QStringLiteral("focus")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -994,7 +1096,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- click ----
                 else if (opMethod == QStringLiteral("click")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1043,7 +1145,7 @@ void run_rpc_server(socket_t listen_fd,
                     const uint64_t windowId = static_cast<uint64_t>(
                         rpcParams[QStringLiteral("window_id")].toDouble(0));
                     if (windowId > 0) {
-                        QObject* winObj = elementMap->get(windowId);
+                        QObject* winObj = validatedElement(elementMap.get(), windowId, result);
                         if (!winObj) {
                             result[QStringLiteral("ok")] = false;
                             result[QStringLiteral("message")] =
@@ -1068,7 +1170,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- clickRegion (center of element's region) ----
                 else if (opMethod == QStringLiteral("clickRegion")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1095,7 +1197,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- dblClick ----
                 else if (opMethod == QStringLiteral("dblClick")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1127,7 +1229,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- mousePress ----
                 else if (opMethod == QStringLiteral("mousePress")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1159,7 +1261,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- mouseRelease ----
                 else if (opMethod == QStringLiteral("mouseRelease")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1191,7 +1293,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- mouseMove ----
                 else if (opMethod == QStringLiteral("mouseMove")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1211,7 +1313,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- wheel ----
                 else if (opMethod == QStringLiteral("wheel")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1241,7 +1343,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- keyPress ----
                 else if (opMethod == QStringLiteral("keyPress")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj)
                         obj = QApplication::focusWidget();
                     if (!obj) {
@@ -1270,7 +1372,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- keyRelease ----
                 else if (opMethod == QStringLiteral("keyRelease")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj)
                         obj = QApplication::focusWidget();
                     if (!obj) {
@@ -1299,7 +1401,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- typeText ----
                 else if (opMethod == QStringLiteral("typeText")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj)
                         obj = QApplication::focusWidget();
                     if (!obj) {
@@ -1328,7 +1430,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- keyCombo ----
                 else if (opMethod == QStringLiteral("keyCombo")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj)
                         obj = QApplication::focusWidget();
                     if (!obj) {
@@ -1349,7 +1451,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- touchPress ----
                 else if (opMethod == QStringLiteral("touchPress")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1376,7 +1478,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- touchMove ----
                 else if (opMethod == QStringLiteral("touchMove")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1415,7 +1517,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- screenshot ----
                 else if (opMethod == QStringLiteral("screenshot")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj && elementId == 0) {
                         // element_id == 0 means "entire window": fall back to
                         // the active (or first visible) top-level widget,
@@ -1476,7 +1578,7 @@ void run_rpc_server(socket_t listen_fd,
                 }
                 // ---- contextMenu ----
                 else if (opMethod == QStringLiteral("contextMenu")) {
-                    QObject* obj = elementMap->get(elementId);
+                    QObject* obj = validatedElement(elementMap.get(), elementId, result);
                     if (!obj) {
                         result[QStringLiteral("ok")] = false;
                         result[QStringLiteral("message")] =
@@ -1539,944 +1641,3 @@ void run_rpc_server(socket_t listen_fd,
 } // namespace qt_commander
 
 // =============================================================================
-// RpcServer member implementation
-// =============================================================================
-
-// ---------------------------------------------------------------------------
-// Constructor / Destructor
-// ---------------------------------------------------------------------------
-RpcServer::RpcServer(QObject* parent)
-    : QObject(parent)
-{
-    ensureMetaTypes();
-}
-
-RpcServer::~RpcServer()
-{
-    shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// start
-// ---------------------------------------------------------------------------
-int RpcServer::start(const InitParams* params)
-{
-    if (!params)
-        return -1;
-
-    // Validate version
-    if (params->version != INIT_PARAMS_VERSION)
-        return -1;
-
-    // Copy string fields from the POD struct (fixed-size C char arrays)
-    // The InitParams contract guarantees null-termination within the buffer.
-    auto safeCStr = [](const char* arr, size_t maxBytes) -> std::string {
-        size_t len = 0;
-        while (len < maxBytes && arr[len] != '\0')
-            ++len;
-        return std::string(arr, len);
-    };
-    token_         = safeCStr(params->token, INIT_PARAMS_TOKEN_LEN);
-    workspace_path_ = safeCStr(params->workspace_path, INIT_PARAMS_MAX_PATH);
-    session_id_    = safeCStr(params->session_id, 12);
-    port_file_path_ = safeCStr(params->port_file_path, INIT_PARAMS_MAX_PATH);
-
-    // Create the element map (must exist before Handler construction)
-    element_map_ = std::make_unique<ElementMap>();
-
-    // Create the Handler -- lives on the main thread as a child of this
-    handler_ = new Handler(this, this);
-
-    // Mark running before starting the socket so the worker thread sees it
-    running_.store(true, std::memory_order_release);
-
-    // Create listening socket on loopback with OS-assigned port
-    uint16_t port = 0;
-    listen_fd_ = tcp_listen_loopback(port);
-    if (listen_fd_ == INVALID_SOCK) {
-        element_map_.reset();
-        handler_ = nullptr;   // QObject parent will delete
-        running_.store(false, std::memory_order_release);
-        return -1;
-    }
-
-    // Enable keepalive (2h idle, 1s interval, 3 probes)
-    tcp_set_keepalive(listen_fd_, 7200, 1, 3);
-
-    // Write port file atomically so the MCP server can discover our port
-    if (!writePortFileAtomic(port_file_path_, port)) {
-        tcp_close(listen_fd_);
-        listen_fd_ = INVALID_SOCK;
-        element_map_.reset();
-        handler_ = nullptr;
-        running_.store(false, std::memory_order_release);
-        return -1;
-    }
-
-    // Start the worker thread
-    worker_thread_ = std::thread(&RpcServer::workerLoop, this);
-
-    return 0;
-}
-
-// ---------------------------------------------------------------------------
-// shutdown
-// ---------------------------------------------------------------------------
-void RpcServer::shutdown()
-{
-    bool expected = true;
-    if (!running_.compare_exchange_strong(expected, false,
-                                          std::memory_order_acq_rel))
-        return; // already stopped or never started
-
-    // Close the listen socket to unblock accept() in the worker thread
-    if (listen_fd_ != INVALID_SOCK) {
-        tcp_close(listen_fd_);
-        listen_fd_ = INVALID_SOCK;
-    }
-
-    // Close the client socket to unblock recv() in the worker thread
-    if (client_fd_ != INVALID_SOCK) {
-        tcp_close(client_fd_);
-        client_fd_ = INVALID_SOCK;
-    }
-
-    // Join the worker thread
-    if (worker_thread_.joinable())
-        worker_thread_.join();
-
-    // Clean up resources (handler is a QObject child, auto-deleted by parent)
-    handler_ = nullptr;
-    element_map_.reset();
-}
-
-// ---------------------------------------------------------------------------
-// workerLoop  --  runs on a dedicated background thread
-// ---------------------------------------------------------------------------
-void RpcServer::workerLoop()
-{
-    // Accept one connection (blocks until a client connects or listen_fd_ is
-    // closed from shutdown())
-    client_fd_ = tcp_accept(listen_fd_);
-
-    // Close the listen socket -- we only serve a single connection
-    if (listen_fd_ != INVALID_SOCK) {
-        tcp_close(listen_fd_);
-        listen_fd_ = INVALID_SOCK;
-    }
-
-    if (client_fd_ == INVALID_SOCK) {
-        // Accept failed (likely shutdown was called)
-        running_.store(false, std::memory_order_release);
-        return;
-    }
-
-    // Set keepalive on the client socket
-    tcp_set_keepalive(client_fd_, 7200, 1, 3);
-
-    // Authenticate the connection
-    if (!authenticateConnection(client_fd_)) {
-        tcp_close(client_fd_);
-        client_fd_ = INVALID_SOCK;
-        running_.store(false, std::memory_order_release);
-        return;
-    }
-
-    // Main dispatch loop
-    while (running_.load(std::memory_order_acquire)) {
-        const std::string payload = rpc_io::readFrame(client_fd_);
-        if (payload.empty())
-            break; // disconnect or error
-
-        // Parse JSON-RPC request
-        QJsonParseError parseErr;
-        QJsonDocument doc = QJsonDocument::fromJson(
-            QByteArray::fromStdString(payload), &parseErr);
-        if (parseErr.error != QJsonParseError::NoError ||
-            !doc.isObject()) {
-            rpc_io::sendJsonError(client_fd_, 0, -32700,
-                          QStringLiteral("Parse error"));
-            continue;
-        }
-
-        QJsonObject request = doc.object();
-
-        // Check for notification (no "id" field == no response expected)
-        const int rpcId = request[QStringLiteral("id")].toInt(-1);
-        if (rpcId < 0) {
-            const QString method =
-                request[QStringLiteral("method")].toString();
-            if (method == QStringLiteral("qt.shutdown")) {
-                handleShutdown();
-                break;
-            }
-            continue; // other notifications are silently ignored
-        }
-
-        // Process the request and send a response
-        const std::string response = processRequest(request);
-        if (!response.empty()) {
-            if (!rpc_io::sendFrame(client_fd_, response))
-                break; // send failure -> disconnect
-        }
-    }
-
-    // Clean up client socket
-    if (client_fd_ != INVALID_SOCK) {
-        tcp_close(client_fd_);
-        client_fd_ = INVALID_SOCK;
-    }
-
-    running_.store(false, std::memory_order_release);
-
-    // Notify that the RPC loop has finished
-    emit operationCompleted();
-}
-
-// ---------------------------------------------------------------------------
-// authenticateConnection  --  5-second receive timeout for auth frame
-// ---------------------------------------------------------------------------
-bool RpcServer::authenticateConnection(socket_t client)
-{
-    // Set 5-second receive timeout for the initial auth frame
-    tcp_set_recv_timeout(client, 5000);
-
-    const std::string payload = rpc_io::readFrame(client);
-
-    // Restore blocking mode (infinite timeout) for subsequent operations
-    tcp_set_recv_timeout(client, 0);
-
-    if (payload.empty())
-        return false;
-
-    QJsonParseError parseErr;
-    QJsonDocument doc = QJsonDocument::fromJson(
-        QByteArray::fromStdString(payload), &parseErr);
-    if (parseErr.error != QJsonParseError::NoError || !doc.isObject())
-        return false;
-
-    QJsonObject request = doc.object();
-    const int id = request[QStringLiteral("id")].toInt(-1);
-    const QString method = request[QStringLiteral("method")].toString();
-    const QJsonObject params = request[QStringLiteral("params")].toObject();
-
-    if (id < 0 || method != QStringLiteral("qt.authenticate")) {
-        rpc_io::sendJsonError(client, id < 0 ? 0 : id, -32600,
-                      QStringLiteral("Expected qt.authenticate"));
-        return false;
-    }
-
-    // Verify token
-    const QString clientToken =
-        params[QStringLiteral("token")].toString();
-    if (clientToken != QString::fromStdString(token_)) {
-        rpc_io::sendJsonError(client, id, 2001,
-                      QStringLiteral("Authentication failed: invalid token"));
-        return false;
-    }
-
-    // Success
-    QJsonObject ok;
-    ok[QStringLiteral("ok")] = true;
-    ok[QStringLiteral("message")] = QStringLiteral("Authenticated");
-    return rpc_io::sendJsonResponse(client, id, ok);
-}
-
-// ---------------------------------------------------------------------------
-// processRequest  --  route a JSON-RPC request to the appropriate handler
-// ---------------------------------------------------------------------------
-std::string RpcServer::processRequest(const QJsonObject& request)
-{
-    const int id = request[QStringLiteral("id")].toInt(-1);
-    if (id < 0)
-        return {}; // notification -- no response
-
-    const QString method  = request[QStringLiteral("method")].toString();
-    const QJsonObject params = request[QStringLiteral("params")].toObject();
-
-    // ---- Authentication (should never arrive after auth is done) ----
-    if (method == QStringLiteral("qt.authenticate")) {
-        QJsonObject result = handleAuthenticate(params);
-        QByteArray resp = jsonRpcResponse(id, result);
-        return std::string(resp.constData(), resp.size());
-    }
-
-    // ---- Shutdown ----
-    if (method == QStringLiteral("qt.shutdown")) {
-        handleShutdown();
-        return {}; // no response for shutdown
-    }
-
-    // ---- Tool method routing ----
-    QJsonObject result;
-
-    if (method == QStringLiteral("qt.snapshot"))
-        result = handleSnapshot(params);
-    else if (method == QStringLiteral("qt.findElement"))
-        result = handleFindElement(params);
-    else if (method == QStringLiteral("qt.getProperty"))
-        result = handleGetProperty(params);
-    else if (method == QStringLiteral("qt.setProperty"))
-        result = handleSetProperty(params);
-    else if (method == QStringLiteral("qt.callMethod"))
-        result = handleCallMethod(params);
-    else if (method == QStringLiteral("qt.screenshot"))
-        result = handleScreenshot(params);
-    else if (method == QStringLiteral("qt.mouseClick") ||
-             method == QStringLiteral("qt.click"))  // live-path alias
-        result = handleMouseClick(params);
-    else if (method == QStringLiteral("qt.mousePress"))
-        result = handleMousePress(params);
-    else if (method == QStringLiteral("qt.mouseRelease"))
-        result = handleMouseRelease(params);
-    else if (method == QStringLiteral("qt.mouseDblClick"))
-        result = handleMouseDblClick(params);
-    else if (method == QStringLiteral("qt.mouseClickAt") ||
-             method == QStringLiteral("qt.clickAt"))  // live-path alias
-        result = handleMouseClickAt(params);
-    else if (method == QStringLiteral("qt.mouseClickRegion") ||
-             method == QStringLiteral("qt.clickRegion"))  // live-path alias
-        result = handleMouseClickRegion(params);
-    else if (method == QStringLiteral("qt.mouseMove"))
-        result = handleMouseMove(params);
-    else if (method == QStringLiteral("qt.mouseWheel"))
-        result = handleMouseWheel(params);
-    else if (method == QStringLiteral("qt.keyPress"))
-        result = handleKeyPress(params);
-    else if (method == QStringLiteral("qt.keyRelease"))
-        result = handleKeyRelease(params);
-    else if (method == QStringLiteral("qt.typeText"))
-        result = handleTypeText(params);
-    else if (method == QStringLiteral("qt.keyCombo"))
-        result = handleKeyCombo(params);
-    else if (method == QStringLiteral("qt.focus"))
-        result = handleFocus(params);
-    else if (method == QStringLiteral("qt.clearFocus"))
-        result = handleClearFocus(params);
-    else if (method == QStringLiteral("qt.contextMenu"))
-        result = handleContextMenu(params);
-    else if (method == QStringLiteral("qt.touchPress"))
-        result = handleTouchPress(params);
-    else if (method == QStringLiteral("qt.touchMove"))
-        result = handleTouchMove(params);
-    else if (method == QStringLiteral("qt.touchRelease"))
-        result = handleTouchRelease(params);
-    else if (method == QStringLiteral("qt.ping")) {
-        result[QStringLiteral("ok")] = true;
-        result[QStringLiteral("message")] = QStringLiteral("pong");
-    } else {
-        QByteArray err = jsonRpcError(
-            id, -32601,
-            QStringLiteral("Method not found: ") + method);
-        return std::string(err.constData(), err.size());
-    }
-
-    QByteArray resp = jsonRpcResponse(id, result);
-    return std::string(resp.constData(), resp.size());
-}
-
-// ---------------------------------------------------------------------------
-// readFrame / sendFrame  (delegate to anonymous-namespace helpers)
-// ---------------------------------------------------------------------------
-std::string RpcServer::readFrame(socket_t client)
-{
-    return rpc_io::readFrame(client);
-}
-
-bool RpcServer::sendFrame(socket_t client, const std::string& data)
-{
-    return rpc_io::sendFrame(client, data);
-}
-
-// ---------------------------------------------------------------------------
-// prepareDispatch  --  extract elementId and capture epoch before dispatch
-// ---------------------------------------------------------------------------
-RpcServer::DispatchArgs RpcServer::prepareDispatch(const QJsonObject& params)
-{
-    DispatchArgs args;
-    qt_parse_element_id(params, args.elementId);
-    args.operationParams = params;
-
-    // Capture the current epoch under the element map's read lock so that
-    // when the operation runs on the main thread it can validate
-    // that the element map hasn't been rebuilt in the meantime.
-    if (element_map_) {
-        QReadLocker locker(element_map_->rwLock());
-        args.capturedEpoch = element_map_->epoch();
-    }
-
-    return args;
-}
-
-// ---------------------------------------------------------------------------
-// dispatchToMain  --  queue work on main thread, wait with 30s timeout
-//
-// Builds a dispatch envelope (method + params + elementId + capturedEpoch),
-// invokes the appropriate Handler::doXxx method on the main thread via a
-// lambda queued with Qt::QueuedConnection, and waits for the result on
-// a QSemaphore with a 30-second timeout.
-// ---------------------------------------------------------------------------
-QVariant RpcServer::dispatchToMain(const std::string& method,
-                                   const QJsonObject& params)
-{
-    DispatchArgs args = prepareDispatch(params);
-
-    struct SharedState {
-        QVariant result;
-        QSemaphore sem;
-    };
-    auto state = std::make_shared<SharedState>();
-
-    // Full method name including "qt." prefix (matching Handler dispatch)
-    const QString methodName = QString::fromStdString(method);
-
-    // Queue a lambda on the main thread.
-    // The Handler::doXxx methods take a QSemaphore* which they release
-    // internally; we provide a temporary semaphore for that and use
-    // our own state->sem for actual synchronization.
-    QMetaObject::invokeMethod(
-        this,
-        [this, state, methodName, args]() {
-            QVariant result;
-            QSemaphore tempSem; // released by Handler::doXxx, unused here
-
-            // ---- Snapshot ----
-            if (methodName == QStringLiteral("qt.snapshot")) {
-                result = handler_->doSnapshot(
-                    args.elementId,
-                    QString::fromStdString(session_id_),
-                    args.operationParams
-                        [QStringLiteral("detail")].toString(
-                            QStringLiteral("minimal")),
-                    args.operationParams
-                        [QStringLiteral("includeHidden")].toBool(false)
-                        || args.operationParams
-                               [QStringLiteral("include_hidden")].toBool(false),
-                    args.operationParams
-                        [QStringLiteral("snapshotDir")].toString(),
-                    &tempSem,
-                    args.capturedEpoch);
-            }
-            // ---- findElement ----
-            else if (methodName == QStringLiteral("qt.findElement")) {
-                result = handler_->doFindElement(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("query")].toObject(),
-                    &tempSem,
-                    args.capturedEpoch);
-            }
-            // ---- getProperty ----
-            else if (methodName == QStringLiteral("qt.getProperty")) {
-                result = handler_->doGetProperty(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("name")].toString(),
-                    &tempSem,
-                    args.capturedEpoch);
-            }
-            // ---- setProperty ----
-            else if (methodName == QStringLiteral("qt.setProperty")) {
-                result = handler_->doSetProperty(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("name")].toString(),
-                    args.operationParams
-                        [QStringLiteral("value")].toVariant(),
-                    &tempSem,
-                    args.capturedEpoch);
-            }
-            // ---- callMethod ----
-            else if (methodName == QStringLiteral("qt.callMethod")) {
-                result = handler_->doCallMethod(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("method")].toString(),
-                    args.operationParams
-                        [QStringLiteral("args")].toArray(),
-                    &tempSem,
-                    args.capturedEpoch);
-            }
-            // ---- screenshot ----
-            else if (methodName == QStringLiteral("qt.screenshot")) {
-                result = handler_->doScreenshot(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("dir")].toString(),
-                    args.operationParams
-                        [QStringLiteral("seq")].toInt(0),
-                    &tempSem,
-                    args.capturedEpoch);
-            }
-            // ---- mouseClick ----
-            else if (methodName == QStringLiteral("qt.mouseClick") ||
-                     methodName == QStringLiteral("qt.click")) {  // live alias
-                double x = args.operationParams
-                    [QStringLiteral("x")].toDouble(-1.0);
-                double y = args.operationParams
-                    [QStringLiteral("y")].toDouble(-1.0);
-                bool hasCoords =
-                    args.operationParams.contains(
-                        QStringLiteral("x")) &&
-                    args.operationParams.contains(
-                        QStringLiteral("y"));
-                result = handler_->doMouseClick(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("button")].toString(
-                            QStringLiteral("left")),
-                    x, y,
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    hasCoords,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mouseClickAt ----
-            else if (methodName == QStringLiteral("qt.mouseClickAt") ||
-                     methodName == QStringLiteral("qt.clickAt")) {  // live alias
-                result = handler_->doMouseClickAt(
-                    static_cast<quint64>(args.operationParams
-                        [QStringLiteral("window_id")].toDouble(0)),
-                    args.operationParams
-                        [QStringLiteral("x")].toDouble(0),
-                    args.operationParams
-                        [QStringLiteral("y")].toDouble(0),
-                    args.operationParams
-                        [QStringLiteral("button")].toString(
-                            QStringLiteral("left")),
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mouseClickRegion ----
-            else if (methodName == QStringLiteral("qt.mouseClickRegion") ||
-                     methodName == QStringLiteral("qt.clickRegion")) {  // live alias
-                result = handler_->doMouseClickRegion(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("button")].toString(
-                            QStringLiteral("left")),
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mousePress ----
-            else if (methodName == QStringLiteral("qt.mousePress")) {
-                double x = args.operationParams
-                    [QStringLiteral("x")].toDouble(-1.0);
-                double y = args.operationParams
-                    [QStringLiteral("y")].toDouble(-1.0);
-                bool hasCoords =
-                    args.operationParams.contains(
-                        QStringLiteral("x")) &&
-                    args.operationParams.contains(
-                        QStringLiteral("y"));
-                result = handler_->doMousePress(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("button")].toString(
-                            QStringLiteral("left")),
-                    x, y,
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    hasCoords,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mouseRelease ----
-            else if (methodName == QStringLiteral("qt.mouseRelease")) {
-                double x = args.operationParams
-                    [QStringLiteral("x")].toDouble(-1.0);
-                double y = args.operationParams
-                    [QStringLiteral("y")].toDouble(-1.0);
-                bool hasCoords =
-                    args.operationParams.contains(
-                        QStringLiteral("x")) &&
-                    args.operationParams.contains(
-                        QStringLiteral("y"));
-                result = handler_->doMouseRelease(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("button")].toString(
-                            QStringLiteral("left")),
-                    x, y,
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    hasCoords,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mouseDblClick ----
-            else if (methodName ==
-                     QStringLiteral("qt.mouseDblClick")) {
-                double x = args.operationParams
-                    [QStringLiteral("x")].toDouble(-1.0);
-                double y = args.operationParams
-                    [QStringLiteral("y")].toDouble(-1.0);
-                bool hasCoords =
-                    args.operationParams.contains(
-                        QStringLiteral("x")) &&
-                    args.operationParams.contains(
-                        QStringLiteral("y"));
-                result = handler_->doMouseDblClick(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("button")].toString(
-                            QStringLiteral("left")),
-                    x, y,
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    hasCoords,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mouseMove ----
-            else if (methodName == QStringLiteral("qt.mouseMove")) {
-                result = handler_->doMouseMove(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("x")].toDouble(0.0),
-                    args.operationParams
-                        [QStringLiteral("y")].toDouble(0.0),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- mouseWheel ----
-            else if (methodName == QStringLiteral("qt.mouseWheel")) {
-                double x = args.operationParams
-                    [QStringLiteral("x")].toDouble(-1.0);
-                double y = args.operationParams
-                    [QStringLiteral("y")].toDouble(-1.0);
-                bool hasCoords =
-                    args.operationParams.contains(
-                        QStringLiteral("x")) &&
-                    args.operationParams.contains(
-                        QStringLiteral("y"));
-                result = handler_->doMouseWheel(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("dx")].toDouble(0.0),
-                    args.operationParams
-                        [QStringLiteral("dy")].toDouble(0.0),
-                    x, y,
-                    args.operationParams
-                        [QStringLiteral("pixel")].toBool(false),
-                    hasCoords,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- keyPress ----
-            else if (methodName == QStringLiteral("qt.keyPress")) {
-                result = handler_->doKeyPress(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("key")].toString(),
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    args.operationParams
-                        [QStringLiteral("text")].toString(),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- keyRelease ----
-            else if (methodName == QStringLiteral("qt.keyRelease")) {
-                result = handler_->doKeyRelease(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("key")].toString(),
-                    toStringList(args.operationParams
-                        [QStringLiteral("modifiers")].toArray()),
-                    args.operationParams
-                        [QStringLiteral("text")].toString(),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- typeText ----
-            else if (methodName == QStringLiteral("qt.typeText")) {
-                result = handler_->doTypeText(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("text")].toString(),
-                    args.operationParams
-                        [QStringLiteral("intervalMs")].toInt(10),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- keyCombo ----
-            else if (methodName == QStringLiteral("qt.keyCombo")) {
-                result = handler_->doKeyCombo(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("keys")].toString(),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- focus ----
-            else if (methodName == QStringLiteral("qt.focus")) {
-                result = handler_->doFocus(
-                    args.elementId,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- clearFocus ----
-            else if (methodName ==
-                     QStringLiteral("qt.clearFocus")) {
-                result = handler_->doClearFocus(
-                    args.elementId,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- contextMenu ----
-            else if (methodName ==
-                     QStringLiteral("qt.contextMenu")) {
-                double x = args.operationParams
-                    [QStringLiteral("x")].toDouble(-1.0);
-                double y = args.operationParams
-                    [QStringLiteral("y")].toDouble(-1.0);
-                bool hasCoords =
-                    args.operationParams.contains(
-                        QStringLiteral("x")) &&
-                    args.operationParams.contains(
-                        QStringLiteral("y"));
-                result = handler_->doContextMenu(
-                    args.elementId, x, y, hasCoords,
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- touchPress ----
-            else if (methodName ==
-                     QStringLiteral("qt.touchPress")) {
-                result = handler_->doTouchPress(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("x")].toDouble(0.0),
-                    args.operationParams
-                        [QStringLiteral("y")].toDouble(0.0),
-                    args.operationParams
-                        [QStringLiteral("touchId")].toInt(0),
-                    args.operationParams
-                        [QStringLiteral("pressure")].toDouble(1.0),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- touchMove ----
-            else if (methodName ==
-                     QStringLiteral("qt.touchMove")) {
-                result = handler_->doTouchMove(
-                    args.elementId,
-                    args.operationParams
-                        [QStringLiteral("x")].toDouble(0.0),
-                    args.operationParams
-                        [QStringLiteral("y")].toDouble(0.0),
-                    args.operationParams
-                        [QStringLiteral("touchId")].toInt(0),
-                    args.operationParams
-                        [QStringLiteral("pressure")].toDouble(1.0),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- touchRelease ----
-            else if (methodName ==
-                     QStringLiteral("qt.touchRelease")) {
-                result = handler_->doTouchRelease(
-                    args.operationParams
-                        [QStringLiteral("touchId")].toInt(0),
-                    &tempSem, args.capturedEpoch);
-            }
-            // ---- ping ----
-            else if (methodName == QStringLiteral("qt.ping")) {
-                result = handler_->doPing(&tempSem);
-            }
-            // ---- fallback ----
-            else {
-                QVariantMap fallback;
-                fallback[QStringLiteral("ok")] = false;
-                fallback[QStringLiteral("message")] =
-                    QStringLiteral("Unsupported method: ") +
-                    methodName;
-                result = QVariant(fallback);
-            }
-
-            state->result = result;
-            state->sem.release();
-        },
-        Qt::QueuedConnection);
-
-    // Wait for completion with 30-second timeout
-    if (!state->sem.tryAcquire(1, 30000)) {
-        QVariantMap err;
-        err[QStringLiteral("ok")] = false;
-        QVariantMap detail;
-        detail[QStringLiteral("code")] = 2004;
-        detail[QStringLiteral("message")] =
-            QStringLiteral("Main thread operation timed out");
-        err[QStringLiteral("error")] = detail;
-        return QVariant(err);
-    }
-
-    return state->result;
-}
-
-// =============================================================================
-// Handler method implementations
-//
-// Each handler parses params from the JSON-RPC request and delegates to
-// dispatchToMain() which runs the actual operation on the main thread
-// through the Handler class.
-// =============================================================================
-
-QJsonObject RpcServer::handleSnapshot(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.snapshot", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleFindElement(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.findElement", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleGetProperty(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.getProperty", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleSetProperty(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.setProperty", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleCallMethod(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.callMethod", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleScreenshot(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.screenshot", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseClick(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseClick", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMousePress(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mousePress", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseRelease(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseRelease", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseDblClick(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseDblClick", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseClickAt(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseClickAt", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseClickRegion(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseClickRegion", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseMove(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseMove", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleMouseWheel(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.mouseWheel", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleKeyPress(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.keyPress", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleKeyRelease(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.keyRelease", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleTypeText(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.typeText", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleKeyCombo(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.keyCombo", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleFocus(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.focus", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleClearFocus(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.clearFocus", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleContextMenu(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.contextMenu", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleTouchPress(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.touchPress", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleTouchMove(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.touchMove", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleTouchRelease(const QJsonObject& params)
-{
-    QVariant result = dispatchToMain("qt.touchRelease", params);
-    return QJsonObject::fromVariantMap(result.toMap());
-}
-
-QJsonObject RpcServer::handleAuthenticate(const QJsonObject& /*params*/)
-{
-    // Already authenticated at the connection level
-    QJsonObject result;
-    result[QStringLiteral("ok")] = true;
-    result[QStringLiteral("message")] =
-        QStringLiteral("Already authenticated");
-    return result;
-}
-
-void RpcServer::handleShutdown()
-{
-    // Signal the worker thread to stop
-    running_.store(false, std::memory_order_release);
-
-    // Close sockets to unblock any pending I/O
-    if (client_fd_ != INVALID_SOCK) {
-        tcp_close(client_fd_);
-        client_fd_ = INVALID_SOCK;
-    }
-    if (listen_fd_ != INVALID_SOCK) {
-        tcp_close(listen_fd_);
-        listen_fd_ = INVALID_SOCK;
-    }
-}
