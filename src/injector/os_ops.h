@@ -80,6 +80,31 @@ struct Win32ProcessOps : IProcessOps {
 };
 #endif
 
+#ifdef __linux__
+// Real implementation — delegates to ptrace + procfs on Linux.
+struct PosixProcessOps : IProcessOps {
+    bool open_process(int pid, void*& out_handle) override;
+    void close_handle(void* handle) override;
+    bool alloc_mem(void* handle, size_t size, void*& out_addr) override;
+    bool write_mem(void* handle, void* addr, const void* data, size_t size) override;
+    bool free_mem(void* handle, void* addr) override;
+    bool create_remote_thread(void* handle, void* start_addr, void* arg,
+                              void*& out_thread) override;
+    bool wait_for_thread(void* thread, uint32_t timeout_ms) override;
+    bool get_thread_exit_code(void* thread, uint32_t& out_code) override;
+    void terminate_thread(void* thread) override;
+    void close_thread(void* thread) override;
+    bool enum_modules(void* handle, std::vector<std::string>& out_names) override;
+    bool get_module_handle(void*& out_handle, const std::string& name) override;
+    bool get_proc_address(void* mod, const std::string& name,
+                          void*& out_addr) override;
+    bool get_load_library_addr(void*& out_addr) override;
+    bool read_file_bytes(const fs::path& path, std::vector<uint8_t>& out) override;
+    bool generate_random(uint8_t* buf, size_t len) override;
+    std::string last_error() override;
+};
+#endif
+
 // Test mock — configurable return values for every operation.
 struct MockProcessOps : IProcessOps {
     // Configurable results

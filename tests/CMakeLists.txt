@@ -29,6 +29,17 @@ if(BUILD_INJECTOR)
             endif()
         elseif(UNIX)
             target_link_libraries(${NAME} PRIVATE pthread dl)
+            # Tests that link injector_di.cpp need the ptrace/elf sources
+            # on Linux (PosixProcessOps depends on them).
+            foreach(_s ${SOURCES} ${ARGN})
+                if(_s MATCHES "injector_di\\.cpp")
+                    target_sources(${NAME} PRIVATE
+                        ${CMAKE_SOURCE_DIR}/src/injector/ptrace_ops.cpp
+                        ${CMAKE_SOURCE_DIR}/src/injector/elf_parser.cpp
+                    )
+                    break()
+                endif()
+            endforeach()
         endif()
         add_test(NAME ${NAME} COMMAND ${NAME})
         # Every test gets a timeout so a hang fails instead of blocking
@@ -45,13 +56,21 @@ if(BUILD_INJECTOR)
             "${CMAKE_BINARY_DIR}/tests/test-apps/qml"
             "${QT_COMMANDER_QT_BIN}")
         string(JOIN ";" _qtc_path ${_qtc_bin_dirs})
-        # Semicolons inside the PATH value must be escaped, otherwise CMake
-        # splits the ENVIRONMENT property into multiple list entries and
-        # ctest applies only the first one.
-        set(_qtc_env "PATH=${_qtc_path}\;$ENV{PATH}")
-        string(REPLACE ";" "\\;" _qtc_env "${_qtc_env}")
-        set_tests_properties(${NAME} PROPERTIES
-            ENVIRONMENT "${_qtc_env}")
+        if(WIN32)
+            # Semicolons inside the PATH value must be escaped, otherwise CMake
+            # splits the ENVIRONMENT property into multiple list entries and
+            # ctest applies only the first one.
+            set(_qtc_env "PATH=${_qtc_path}\;$ENV{PATH}")
+            string(REPLACE ";" "\\;" _qtc_env "${_qtc_env}")
+            set_tests_properties(${NAME} PROPERTIES
+                ENVIRONMENT "${_qtc_env}")
+        else()
+            # Linux: use colon-separated PATH and LD_LIBRARY_PATH.
+            string(JOIN ":" _qtc_path_colon ${_qtc_bin_dirs})
+            set_tests_properties(${NAME} PROPERTIES ENVIRONMENT
+                "PATH=${_qtc_path_colon}:$ENV{PATH}"
+                "LD_LIBRARY_PATH=${_qtc_path_colon}:$ENV{LD_LIBRARY_PATH}")
+        endif()
     endfunction()
 
     # --- Unit: DI injector logic (35 tests) ---

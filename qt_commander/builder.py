@@ -146,7 +146,7 @@ def _find_build_script() -> Path:
     )
 
 
-_TOOLCHAINS = ("msvc", "mingw")
+_TOOLCHAINS = ("msvc", "mingw", "linux")
 
 
 async def run_build(
@@ -178,7 +178,6 @@ async def run_build(
             build_dir = BUILD_DIR
 
         native_src = detect_native_src()
-        build_script = _find_build_script()
 
         toolchain = toolchain.strip().lower()
         if toolchain not in _TOOLCHAINS:
@@ -196,38 +195,108 @@ async def run_build(
         cmake_build_dir = build_dir / "build"
         install_prefix = build_dir  # cmake installs to bin/ within the prefix
 
-        # Call the batch script: all absolute paths to avoid CWD issues
-        cmd = [
-            str(build_script.resolve()),
-            vcvars_path,
-            vcvars_args,
-            qt_env,
-            str(native_src.resolve()),
-            str(cmake_build_dir.resolve()),
-            str(install_prefix.resolve()),
-            build_type,
-            str(qt_major),
-            "ON" if with_qml else "OFF",
-        ]
-        # Always append the generator slot (empty string included): the bat
-        # reads positional args %10 (generator) and %11 (toolchain) after
-        # shifting, so dropping the empty generator would misalign
-        # toolchain into the generator slot and silently fall back to msvc.
-        cmd.append(generator)
-        cmd.append(toolchain)
+        if toolchain == "linux":
+            # Linux: run CMake directly (no batch script).
+            qt_prefix = qt_env  # qt_env is a Qt prefix on Linux
+            cmake_prefix_arg = f"-DCMAKE_PREFIX_PATH={qt_prefix}" if qt_prefix else ""
+            gen_args = ["-G", generator] if generator else []
 
-        result = subprocess.run(
-            ["cmd.exe", "/c"] + cmd,
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=600,
-            cwd=str(native_src.resolve()),
-        )
-
-        if result.returncode != 0:
-            raise QtCommanderError(
-                2001,
-                f"Build failed:\n{result.stderr[-500:] or result.stdout[-500:]}"
+            # Build injector
+            injector_result = subprocess.run(
+                ["cmake", "-S", str(native_src / "src" / "injector"),
+                 "-B", str(cmake_build_dir / "injector"),
+                 f"-DCMAKE_BUILD_TYPE={build_type}",
+                 f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
+                 cmake_prefix_arg] + gen_args,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=300,
             )
+            if injector_result.returncode != 0:
+                raise QtCommanderError(2001,
+                    f"Injector CMake configure failed:\n{injector_result.stderr[-500:]}")
+            injector_build = subprocess.run(
+                ["cmake", "--build", str(cmake_build_dir / "injector"),
+                 "--config", build_type],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=300,
+            )
+            if injector_build.returncode != 0:
+                raise QtCommanderError(2001,
+                    f"Injector build failed:\n{injector_build.stderr[-500:]}")
+            subprocess.run(
+                ["cmake", "--install", str(cmake_build_dir / "injector"),
+                 "--config", build_type],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60,
+            )
+
+            # Build library
+            lib_result = subprocess.run(
+                ["cmake", "-S", str(native_src / "src" / "library"),
+                 "-B", str(cmake_build_dir / "library"),
+                 f"-DCMAKE_BUILD_TYPE={build_type}",
+                 f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
+                 cmake_prefix_arg,
+                 f"-DQT_MAJOR_VERSION={qt_major}",
+                 "-DBUILD_SERVER=OFF",
+                 f"-DWITH_QML={'ON' if with_qml else 'OFF'}"] + gen_args,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=300,
+            )
+            if lib_result.returncode != 0:
+                raise QtCommanderError(2001,
+                    f"Library CMake configure failed:\n{lib_result.stderr[-500:]}")
+            lib_build = subprocess.run(
+                ["cmake", "--build", str(cmake_build_dir / "library"),
+                 "--config", build_type],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=300,
+            )
+            if lib_build.returncode != 0:
+                raise QtCommanderError(2001,
+                    f"Library build failed:\n{lib_build.stderr[-500:]}")
+            subprocess.run(
+                ["cmake", "--install", str(cmake_build_dir / "library"),
+                 "--config", build_type],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60,
+            )
+        else:
+            # Windows: call the batch build script.
+            build_script = _find_build_script()
+
+            # Call the batch script: all absolute paths to avoid CWD issues
+            cmd = [
+                str(build_script.resolve()),
+                vcvars_path,
+                vcvars_args,
+                qt_env,
+                str(native_src.resolve()),
+                str(cmake_build_dir.resolve()),
+                str(install_prefix.resolve()),
+                build_type,
+                str(qt_major),
+                "ON" if with_qml else "OFF",
+            ]
+            # Always append the generator slot (empty string included): the bat
+            # reads positional args %10 (generator) and %11 (toolchain) after
+            # shifting, so dropping the empty generator would misalign
+            # toolchain into the generator slot and silently fall back to msvc.
+            cmd.append(generator)
+            cmd.append(toolchain)
+
+            result = subprocess.run(
+                ["cmd.exe", "/c"] + cmd,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=600,
+                cwd=str(native_src.resolve()),
+            )
+
+            if result.returncode != 0:
+                raise QtCommanderError(
+                    2001,
+                    f"Build failed:\n{result.stderr[-500:] or result.stdout[-500:]}"
+                )
 
         manifest = {
             "source_hash": _compute_source_hash(native_src),

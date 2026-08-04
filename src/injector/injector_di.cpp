@@ -3,9 +3,14 @@
 #include "injector.h"
 #include "os_ops.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
 #include <bcrypt.h>
+#endif
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 #include <vector>
 #include <string>
 #include <fstream>
@@ -133,6 +138,245 @@ std::string Win32ProcessOps::last_error() {
 }
 
 // ============================================================================
+// PosixProcessOps — delegates to ptrace / procfs on Linux
+// ============================================================================
+
+#ifdef __linux__
+#include "ptrace_ops.h"
+#include "elf_parser.h"
+#include <sys/types.h>
+#include <signal.h>
+#include <unistd.h>
+#include <cstdlib>
+
+bool PosixProcessOps::open_process(int pid, void*& out_handle) {
+    if (!ptrace_ops::can_attach(pid)) return false;
+    if (!ptrace_ops::attach(pid)) return false;
+    out_handle = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
+    return true;
+}
+
+void PosixProcessOps::close_handle(void* handle) {
+    int pid = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    ptrace_ops::detach(pid);
+}
+
+bool PosixProcessOps::alloc_mem(void* handle, size_t size, void*& out_addr) {
+    int pid = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    // Use remote_syscall to invoke mmap in the target.
+    // But remote_syscall is stubbed in Phase 1.  For now, use /proc/<pid>/mem
+    // to find a free region and allocate via PTRACE_PEEKDATA probing.
+    // Actually, the real approach: remote mmap via ptrace.
+    // For Phase 1, implement via simple approach: look for a gap in /proc/<pid>/maps.
+    std::vector<ptrace_ops::MapEntry> maps;
+    if (!ptrace_ops::read_maps(pid, maps)) return false;
+
+    // Find a free range after the last mapping.
+    uintptr_t candidate = 0;
+    for (const auto& m : maps) {
+        if (m.end > candidate && m.path.empty()) {
+            // Skip anonymous regions too — look for a gap.
+        }
+        if (m.end > candidate) candidate = m.end;
+    }
+    // Align up to page boundary.
+    candidate = (candidate + 0xFFF) & ~uintptr_t(0xFFF);
+    // Add a small gap to avoid collision.
+    candidate += 0x10000;
+
+    // Try to allocate using remote mmap syscall (syscall nr 9 on x86-64).
+    // mmap(addr, length, prot, flags, fd, offset)
+    // PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22
+    uintptr_t result = 0;
+    if (!ptrace_ops::remote_syscall(pid, 9, candidate, size,
+                                     3, 0x22,
+                                     static_cast<uintptr_t>(-1), 0,
+                                     result)) {
+        // Fallback: allocate in our own process via POSIX shared memory
+        // and map it in the target... too complex for Phase 1.
+        // For now, this is a known limitation.
+        return false;
+    }
+    if (result == static_cast<uintptr_t>(-1) ||
+        result == 0) {
+        return false;
+    }
+    out_addr = reinterpret_cast<void*>(result);
+    return true;
+}
+
+bool PosixProcessOps::write_mem(void* handle, void* addr,
+                                const void* data, size_t size) {
+    int pid = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    return ptrace_ops::write_mem(pid, reinterpret_cast<uintptr_t>(addr),
+                                  data, size);
+}
+
+bool PosixProcessOps::free_mem(void* handle, void* addr) {
+    int pid = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    // munmap syscall (nr 11).
+    uintptr_t result = 0;
+    if (!ptrace_ops::remote_syscall(pid, 11,
+                                     reinterpret_cast<uintptr_t>(addr),
+                                     0, 0, 0, 0, 0, result)) {
+        return false;
+    }
+    return result == 0;
+}
+
+bool PosixProcessOps::create_remote_thread(void* handle,
+                                            void* start_addr, void* arg,
+                                            void*& out_thread) {
+    int pid = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    // On Linux, "create_remote_thread" means we call the function via ptrace
+    // hijack and treat the result as the thread handle.
+    // We need a scratch page.  Allocate one.
+    // PROT_READ|PROT_WRITE|PROT_EXEC = 7, MAP_PRIVATE|MAP_ANONYMOUS = 0x22.
+    uintptr_t scratch = 0;
+    if (!ptrace_ops::remote_syscall(pid, 9, 0, 0x1000,
+                                      7, 0x22,
+                                      static_cast<uintptr_t>(-1), 0,
+                                      scratch) || scratch == 0) {
+        return false;
+    }
+    // Write 'int3' (0xCC) at scratch page.
+    uint8_t int3 = 0xCC;
+    ptrace_ops::write_mem(pid, scratch, &int3, 1);
+
+    uintptr_t retval = 0;
+    if (!ptrace_ops::remote_call(pid, reinterpret_cast<uintptr_t>(start_addr),
+                                  reinterpret_cast<uintptr_t>(arg),
+                                  scratch, retval)) {
+        // Free scratch page.
+        ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+                                    0, 0, 0, 0, retval);
+        return false;
+    }
+
+    // Free scratch page.
+    uintptr_t munmap_ret = 0;
+    ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+                                0, 0, 0, 0, munmap_ret);
+
+    // Store the return value as the "thread handle".
+    out_thread = reinterpret_cast<void*>(retval);
+    return true;
+}
+
+bool PosixProcessOps::wait_for_thread(void* thread, uint32_t timeout_ms) {
+    // On Linux, the remote_call already waited for completion.
+    // This is a no-op since create_remote_thread is synchronous.
+    (void)timeout_ms;
+    // A non-null thread means the call succeeded (retval stored).
+    return thread != nullptr;
+}
+
+bool PosixProcessOps::get_thread_exit_code(void* thread, uint32_t& out_code) {
+    // The "thread handle" IS the return value from the remote function.
+    uintptr_t ret = reinterpret_cast<uintptr_t>(thread);
+    out_code = static_cast<uint32_t>(ret);
+    return ret != 0;
+}
+
+void PosixProcessOps::terminate_thread(void* thread) {
+    // No-op: remote_call is synchronous, can't terminate mid-flight.
+    (void)thread;
+}
+
+void PosixProcessOps::close_thread(void* thread) {
+    // No-op: no OS thread handle to close.
+    (void)thread;
+}
+
+bool PosixProcessOps::enum_modules(void* handle,
+                                    std::vector<std::string>& out_names) {
+    int pid = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    std::vector<ptrace_ops::MapEntry> maps;
+    if (!ptrace_ops::read_maps(pid, maps)) return false;
+    for (const auto& m : maps) {
+        if (m.path.empty()) continue;
+        if (m.perms.find('x') == std::string::npos) continue;
+        // Extract basename.
+        auto lastSlash = m.path.rfind('/');
+        std::string base = (lastSlash != std::string::npos)
+                           ? m.path.substr(lastSlash + 1) : m.path;
+        out_names.push_back(base);
+    }
+    return true;
+}
+
+bool PosixProcessOps::get_module_handle(void*& out_handle,
+                                         const std::string& name) {
+    // name is a pattern like "kernel32" on Windows.
+    // On Linux, we look up via find_library_base.
+    // The caller passes a PID in a context we don't have here.
+    // For now, this is a stub.
+    // In practice, get_module_handle is called with "kernel32" to
+    // find FreeLibrary.  On Linux we use a different path.
+    (void)name;
+    out_handle = nullptr;
+    return false;
+}
+
+bool PosixProcessOps::get_proc_address(void* mod, const std::string& name,
+                                        void*& out_addr) {
+    // mod is an ELF base address (from enum_modules or get_module_handle).
+    // We need to read the ELF from disk (we have the base from /proc/<pid>/maps).
+    // For now, stub: we look up symbols via the disk ELF and the base address.
+    (void)mod; (void)name;
+    out_addr = nullptr;
+    return false;
+}
+
+bool PosixProcessOps::get_load_library_addr(void*& out_addr) {
+    // Find dlopen address.  On modern glibc, we find it in the target
+    // via /proc/<pid>/maps (libdl.so or libc.so) and parsing the ELF.
+    // For now, return a hardcoded approach: search for libdl in our
+    // own /proc/self/maps and use that as the fallback — but this
+    // won't work across ASLR.
+    // Better: use dlsym(RTLD_DEFAULT, "dlopen") in our own process.
+    // But the address differs in the target.
+    // We'll resolve this at injectLibrary call time in injector_linux.cpp.
+    void* local = reinterpret_cast<void*>(
+        reinterpret_cast<uintptr_t>(::dlsym(RTLD_DEFAULT, "dlopen")));
+    if (!local) return false;
+    out_addr = local;
+    // NOTE: This gives OUR dlopen address, not the target's.  Callers
+    // must adjust by the ASLR delta.  See injector_linux.cpp for the
+    // actual implementation.
+    return true;
+}
+
+bool PosixProcessOps::read_file_bytes(const fs::path& path,
+                                       std::vector<uint8_t>& out) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) return false;
+    auto sz = f.tellg();
+    f.seekg(0);
+    out.resize(static_cast<size_t>(sz));
+    f.read(reinterpret_cast<char*>(out.data()), sz);
+    return f.good() || f.eof();
+}
+
+bool PosixProcessOps::generate_random(uint8_t* buf, size_t len) {
+    // Use getrandom() syscall on Linux.
+    // Fallback to /dev/urandom.
+    std::ifstream urand("/dev/urandom", std::ios::binary);
+    if (urand.is_open()) {
+        urand.read(reinterpret_cast<char*>(buf),
+                   static_cast<std::streamsize>(len));
+        return urand.good() || urand.gcount() == static_cast<std::streamsize>(len);
+    }
+    return false;
+}
+
+std::string PosixProcessOps::last_error() {
+    return ptrace_ops::last_error_str();
+}
+
+#endif // __linux__
+
+// ============================================================================
 // DI injectLibrary
 // ============================================================================
 
@@ -141,15 +385,22 @@ InjectResult injectLibrary(IProcessOps& ops, int pid, const std::filesystem::pat
     if (!ops.open_process(pid, hProc))
         return {false, "injectLibrary: OpenProcess failed: " + ops.last_error()};
 
+#ifdef _WIN32
     std::wstring libPathW = lib_path.wstring();
     size_t pathBytes = (libPathW.size() + 1) * sizeof(wchar_t);
+    const void* pathPtr = libPathW.c_str();
+#else
+    std::string libPathNative = lib_path.string();
+    size_t pathBytes = libPathNative.size() + 1;
+    const void* pathPtr = libPathNative.c_str();
+#endif
 
     void* remotePath = nullptr;
     if (!ops.alloc_mem(hProc, pathBytes, remotePath)) {
         ops.close_handle(hProc);
-        return {false, "injectLibrary: VirtualAllocEx failed: " + ops.last_error()};
+        return {false, "injectLibrary: alloc_mem failed: " + ops.last_error()};
     }
-    if (!ops.write_mem(hProc, remotePath, libPathW.c_str(), pathBytes)) {
+    if (!ops.write_mem(hProc, remotePath, pathPtr, pathBytes)) {
         ops.free_mem(hProc, remotePath); ops.close_handle(hProc);
         return {false, "injectLibrary: WriteProcessMemory failed: " + ops.last_error()};
     }
