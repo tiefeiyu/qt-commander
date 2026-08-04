@@ -50,23 +50,6 @@ python -m qt_commander
 
 > **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
 
-## 编译
-
-注入器和库通过 `qt_build` MCP 工具编译（需要 **Visual Studio 2022+**、
-**Qt 5.15+** 和 **CMake 3.16+**）：
-
-```python
-# 1. 先探测本机 MSVC 和 Qt 安装
-qt_detect_msvc_and_qt()
-
-# 2. 从返回结果中选择路径，执行编译
-qt_build(
-    qt_env="C:/Qt/5.15.2/msvc2019_64/bin/qtenv2.bat",
-    vcvars_path="C:/.../vcvars64.bat",
-    vcvars_args="amd64"
-)
-```
-
 ## MCP 工具列表
 
 | 工具 | 说明 |
@@ -132,7 +115,7 @@ ctest --test-dir build/msvc -R "test_selector"     # 单个套件
 
 ```
 qt-commander/
-├── qt_commander/              Python MCP 服务器
+├── qt_commander/            Python MCP 服务器
 │   ├── server.py            FastMCP 应用，16 个工具 + 2 个资源
 │   ├── session.py           会话/会话管理器，带 RPC 锁
 │   ├── rpc_client.py        子进程注入器启动器

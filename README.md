@@ -53,23 +53,6 @@ python -m qt_commander
 
 > **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
 
-## Building
-
-The injector and library are compiled via the `qt_build` MCP tool
-(requires **Visual Studio 2022+**, **Qt 5.15+**, and **CMake 3.16+**):
-
-```python
-# 1. Discover MSVC and Qt installations on this machine
-qt_detect_msvc_and_qt()
-
-# 2. Pick paths from the result and build
-qt_build(
-    qt_env="C:/Qt/5.15.2/msvc2019_64/bin/qtenv2.bat",
-    vcvars_path="C:/.../vcvars64.bat",
-    vcvars_args="amd64"
-)
-```
-
 ## MCP Tools
 
 | Tool | Description |
