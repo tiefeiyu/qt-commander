@@ -64,6 +64,7 @@ Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
 | `qt_detect_msvc_and_qt` | Auto-detect MSVC, MinGW toolchains, and Qt installations available for building |
 | `qt_build` | Compile injector + library on demand — `toolchain` selects `msvc` (vcvars + qtenv bat) or `mingw` (MinGW bin dir + Qt bin dir) |
 | `qt_snapshot` | Capture the UI element tree — `detail` selects the property tier: `core` (geometry/visibility/text, no properties), `extended` (common interaction state), `full` (every Q_PROPERTY) |
+| `qt_prune_snapshot` | Occlusion-prune a snapshot: remove elements fully covered by higher-z opaque elements, mark partially covered ones with `visible_ratio`, write a compact pruned snapshot |
 | `qt_find_element` | Find elements by type, text, or property query |
 | `qt_get_property` | Read a QObject property |
 | `qt_set_property` | Write a QObject property |
@@ -167,13 +168,15 @@ ctest --test-dir build/msvc -R "test_selector"     # one suite
 ```
 qt-commander/
 ├── qt_commander/              Python MCP server
-│   ├── server.py            FastMCP app, 21 tools + 2 resources
+│   ├── server.py            FastMCP app, 22 tools + 2 resources
 │   ├── session.py           Session/SessionManager with RPC lock
 │   ├── rpc_client.py        Subprocess injector launcher
 │   ├── builder.py           On-demand MSVC build orchestrator
 │   ├── process_detector.py  Cross-platform Qt process discovery
 │   ├── environment_detector.py  MSVC/Qt build environment auto-detection
 │   ├── framing.py           4-byte BE length-prefix frame protocol
+│   ├── occlusion.py         Snapshot occlusion solving (drop covered
+│   │                        elements, mark visible ratio)
 │   └── errors.py            MCP error code registry
 │
 ├── src/

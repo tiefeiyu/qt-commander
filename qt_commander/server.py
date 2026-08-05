@@ -21,6 +21,7 @@ from .environment_detector import (
     detect_mingw_toolchains,
 )
 from .errors import BuildRequiredError, SessionNotFoundError, tool_error
+from .occlusion import prune_snapshot
 from .process_detector import list_qt_processes
 from .rpc_client import inject_and_connect
 from .session import SessionManager
@@ -231,6 +232,37 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
         "session_id": session_id,
         "snapshot_id": session.snapshot_count,
         "uri": f"qt-commander://sessions/{session_id}/snapshots/{filename}",
+    })
+
+
+@mcp.tool()
+async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
+    """Occlusion-prune a saved snapshot.
+
+    Reads the saved snapshot JSON and computes which elements are
+    actually visible on screen: elements fully covered by higher-z
+    opaque elements are removed, partially covered ones get a
+    ``visible_ratio`` field.  Writes a new file
+    ``snapshot_<id>_pruned.json`` next to the original.
+
+    The solver is a conservative geometric heuristic (axis-aligned
+    rects, per-window z-order; widgets and QML rectangles/images
+    occlude, transparent containers and custom QML components do not).
+    """
+    session = _resolve_session(session_id)
+    src = session.session_dir / "snapshots" / f"snapshot_{snapshot_id:08d}.json"
+    if not src.exists():
+        return _dumps({"error": f"snapshot {snapshot_id} not found in session"})
+    snapshot = json.loads(src.read_text(encoding="utf-8"))
+    pruned = prune_snapshot(snapshot)
+    dst = session.session_dir / "snapshots" / \
+        f"snapshot_{snapshot_id:08d}_pruned.json"
+    dst.write_text(_dumps(pruned, indent=2), encoding="utf-8")
+    return _dumps({
+        "session_id": session_id,
+        "source": f"snapshot_{snapshot_id:08d}.json",
+        "uri": f"qt-commander://sessions/{session_id}/snapshots/{dst.name}",
+        "pruned": pruned["pruned"],
     })
 
 
