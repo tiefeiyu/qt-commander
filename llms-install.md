@@ -12,7 +12,17 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >    ```
 >    Requires Python 3.10+. Dependencies: `fastmcp`, `psutil`.
 >
-> 2. Add qt-commander to the MCP configuration for this platform:
+>    **uv (recommended — no global install needed):** run the server via
+>    ```bash
+>    uv run python -m qt_commander
+>    ```
+>    uv resolves `pyproject.toml` / `uv.lock` and manages an isolated
+>    environment automatically (first run creates it, later runs are fast).
+>
+> 2. Add qt-commander to the MCP configuration for this platform.
+>    The `command` below works with a normal `pip install -e .`; if you
+>    use uv instead, replace `python` with `uv run python` (keep the
+>    `cwd` pointing at the project root):
 >
 >    **Claude Code** — run:
 >    ```bash
