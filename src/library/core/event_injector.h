@@ -95,5 +95,10 @@ private:
     struct TouchTarget {
         QObject* obj;
     };
-    static QHash<int, TouchTarget> s_touchTargets;
+    // Lazy-initialized touch target registry.  Uses a function-local static so
+    // the QHash constructor does not run during shared-library load (dlopen /
+    // LoadLibrary) — that avoids a SIGSEGV when the library is injected via
+    // ptrace on Linux, where Qt5's QHashData::shared_null may not be reachable
+    // from the hijacked-thread context.
+    static QHash<int, TouchTarget>& touchTargets();
 };

@@ -52,7 +52,15 @@
 // Module-level state
 // ============================================================================
 // Touch point tracking for touchRelease.
-QHash<int, EventInjector::TouchTarget> EventInjector::s_touchTargets;
+// Lazy-initialized to avoid running the QHash constructor during shared-library
+// load (dlopen / LoadLibrary).  On Linux ptrace-based injection the static
+// constructor _GLOBAL__sub_I_event_injector.cpp would otherwise dereference
+// Qt5's QHashData::shared_null from a hijacked-thread context → SIGSEGV.
+QHash<int, EventInjector::TouchTarget>& EventInjector::touchTargets()
+{
+    static QHash<int, EventInjector::TouchTarget> s;
+    return s;
+}
 
 namespace {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -1035,10 +1043,10 @@ bool EventInjector::touchPress(QObject* target,
 
     // Save target for later release; track destruction so touchRelease
     // never dereferences a freed object (same pattern as ElementMap).
-    s_touchTargets[touchId] = {target};
+    touchTargets()[touchId] = {target};
     QObject::connect(target, &QObject::destroyed, target, [touchId](QObject* obj) {
         Q_UNUSED(obj);
-        s_touchTargets.remove(touchId);
+        touchTargets().remove(touchId);
     });
 
     const QPointF localPos(x, y);
@@ -1159,12 +1167,12 @@ bool EventInjector::touchMove(QObject* target,
 bool EventInjector::touchRelease(int touchId)
 {
     // Look up the target from the press tracking.
-    auto it = s_touchTargets.find(touchId);
-    if (it == s_touchTargets.end())
+    auto it = touchTargets().find(touchId);
+    if (it == touchTargets().end())
         return false;
 
     QObject* target = it.value().obj;
-    s_touchTargets.erase(it);
+    touchTargets().erase(it);
 
     if (!target)
         return false;

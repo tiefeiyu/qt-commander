@@ -13,6 +13,7 @@
 //   - no matches (empty result)
 
 #include "selector/selector.h"
+#include "core/event_injector.h"
 #include <QApplication>
 #include <QMainWindow>
 #include <QPushButton>

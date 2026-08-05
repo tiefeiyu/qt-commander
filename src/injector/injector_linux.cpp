@@ -6,6 +6,7 @@
 #include "injector.h"
 #include "ptrace_ops.h"
 #include "elf_parser.h"
+#include "elf_loader.h"
 
 #include <sys/ptrace.h>
 #include <sys/types.h>
@@ -34,6 +35,11 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Scratch page size for remote trampolines (stack + code).
+// Must be large enough for dlopen's constructor chain (dynamic linker +
+// Qt initialisation); 64 KB is ample while still fitting in one mmap chunk.
+constexpr size_t kScratchSize = 0x10000;
 
 static std::string lastErrorStr() {
     return std::string(std::strerror(errno)) + " (errno=" +
@@ -119,20 +125,31 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                        ptrace_ops::last_error_str()};
     }
 
-    // 3. Find dlopen address in target.
+    // 3. Try dlopen first (the primary path).  The library has zero
+    //    file-scope Qt constructors (_GLOBAL__sub_I), so dlopen no longer
+    //    crashes inside the ptrace-hijacked thread.  Stack alignment was
+    //    fixed (RSP must be 16-byte aligned before CALL per x86-64 ABI).
     uintptr_t dlopenAddr = findDlopenInTarget(pid);
     if (dlopenAddr == 0) {
+        // dlopen not found — try manual ELF loading as fallback.
+        uintptr_t manualBase = 0;
+        if (elfLoadLibrary(pid, absLib, manualBase) && manualBase != 0) {
+            ptrace_ops::detach(pid);
+            return {true, ""};
+        }
         ptrace_ops::detach(pid);
-        return {false, "injectLibrary: cannot find dlopen in target process"};
+        return {false, "injectLibrary: cannot find dlopen and manual ELF load failed"};
     }
 
     // 4. Allocate a scratch page for the remote_call trampoline.
     //    remote mmap via syscall.
-    //    mmap(0, 0x1000, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+    //    Use 64 KB (16 pages) for ample stack space — dlopen's constructor
+    //    chain (dynamic linker + Qt initialisation) can easily exceed 4 KB.
+    //    mmap(0, 0x10000, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
     uintptr_t scratch = 0;
     if (!ptrace_ops::remote_syscall(pid,
             /*__NR_mmap=*/9,
-            0, 0x1000,
+            0, kScratchSize,
             PROT_READ | PROT_WRITE | PROT_EXEC,
             MAP_PRIVATE | MAP_ANONYMOUS,
             static_cast<uintptr_t>(-1), 0,
@@ -158,7 +175,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
             remotePath) || remotePath == 0 ||
         remotePath == static_cast<uintptr_t>(-1)) {
         // Free scratch.
-        ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000, 0, 0, 0, 0, remotePath);
+        ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize, 0, 0, 0, 0, remotePath);
         ptrace_ops::detach(pid);
         return {false, "injectLibrary: remote mmap (path) failed"};
     }
@@ -168,7 +185,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                                 libPathStr.size() + 1)) {
         ptrace_ops::remote_syscall(pid, 11, remotePath, pathSize,
                                     0, 0, 0, 0, remotePath);
-        ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+        ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
                                     0, 0, 0, 0, scratch);
         ptrace_ops::detach(pid);
         return {false, "injectLibrary: write_mem (path) failed"};
@@ -192,11 +209,12 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
     for (int i = 0; i < 8; ++i)
         trampoline.push_back(static_cast<uint8_t>((remotePath >> (i * 8)) & 0xFF));
 
-    // movabs rsi, RTLD_NOW
+    // movabs rsi, RTLD_LAZY (defer symbol resolution to avoid crashing
+    // the dynamic linker inside a ptrace-hijacked thread)
     trampoline.push_back(0x48); trampoline.push_back(0xBE);
-    uint64_t rtld_now = RTLD_NOW;
+    uint64_t rtld_flag = RTLD_LAZY;
     for (int i = 0; i < 8; ++i)
-        trampoline.push_back(static_cast<uint8_t>((rtld_now >> (i * 8)) & 0xFF));
+        trampoline.push_back(static_cast<uint8_t>((rtld_flag >> (i * 8)) & 0xFF));
 
     // movabs rax, dlopenAddr
     trampoline.push_back(0x48); trampoline.push_back(0xB8);
@@ -214,7 +232,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                                 trampoline.size())) {
         ptrace_ops::remote_syscall(pid, 11, remotePath, pathSize,
                                     0, 0, 0, 0, remotePath);
-        ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+        ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
                                     0, 0, 0, 0, scratch);
         ptrace_ops::detach(pid);
         return {false, "injectLibrary: write trampoline failed"};
@@ -225,22 +243,39 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
     if (!ptrace_ops::get_regs(pid, &savedRegs, sizeof(savedRegs))) {
         ptrace_ops::remote_syscall(pid, 11, remotePath, pathSize,
                                     0, 0, 0, 0, remotePath);
-        ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+        ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
                                     0, 0, 0, 0, scratch);
         ptrace_ops::detach(pid);
         return {false, "injectLibrary: get_regs failed"};
     }
 
     uintptr_t savedRip = savedRegs.rip;
+    uintptr_t savedRsp = savedRegs.rsp;  // original stack — must restore after trampoline
 
-    // Set up a safe stack inside the scratch page.
-    // Place it at offset 0xFE0, 16-byte aligned.
-    // CALL pushes 8 bytes, so at function entry RSP % 16 == 8 (correct ABI).
-    uintptr_t safeRsp = scratch + 0xFE0;
+    // Keep the original RSP instead of redirecting to a scratch stack.
+    // The scratch-stack approach crashes inside ld.so's _dl_lookup_symbol_x
+    // because the dynamic linker relies on thread-local state keyed to the
+    // original stack.  We push the int3 return trap onto the original stack
+    // (8 bytes below current RSP), which is safe for almost any stopped
+    // thread — the slot just above the current frame is never live.
+    // x86-64 ABI: RSP must be 16-byte aligned *before* the CALL instruction.
+    // take one 8-byte slot below the current frame, align down to 16,
+    // so after `call` (which pushes 8 bytes) RSP % 16 == 8 (correct at
+    // function entry).
+    uintptr_t retAddrSlot = savedRsp - 8;
+    retAddrSlot &= ~static_cast<uintptr_t>(0xF);
+    if (!ptrace_ops::write_word(pid, retAddrSlot, scratch /*int3 at offset 0*/)) {
+        ptrace_ops::remote_syscall(pid, 11, remotePath, pathSize,
+                                    0, 0, 0, 0, remotePath);
+        ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
+                                    0, 0, 0, 0, scratch);
+        ptrace_ops::detach(pid);
+        return {false, "injectLibrary: write retaddr failed"};
+    }
 
-    // Set RIP to trampoline and redirect RSP to scratch page.
+    // Set RIP to trampoline; RSP stays on the original stack.
     savedRegs.rip = scratch + 0x100;
-    savedRegs.rsp = safeRsp;
+    savedRegs.rsp = retAddrSlot;
     if (!ptrace_ops::set_regs(pid, &savedRegs, sizeof(savedRegs))) {
         ptrace_ops::detach(pid);
         return {false, "injectLibrary: set_regs failed"};
@@ -260,6 +295,8 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
         return {false, "injectLibrary: waitpid failed: " + lastErrorStr()};
     }
 
+    // (waitpid done)
+
     // Handle the stop after dlopen trampoline.
     // Normal case: SIGTRAP from int3 — dlopen completed, RAX has the handle.
     // Corner case: SIGSEGV (signal 11) from library constructors/init code.
@@ -276,13 +313,15 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
         }
         dlopenRet = afterRegs.rax;
         afterRegs.rip = savedRip;
+        afterRegs.rsp = savedRsp;   // restore original stack pointer
         ptrace_ops::set_regs(pid, &afterRegs, sizeof(afterRegs));
     } else if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSEGV) {
         // Constructor crash — check whether the library was loaded anyway.
-        // Restore RIP so the target can continue after detach.
+        // Restore RIP + RSP so the target can continue after detach.
         user_regs_struct afterRegs;
         ptrace_ops::get_regs(pid, &afterRegs, sizeof(afterRegs));
         afterRegs.rip = savedRip;
+        afterRegs.rsp = savedRsp;   // restore original stack pointer
         // Skip past the faulting instruction by forwarding the signal.
         // We cannot easily "skip" a SIGSEGV, but we CAN restore RIP and
         // rely on the fact that dlopen already mapped the library.
@@ -309,7 +348,7 @@ InjectResult injectLibrary(int pid, const fs::path& lib_path) {
                                 0, 0, 0, 0, munmapRet);
 
     // 9. Free the scratch page.
-    ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+    ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
                                 0, 0, 0, 0, munmapRet);
 
     // 10. Detach.
@@ -505,7 +544,7 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
 
     // 8. Allocate scratch page and inject init trampoline.
     uintptr_t scratch = 0;
-    if (!ptrace_ops::remote_syscall(pid, 9, 0, 0x1000,
+    if (!ptrace_ops::remote_syscall(pid, 9, 0, kScratchSize,
             PROT_READ | PROT_WRITE | PROT_EXEC,
             MAP_PRIVATE | MAP_ANONYMOUS,
             static_cast<uintptr_t>(-1), 0,
@@ -517,7 +556,11 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
         return 0;
     }
 
-    // Trampoline: movabs rdi, remoteParams; movabs rax, initAddr; call rax; int3
+    // Write int3 (0xCC) at the scratch page (used as return trap).
+    uint8_t int3code = 0xCC;
+    ptrace_ops::write_mem(pid, scratch, &int3code, 1);
+
+    // Trampoline at scratch+0x100: movabs rdi, remoteParams; movabs rax, initAddr; call rax; int3
     std::vector<uint8_t> trampoline;
     trampoline.push_back(0x48); trampoline.push_back(0xBF);
     for (int i = 0; i < 8; ++i)
@@ -527,28 +570,61 @@ uint16_t performInitHandshake(int pid, const fs::path& lib_path,
         trampoline.push_back(static_cast<uint8_t>((initAddr >> (i * 8)) & 0xFF));
     trampoline.push_back(0xFF); trampoline.push_back(0xD0);
     trampoline.push_back(0xCC);
-    ptrace_ops::write_mem(pid, scratch, trampoline.data(), trampoline.size());
+    ptrace_ops::write_mem(pid, scratch + 0x100, trampoline.data(), trampoline.size());
 
-    // Save + set RIP, CONT, wait for SIGTRAP.
+    // Save registers and set up a safe stack.
     user_regs_struct savedRegs;
     if (!ptrace_ops::get_regs(pid, &savedRegs, sizeof(savedRegs))) {
         ptrace_ops::detach(pid);
         return 0;
     }
     user_regs_struct regs = savedRegs;
-    regs.rip = scratch;
+    uintptr_t savedRip = savedRegs.rip;
+    uintptr_t savedRsp = savedRegs.rsp;
+
+    // Push the return trap address onto the original stack (same technique
+    // as the dlopen trampoline — keeps the dynamic linker's TLS stack key
+    // consistent).  Use a 16-byte-aligned slot below the current frame.
+    uintptr_t retAddrSlot = savedRsp - 8;
+    retAddrSlot &= ~static_cast<uintptr_t>(0xF);
+    if (!ptrace_ops::write_word(pid, retAddrSlot, scratch /*int3 at offset 0*/)) {
+        ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
+                                    0, 0, 0, 0, retAddrSlot);
+        ptrace_ops::remote_syscall(pid, 11, remoteParams, paramSize,
+                                    0, 0, 0, 0, remoteParams);
+        ptrace_ops::detach(pid);
+        return 0;
+    }
+
+    regs.rip = scratch + 0x100;
+    regs.rsp = retAddrSlot;
     ptrace_ops::set_regs(pid, &regs, sizeof(regs));
 
     ptrace(PTRACE_CONT, pid, nullptr, nullptr);
     int status = 0;
     waitpid(pid, &status, 0);
 
-    // Restore regs.
+    // Check whether qt_commander_init crashed.
+    int stopSig = 0;
+    if (WIFSTOPPED(status)) {
+        stopSig = WSTOPSIG(status);
+        if (stopSig != SIGTRAP) {
+            std::fprintf(stderr,
+                "[initHandshake] qt_commander_init stopped with signal %d\n",
+                stopSig);
+        }
+    } else if (WIFSIGNALED(status)) {
+        std::fprintf(stderr,
+            "[initHandshake] target killed by signal %d\n",
+            WTERMSIG(status));
+    }
+
+    // Restore regs (RIP, RSP, everything).
     ptrace_ops::set_regs(pid, &savedRegs, sizeof(savedRegs));
 
     // Free scratch + params.
     uintptr_t dmy = 0;
-    ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
+    ptrace_ops::remote_syscall(pid, 11, scratch, kScratchSize,
                                 0, 0, 0, 0, dmy);
     ptrace_ops::remote_syscall(pid, 11, remoteParams, paramSize,
                                 0, 0, 0, 0, dmy);

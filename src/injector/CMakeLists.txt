@@ -25,6 +25,7 @@ elseif(UNIX)
         injector_linux.cpp
         ptrace_ops.cpp
         elf_parser.cpp
+        elf_loader.cpp
     )
     target_link_libraries(qt-injector PRIVATE pthread dl)
 endif()

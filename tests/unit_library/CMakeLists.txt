@@ -45,11 +45,8 @@ add_executable(test_selector
     test_selector.cpp
     ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
     ${CMAKE_SOURCE_DIR}/src/library/core/ui_scanner.cpp
+    ${CMAKE_SOURCE_DIR}/src/library/core/event_injector.cpp
 )
-if(WITH_QML)
-    target_sources(test_selector PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/library/core/event_injector.cpp)
-endif()
 target_include_directories(test_selector PRIVATE ${CMAKE_SOURCE_DIR}/src/library
     # QtGui private/QPA headers (QWindowSystemInterface for real click tests)
     ${Qt${QT_MAJOR_VERSION}Gui_PRIVATE_INCLUDE_DIRS}
