@@ -162,7 +162,7 @@ if(Python3_FOUND)
     set_tests_properties(verify_preload PROPERTIES
         LABELS "e2e"
         TIMEOUT 900
-        ENVIRONMENT "QT_BIN=${QT_COMMANDER_QT_BIN}")
+        ENVIRONMENT "QT_BIN=${QT_COMMANDER_QT_BIN};QT_QML_APP=${CMAKE_BINARY_DIR}/tests/test-apps/qml/qt-qml-test.exe;QT_WIDGET_APP=${CMAKE_BINARY_DIR}/tests/test-apps/widget/qt-widget-test.exe")
 endif()
 
 # --- Library component unit tests ---

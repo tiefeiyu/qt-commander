@@ -132,17 +132,37 @@ REM Qt6's windeployqt handles DLL inputs; Qt5's only handles exes, so the
 REM Qt5 closure is copied explicitly.  %~dp3 = the Qt bin dir in both
 REM modes (msvc: dir of qtenv2.bat; mingw: the Qt bin dir itself).
 if "%QT_MAJOR%"=="6" (
-    "%QT_BIN_DIR%windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw "%INSTALL_PREFIX%\bin\libqt-commander.dll"
+    REM windeployqt must match the build type: a Debug library links
+    REM Qt6Cored.dll etc., so a --release deploy would miss them and the
+    REM injector's closure preload would fail against a Debug target.
+    if /i "%BUILD_TYPE%"=="debug" (
+        "%QT_BIN_DIR%windeployqt.exe" --debug --no-translations --no-system-d3d-compiler --no-opengl-sw "%INSTALL_PREFIX%\bin\libqt-commander.dll"
+    ) else (
+        "%QT_BIN_DIR%windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw "%INSTALL_PREFIX%\bin\libqt-commander.dll"
+    )
     if errorlevel 1 (
         echo [build] WARNING: windeployqt failed -- dependency closure may be incomplete
     )
 ) else (
-    for %%d in (Qt5Core.dll Qt5Gui.dll Qt5Widgets.dll Qt5Quick.dll Qt5Qml.dll Qt5QmlModels.dll Qt5Network.dll) do (
-        if exist "%QT_BIN_DIR%%%d" (
-            copy /y "%QT_BIN_DIR%%%d" "%INSTALL_PREFIX%\bin\" >nul
-            echo [build] closure %%d
-        ) else (
-            echo [build] WARNING: %%d not found in "%QT_BIN_DIR%"
+    REM Qt5: same split -- Debug Qt kits ship Qt5Cored.dll etc. next to the
+    REM release DLLs, and the closure must match the library's imports.
+    if /i "%BUILD_TYPE%"=="debug" (
+        for %%d in (Qt5Cored.dll Qt5Guid.dll Qt5Widgetsd.dll Qt5Quickd.dll Qt5Qmld.dll Qt5QmlModelsd.dll Qt5Networkd.dll) do (
+            if exist "%QT_BIN_DIR%%%d" (
+                copy /y "%QT_BIN_DIR%%%d" "%INSTALL_PREFIX%\bin\" >nul
+                echo [build] closure %%d
+            ) else (
+                echo [build] WARNING: %%d not found in "%QT_BIN_DIR%"
+            )
+        )
+    ) else (
+        for %%d in (Qt5Core.dll Qt5Gui.dll Qt5Widgets.dll Qt5Quick.dll Qt5Qml.dll Qt5QmlModels.dll Qt5Network.dll) do (
+            if exist "%QT_BIN_DIR%%%d" (
+                copy /y "%QT_BIN_DIR%%%d" "%INSTALL_PREFIX%\bin\" >nul
+                echo [build] closure %%d
+            ) else (
+                echo [build] WARNING: %%d not found in "%QT_BIN_DIR%"
+            )
         )
     )
 )

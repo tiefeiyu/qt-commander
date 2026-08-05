@@ -42,6 +42,7 @@ INJECTOR = QTC_BIN / "qt-injector.exe"
 LIBRARY = QTC_BIN / "libqt-commander.dll"
 QT_MAJOR = ""  # filled in by detect_deployment() inside main()
 QT_KIT = ""    # "msvc" | "mingw"
+QT_DLL_SUFFIX = ""  # "d" for debug deployments
 
 # Qt bin dir: QT_BIN env var wins (run_all_tests.py sets it), otherwise the
 # Qt<major>_DIR from the test build's CMakeCache, otherwise the repo default.
@@ -69,8 +70,13 @@ WINDEPLOYQT = QT_BIN / "windeployqt.exe" if QT_BIN else None
 QML_SRC = REPO / "tests" / "test-apps" / "qml"
 WIDGET_SRC = REPO / "tests" / "test-apps" / "widget"
 
-QML_APP = QTC_ROOT / "qml-app" / "bin" / "qt-qml-test.exe"
-WIDGET_APP = QTC_ROOT / "test-app" / "bin" / "qt-widget-test.exe"
+# Test apps: ctest passes its own build tree's apps (which match the
+# deployed build type -- Debug tree + Debug deployment).  Standalone runs
+# fall back to the qt_build-deployed apps under QTC_ROOT.
+QML_APP = Path(os.environ["QT_QML_APP"]) if os.environ.get("QT_QML_APP") \
+    else QTC_ROOT / "qml-app" / "bin" / "qt-qml-test.exe"
+WIDGET_APP = Path(os.environ["QT_WIDGET_APP"]) if os.environ.get("QT_WIDGET_APP") \
+    else QTC_ROOT / "test-app" / "bin" / "qt-widget-test.exe"
 
 failures = []
 
@@ -127,12 +133,13 @@ def deploy_windeployqt(app_exe: Path, qmldir: Path | None, dest: Path) -> None:
     if QT_KIT == "mingw" and QT_MAJOR == "5":
         deploy_closure_qt5_minqw(app_exe, qmldir, dest)
         return
-    args = [str(WINDEPLOYQT), "--release", "--no-translations"]
-    if QT_KIT != "mingw":
-        # MSVC apps find their CRT in the system; MinGW apps need
-        # libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
-        # deployed next to them (the preload closure covers the *library*,
-        # not the app's own startup).
+    deploy_flavor = "--debug" if QT_DLL_SUFFIX else "--release"
+    args = [str(WINDEPLOYQT), deploy_flavor, "--no-translations"]
+    if QT_KIT != "mingw" and not QT_DLL_SUFFIX:
+        # Release MSVC apps find their CRT in the system; MinGW apps and
+        # Debug MSVC apps do not (Debug CRT is never redistributed, and
+        # the Qt kit's runtime sits next to the kit, not the app), so
+        # windeployqt must deploy the compiler runtime for those.
         args += ["--no-compiler-runtime"]
     if qmldir:
         args += ["--qmldir", str(qmldir)]
@@ -155,19 +162,22 @@ def missing_dlls(app_dir: Path, names: list[str]) -> list[str]:
 
 
 def qdll(short: str) -> str:
-    """Qt<major><short>.dll, e.g. qdll("Widgets") -> Qt6Widgets.dll."""
-    return f"Qt{QT_MAJOR}{short}.dll"
+    """Qt<major><short>.dll, e.g. qdll("Widgets") -> Qt6Widgets.dll (or
+    Qt6Widgetsd.dll for a debug deployment)."""
+    return f"Qt{QT_MAJOR}{short}{QT_DLL_SUFFIX}.dll"
 
 
 _MINGW_RUNTIME_DLLS = ("libgcc_s_seh-1.dll", "libstdc++-6.dll",
                        "libwinpthread-1.dll")
 
 
-def detect_deployment() -> tuple[str, str]:
-    """Derive (Qt major, kit) from libqt-commander.dll's import closure.
+def detect_deployment() -> tuple[str, str, str]:
+    """Derive (Qt major, kit, dll suffix) from libqt-commander.dll's import
+    closure.
 
     kit is "msvc" or "mingw", identified by the CRT runtime DLLs the
     library imports (MinGW Qt DLLs import libgcc_s_seh-1.dll etc.).
+    The dll suffix is "" for release and "d" for debug deployments.
     """
     proc = subprocess.run(
         [str(INJECTOR), "--list-deps", str(LIBRARY),
@@ -175,15 +185,18 @@ def detect_deployment() -> tuple[str, str]:
         capture_output=True, text=True, timeout=30)
     deps = json.loads(proc.stdout)["deps"]
     names = {Path(p).name.lower() for p in deps}
-    if "qt6core.dll" in names:
-        major = "6"
-    elif "qt5core.dll" in names:
-        major = "5"
+    for n in sorted(names):
+        if n.startswith("qt6core"):
+            major, suffix = "6", n[len("qt6core"):-len(".dll")]
+            break
+        if n.startswith("qt5core"):
+            major, suffix = "5", n[len("qt5core"):-len(".dll")]
+            break
     else:
         raise RuntimeError(f"cannot determine Qt major from library closure: "
                            f"{sorted(names)}")
     kit = "mingw" if any(n in names for n in _MINGW_RUNTIME_DLLS) else "msvc"
-    return major, kit
+    return major, kit, suffix
 
 
 def qt_bin_major(bin_dir: Path) -> str | None:
@@ -335,7 +348,7 @@ def scenario_diagnostic() -> None:
             capture_output=True, text=True, timeout=30)
         deps = json.loads(proc.stdout)["deps"]
         names = [Path(p).name.lower() for p in deps]
-        check(f"qt{QT_MAJOR}qml.dll" not in names,
+        check(f"qt{QT_MAJOR}qml{QT_DLL_SUFFIX}.dll" not in names,
               f"C: {qdll('Qml')} no longer in closure after removal")
         check(proc.returncode == 0, "C: --list-deps still exits 0")
     finally:
@@ -343,13 +356,13 @@ def scenario_diagnostic() -> None:
 
 
 async def main() -> int:
-    global QT_MAJOR, QT_KIT, QT_BIN, WINDEPLOYQT
+    global QT_MAJOR, QT_KIT, QT_DLL_SUFFIX, QT_BIN, WINDEPLOYQT
     if not (INJECTOR.exists() and LIBRARY.exists()):
         print("ERROR: qt-injector.exe / libqt-commander.dll not found in "
               ".qt-commander/bin -- run qt_build first")
         return 2
     try:
-        QT_MAJOR, QT_KIT = detect_deployment()
+        QT_MAJOR, QT_KIT, QT_DLL_SUFFIX = detect_deployment()
     except RuntimeError as e:
         print(f"ERROR: {e}")
         return 2

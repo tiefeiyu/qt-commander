@@ -40,13 +40,14 @@ def _basenames(paths: list[str]) -> set[str]:
     return {Path(p).name.lower() for p in paths}
 
 
-def _qt_prefix(names: set[str]) -> str:
-    """Derive the Qt major from the library's own import closure, so the
-    same assertions hold for Qt5 and Qt6 builds."""
-    if "qt6core.dll" in names:
-        return "qt6"
-    if "qt5core.dll" in names:
-        return "qt5"
+def _qt_prefix_and_suffix(names: set[str]) -> tuple[str, str]:
+    """Derive (qt_prefix, dll_suffix) from the library's own import closure,
+    so the same assertions hold for Qt5/Qt6 and Debug/Release builds
+    (Debug Qt kits append a trailing 'd' to every Qt DLL name)."""
+    for n in sorted(names):
+        for prefix in ("qt6core", "qt5core"):
+            if n.startswith(prefix):
+                return prefix[:-4], n[len(prefix):-len(".dll")]
     raise AssertionError(f"no QtCore in closure: {sorted(names)}")
 
 
@@ -58,18 +59,18 @@ def test_list_deps_direct_and_transitive(injector_and_library):
     _, lib = injector_and_library
     deps = _run_list_deps(lib, [lib.parent])
     names = _basenames(deps)
-    p = _qt_prefix(names)
+    p, s = _qt_prefix_and_suffix(names)
 
     # Direct imports of the library.
-    assert f"{p}widgets.dll" in names
-    assert f"{p}quick.dll" in names
-    assert f"{p}gui.dll" in names
-    assert f"{p}core.dll" in names
+    assert f"{p}widgets{s}.dll" in names
+    assert f"{p}quick{s}.dll" in names
+    assert f"{p}gui{s}.dll" in names
+    assert f"{p}core{s}.dll" in names
 
     # Transitive deps of Qt<major>Quick, resolvable from the same dir.
-    assert f"{p}qml.dll" in names
-    assert f"{p}qmlmodels.dll" in names
-    assert f"{p}network.dll" in names
+    assert f"{p}qml{s}.dll" in names
+    assert f"{p}qmlmodels{s}.dll" in names
+    assert f"{p}network{s}.dll" in names
 
     # No duplicates.
     assert len(names) == len(deps), f"duplicate deps: {deps}"
