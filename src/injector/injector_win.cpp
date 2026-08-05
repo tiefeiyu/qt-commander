@@ -675,33 +675,9 @@ InjectResult ejectLibrary(int pid, const fs::path& lib_path) {
         return {false, "ejectLibrary: OpenProcess failed: " + lastErrorString()};
     }
 
-    // Enumerate modules to find the DLL base
-    DWORD needed = 0;
-    EnumProcessModules(hProcess, nullptr, 0, &needed);
-    std::vector<HMODULE> modules(needed / sizeof(HMODULE));
-    if (!EnumProcessModules(hProcess, modules.data(),
-                            static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
-                            &needed)) {
-        CloseHandle(hProcess);
-        return {false, "ejectLibrary: EnumProcessModules failed: " + lastErrorString()};
-    }
-
-    std::wstring libNameW = lib_path.filename().wstring();
-    HMODULE dllBase = nullptr;
-    for (const auto& hMod : modules) {
-        wchar_t modName[MAX_PATH]{};
-        if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH) &&
-            _wcsicmp(modName, libNameW.c_str()) == 0) {
-            dllBase = hMod;
-            break;
-        }
-    }
-    if (!dllBase) {
-        CloseHandle(hProcess);
-        return {false, "ejectLibrary: DLL not found in target process"};
-    }
-
-    // Call FreeLibrary in the target
+    // The library may have been LoadLibrary'd more than once (each attach
+    // adds a reference), so loop: keep calling FreeLibrary until the
+    // module is gone from the target (or the cap is reached).
     FARPROC freeLibAddr = GetProcAddress(
         GetModuleHandleW(L"kernel32"), "FreeLibrary");
     if (!freeLibAddr) {
@@ -709,23 +685,64 @@ InjectResult ejectLibrary(int pid, const fs::path& lib_path) {
         return {false, "ejectLibrary: GetProcAddress(FreeLibrary) failed"};
     }
 
-    HANDLE hThread = CreateRemoteThread(
-        hProcess, nullptr, 0,
-        reinterpret_cast<LPTHREAD_START_ROUTINE>(freeLibAddr),
-        dllBase, 0, nullptr);
-    if (!hThread) {
-        CloseHandle(hProcess);
-        return {false, "ejectLibrary: CreateRemoteThread failed: " + lastErrorString()};
+    const std::wstring libNameW = lib_path.filename().wstring();
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        // Enumerate modules to find the DLL base
+        DWORD needed = 0;
+        EnumProcessModules(hProcess, nullptr, 0, &needed);
+        std::vector<HMODULE> modules(needed / sizeof(HMODULE));
+        if (!EnumProcessModules(hProcess, modules.data(),
+                                static_cast<DWORD>(
+                                    modules.size() * sizeof(HMODULE)),
+                                &needed)) {
+            CloseHandle(hProcess);
+            return {false, "ejectLibrary: EnumProcessModules failed: " +
+                               lastErrorString()};
+        }
+
+        HMODULE dllBase = nullptr;
+        for (const auto& hMod : modules) {
+            wchar_t modName[MAX_PATH]{};
+            if (GetModuleBaseNameW(hProcess, hMod, modName, MAX_PATH) &&
+                _wcsicmp(modName, libNameW.c_str()) == 0) {
+                dllBase = hMod;
+                break;
+            }
+        }
+        if (!dllBase)
+            break;  // already fully unloaded -> success
+
+        // Call FreeLibrary in the target
+        HANDLE hThread = CreateRemoteThread(
+            hProcess, nullptr, 0,
+            reinterpret_cast<LPTHREAD_START_ROUTINE>(freeLibAddr),
+            dllBase, 0, nullptr);
+        if (!hThread) {
+            CloseHandle(hProcess);
+            return {false, "ejectLibrary: CreateRemoteThread failed: " +
+                               lastErrorString()};
+        }
+
+        DWORD waitResult = WaitForSingleObject(hThread, 15000);
+        if (waitResult != WAIT_OBJECT_0) {
+            TerminateThread(hThread, 1);
+            CloseHandle(hThread);
+            CloseHandle(hProcess);
+            return {false, "ejectLibrary: remote thread timed out (15s)"};
+        }
+
+        // FreeLibrary returns nonzero on success; zero means the
+        // reference count did not drop (e.g. a bad handle).
+        DWORD exitCode = 0;
+        if (!GetExitCodeThread(hThread, &exitCode) || exitCode == 0) {
+            CloseHandle(hThread);
+            CloseHandle(hProcess);
+            return {false, "ejectLibrary: FreeLibrary returned FALSE "
+                           "in target process"};
+        }
+        CloseHandle(hThread);
     }
 
-    DWORD waitResult = WaitForSingleObject(hThread, 15000);
-    if (waitResult != WAIT_OBJECT_0) {
-        TerminateThread(hThread, 1);
-        CloseHandle(hThread);
-        CloseHandle(hProcess);
-        return {false, "ejectLibrary: remote thread timed out (15s)"};
-    }
-    CloseHandle(hThread);
     CloseHandle(hProcess);
     return {true, ""};
 }

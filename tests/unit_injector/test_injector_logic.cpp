@@ -37,7 +37,7 @@ void ti() { MockProcessOps o; o.random_result=false; bool threw=false; try{gener
 // --- ejectLibrary ---
 void tj() { MockProcessOps o; o.open_process_result=true; o.module_names={"k32.dll","libqt-commander.dll"}; o.create_thread_result=true; o.wait_result=true; auto r=ejectLibrary(o,1234,fs::path("C:\\libqt-commander.dll")); CHECK(r.ok||r.error.find("GetProcAddress")!=std::string::npos,"eject ok/GetProcAddr err"); }
 void tk() { MockProcessOps o; o.open_process_result=false; auto r=ejectLibrary(o,1234,fs::path("C:\\l.dll")); CHECK(!r.ok,"open fails"); }
-void tl() { MockProcessOps o; o.open_process_result=true; o.module_names={"k32.dll"}; auto r=ejectLibrary(o,1234,fs::path("C:\\libqt-commander.dll")); CHECK(!r.ok,"dll not found"); }
+void tl() { MockProcessOps o; o.open_process_result=true; o.module_names={"k32.dll"}; auto r=ejectLibrary(o,1234,fs::path("C:\\libqt-commander.dll")); CHECK(r.ok,"module absent = already unloaded = idempotent success"); }
 void tm() { MockProcessOps o; o.open_process_result=true; o.enum_modules_result=false; auto r=ejectLibrary(o,1234,fs::path("C:\\l.dll")); CHECK(!r.ok,"enum fails"); }
 void tn() { MockProcessOps o; o.open_process_result=true; o.module_names={"l.dll"}; o.get_module_handle_result=false; auto r=ejectLibrary(o,1234,fs::path("C:\\l.dll")); CHECK(!r.ok,"getMod fails"); }
 void to() { MockProcessOps o; o.open_process_result=true; o.module_names={"l.dll"}; o.get_module_handle_result=true; o.get_proc_address_result=false; auto r=ejectLibrary(o,1234,fs::path("C:\\l.dll")); CHECK(!r.ok,"getProc fails"); }

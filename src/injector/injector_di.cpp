@@ -194,29 +194,9 @@ InjectResult ejectLibrary(IProcessOps& ops, int pid, const std::filesystem::path
     if (!ops.open_process(pid, hProc))
         return {false, "ejectLibrary: OpenProcess failed: " + ops.last_error()};
 
-    std::vector<std::string> modules;
-    if (!ops.enum_modules(hProc, modules)) {
-        ops.close_handle(hProc);
-        return {false, "ejectLibrary: EnumProcessModules failed"};
-    }
-
-    std::string target = lib_path.filename().string();
-    bool found = false;
-    for (const auto& n : modules) {
-        if (n.size() == target.size()) {
-            bool match = true;
-            for (size_t i = 0; i < n.size(); ++i)
-                if (std::tolower(static_cast<unsigned char>(n[i])) !=
-                    std::tolower(static_cast<unsigned char>(target[i]))) { match = false; break; }
-            if (match) { found = true; break; }
-        }
-    }
-    if (!found) {
-        ops.close_handle(hProc);
-        return {false, "ejectLibrary: DLL \"" + target + "\" not found in target process"};
-    }
-
-    // Get FreeLibrary address from kernel32 (use OS ops for testability)
+    // The library may have been LoadLibrary'd more than once (each attach
+    // adds a reference), so loop: keep calling FreeLibrary until the
+    // module is gone from the target (or the cap is reached).
     void* k32 = nullptr;
     void* freeLibAddr = nullptr;
     if (!ops.get_module_handle(k32, "kernel32") ||
@@ -225,19 +205,52 @@ InjectResult ejectLibrary(IProcessOps& ops, int pid, const std::filesystem::path
         return {false, "ejectLibrary: GetProcAddress(FreeLibrary) failed"};
     }
 
-    void* hThread = nullptr;
-    if (!ops.create_remote_thread(hProc, freeLibAddr, nullptr, hThread)) {
-        ops.close_handle(hProc);
-        return {false, "ejectLibrary: CreateRemoteThread failed: " + ops.last_error()};
+    const std::string target = lib_path.filename().string();
+    auto findModule = [&](const std::vector<std::string>& modules) -> bool {
+        for (const auto& n : modules) {
+            if (n.size() == target.size()) {
+                bool match = true;
+                for (size_t i = 0; i < n.size(); ++i)
+                    if (std::tolower(static_cast<unsigned char>(n[i])) !=
+                        std::tolower(static_cast<unsigned char>(target[i]))) { match = false; break; }
+                if (match) return true;
+            }
+        }
+        return false;
+    };
+
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        std::vector<std::string> modules;
+        if (!ops.enum_modules(hProc, modules)) {
+            ops.close_handle(hProc);
+            return {false, "ejectLibrary: EnumProcessModules failed"};
+        }
+        if (!findModule(modules))
+            break;  // already fully unloaded -> success
+
+        void* hThread = nullptr;
+        if (!ops.create_remote_thread(hProc, freeLibAddr, nullptr, hThread)) {
+            ops.close_handle(hProc);
+            return {false, "ejectLibrary: CreateRemoteThread failed: " + ops.last_error()};
+        }
+
+        if (!ops.wait_for_thread(hThread, 15000)) {
+            ops.terminate_thread(hThread); ops.close_thread(hThread);
+            ops.close_handle(hProc);
+            return {false, "ejectLibrary: remote thread timed out (15s)"};
+        }
+        // FreeLibrary returns nonzero on success; zero means the
+        // reference count did not drop (e.g. a bad handle).
+        uint32_t exitCode = 0;
+        if (!ops.get_thread_exit_code(hThread, exitCode) || exitCode == 0) {
+            ops.close_thread(hThread);
+            ops.close_handle(hProc);
+            return {false, "ejectLibrary: FreeLibrary returned FALSE "
+                           "in target process"};
+        }
+        ops.close_thread(hThread);
     }
 
-    if (!ops.wait_for_thread(hThread, 15000)) {
-        ops.terminate_thread(hThread); ops.close_thread(hThread);
-        ops.close_handle(hProc);
-        return {false, "ejectLibrary: remote thread timed out (15s)"};
-    }
-
-    ops.close_thread(hThread);
     ops.close_handle(hProc);
     return {true, ""};
 }

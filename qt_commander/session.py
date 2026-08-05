@@ -169,6 +169,20 @@ class SessionManager:
                 pass
 
             if purge:
+                # Unload the injected library from the target process first
+                # so its DLL file is not locked (the build/cleanup steps
+                # need to overwrite it).  Best-effort: a dead process or a
+                # missing injector is fine.
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "qt-injector", "--eject", str(session.pid),
+                        str(session.lib_path),
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await asyncio.wait_for(proc.wait(), timeout=15.0)
+                except Exception:
+                    pass
                 for attempt in range(3):
                     try:
                         if session.session_dir.exists():
