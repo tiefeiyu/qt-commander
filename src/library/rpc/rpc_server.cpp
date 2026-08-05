@@ -508,13 +508,23 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
 #endif
 
     for (QObject* child : childList) {
-        // Skip widgets the user cannot see (isVisible() covers the whole
-        // ancestor chain; hidden tab pages report false here too).
+        // Skip elements the user cannot see -- this prunes the whole
+        // subtree, so hidden tab pages, unopened dialogs and their
+        // children never reach the snapshot.
         if (!includeHidden) {
             if (QWidget* cw = qobject_cast<QWidget*>(child)) {
+                // QWidget::isVisible() covers the whole ancestor chain.
                 if (!cw->isVisible())
                     continue;
             }
+#ifdef QT_COMMANDER_WITH_QML
+            if (QQuickItem* ci = qobject_cast<QQuickItem*>(child)) {
+                // QQuickItem::isVisible() only checks the item itself;
+                // isEffectivelyVisible walks the parentItem() chain.
+                if (!UiScanner::isEffectivelyVisible(ci))
+                    continue;
+            }
+#endif
         }
 
         const uint64_t id = nextId++;

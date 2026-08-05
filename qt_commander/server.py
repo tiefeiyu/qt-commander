@@ -241,13 +241,15 @@ async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
 
     Reads the saved snapshot JSON and computes which elements are
     actually visible on screen: elements fully covered by higher-z
-    opaque elements are removed, partially covered ones get a
-    ``visible_ratio`` field.  Writes a new file
-    ``snapshot_<id>_pruned.json`` next to the original.
+    opaque elements are removed (their still-visible descendants are
+    reparented up), partially covered ones get a ``visible_ratio``
+    field.  Writes a new file ``snapshot_<id>_pruned.json`` next to the
+    original.
 
-    The solver is a conservative geometric heuristic (axis-aligned
-    rects, per-window z-order; widgets and QML rectangles/images
-    occlude, transparent containers and custom QML components do not).
+    The solver is a geometric heuristic (axis-aligned rects, per-window
+    z-order with same-z tree order; widgets and QML rectangles/images
+    occlude, transparent containers, text and custom QML components do
+    not; a parent never occludes its own children).
     """
     session = _resolve_session(session_id)
     src = session.session_dir / "snapshots" / f"snapshot_{snapshot_id:08d}.json"

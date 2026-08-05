@@ -1,23 +1,25 @@
 """Occlusion solving for UI snapshots.
 
 Given a saved snapshot (the JSON written by qt_snapshot), compute which
-elements are actually visible on screen and which are completely covered
-by higher-z opaque elements.  Produces a pruned snapshot: covered
-elements are removed from the tree, and surviving elements get a
-``visible_ratio`` field (1.0 is omitted) when partially covered.
+elements a human eye can actually see: fully covered elements are
+removed, partially covered ones are kept and annotated with a
+``visible_ratio`` field (how much of them remains visible).
 
-This is a conservative geometric heuristic, not a pixel-exact render:
+This is a geometric heuristic, not a pixel-exact render:
 
 - Only axis-aligned rectangles are considered (circles, rounded corners
   and arbitrary QML shapes are approximated by their bounding rect).
 - An element occludes only if it is classified as opaque (see
   :func:`is_occluder`); transparent containers (QQuickItem, layouts,
-  mouse areas, text, custom QML components) never occlude.
-- Elements with equal z_order do not occlude each other (conservative).
+  mouse areas, text, custom QML components) never occlude, so a text
+  label over a background does not hide the background.
+- Equal-z siblings are ordered by tree order (creation order): the
+  later-created element covers the earlier one.
+- A parent never occludes its own descendants (children paint above
+  their parent); a child's rect does occlude its parent's area.
+- Removed elements are dropped from the tree; their still-visible
+  descendants are reparented one level up.
 - Occlusion is computed per top-level window (topLevelId).
-
-The heuristic errs on the side of keeping elements: only elements fully
-covered by an opaque rectangle are removed.
 """
 from __future__ import annotations
 
@@ -212,6 +214,16 @@ def is_occluder(className: str) -> bool:
     return False
 
 
+def is_qml_component(className: str) -> bool:
+    """True for custom QML component roots (QGCButton_QMLTYPE_8, ...).
+
+    Used by tests and for documentation; component roots are treated
+    like any other element during pruning (a root covered by its own
+    background child is removed and the visible child is reparented up).
+    """
+    return "_QMLTYPE_" in className or className.endswith("_QML_")
+
+
 # ---------------------------------------------------------------------------
 # Tree walking
 # ---------------------------------------------------------------------------
@@ -280,6 +292,12 @@ def prune_snapshot(snapshot: dict) -> dict:
         for node, ancestors in iter_nodes(root):
             oid = node.get("objID")
             if oid is None:
+                continue
+            # Hidden elements neither occlude nor are occluded; they are
+            # dropped (their still-visible descendants are reparented up
+            # by rebuild_tree).  A hidden element must never occlude the
+            # visible UI underneath it (e.g. an invisible modal dialog).
+            if node.get("visible") is False:
                 continue
             rect = rect_from_node(node)
             if rect is None:
@@ -352,3 +370,5 @@ def _annotate(nodes: list[dict], ratios: dict[int, float]) -> None:
         if ratio is not None and ratio < 1.0:
             node["visible_ratio"] = round(ratio, 4)
         _annotate(node.get("children", []), ratios)
+
+

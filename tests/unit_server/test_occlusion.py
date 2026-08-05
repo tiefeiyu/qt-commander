@@ -123,6 +123,7 @@ class TestPruneSnapshot:
         assert out["pruned"]["removed"] == 1
 
     def test_partial_cover_keeps_with_ratio(self):
+        # partially covered elements survive with a visible_ratio field
         s = snap(
             node(1, "QWidget", 0, 0, 100, 100, z=0),
             node(2, "QWidget", 0, 0, 50, 100, z=1),
@@ -130,8 +131,7 @@ class TestPruneSnapshot:
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
         assert 1 in kept and 2 in kept
-        n1 = out["nodes"][0]
-        assert n1["visible_ratio"] == pytest.approx(0.5)
+        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.5)
         assert "visible_ratio" not in out["nodes"][1]
 
     def test_same_z_later_created_occludes_earlier(self):
@@ -283,6 +283,37 @@ class TestPruneSnapshot:
                         "z_order": 0, "topLevelId": 1, "children": []}]}
         out = prune_snapshot(s)
         assert ids(out["nodes"]) == [1]
+
+    def test_qml_component_root_covered_by_own_background(self):
+        # A custom component root (button) covered by its own full-size
+        # background child is fully hidden: the root is removed and the
+        # visible background child is reparented up.
+        s = snap(node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0, children=[
+            node(3, "QQuickRectangle", 0, 0, 100, 100, z=0),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 3 in kept and 1 not in kept
+
+    def test_qml_component_root_removed_when_covered_externally(self):
+        # ...but a component covered by a *sibling* opaque element is
+        # still removed (it is genuinely hidden).
+        s = snap(
+            node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0),
+            node(2, "QWidget", 0, 0, 100, 100, z=1),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [2]
+
+    def test_qml_component_kept_when_partially_visible(self):
+        s = snap(
+            node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0),
+            node(2, "QWidget", 0, 0, 100, 50, z=1),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 1 in kept and 2 in kept
 
     def test_roundtrip_json_serializable(self):
         s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0),
