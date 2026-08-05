@@ -61,7 +61,7 @@ uv run python -m qt_commander
 | `qt_detect_msvc_and_qt` | 自动探测本机可用的 MSVC、MinGW 工具链和 Qt 安装 |
 | `qt_build` | 按需编译注入器和库 — `toolchain` 选择 `msvc`（vcvars + qtenv bat）或 `mingw`（MinGW bin 目录 + Qt bin 目录） |
 | `qt_snapshot` | 捕获 UI 元素树 — `detail` 选择属性档位：`core`（几何/可见性/文本，无属性）、`extended`（常用交互状态）、`full`（全部 Q_PROPERTY） |
-| `qt_prune_snapshot` | 遮挡求解：剔除被更高 z 序不透明元素完全盖住的节点，部分遮挡节点标注 `visible_ratio`，输出精简快照 |
+| `qt_prune_snapshot` | 遮挡求解：剔除被更高 z 序不透明元素完全盖住的节点（同 z 按创建顺序，后创建的遮挡先创建的；子元素绘制在父之上、父不遮挡子），部分遮挡节点标注 `visible_ratio`，输出精简快照 |
 | `qt_find_element` | 按类型、文本或属性查询查找元素 |
 | `qt_get_property` | 读取 QObject 属性 |
 | `qt_set_property` | 写入 QObject 属性 |

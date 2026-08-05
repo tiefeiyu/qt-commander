@@ -105,17 +105,20 @@ def rect_difference(outer: Rect, inner: Rect) -> list[Rect]:
 class CoveredArea:
     """A normalized (non-overlapping) set of covered rectangles.
 
-    insert() adds an opaque rect; visible_area() returns how much of a
-    query rect is NOT covered.  Rects are bucketed by y so every query
-    and insert only touches the buckets the rect actually spans --
-    O(n) worst case but a small constant on realistic UIs (thousands of
-    elements).
+    insert() adds an opaque rect (with an optional source id);
+    visible_area() returns how much of a query rect is NOT covered.
+    ``exclude`` lets the caller ignore rectangles from given sources --
+    used so a parent container never occludes its own descendants
+    (children always paint above their parent in Qt).
+
+    Rects are bucketed by y so every query and insert only touches the
+    buckets the rect actually spans.
     """
 
     BUCKET = 128.0
 
     def __init__(self) -> None:
-        self._buckets: dict[int, list[Rect]] = {}
+        self._buckets: dict[int, list[tuple[Rect, int]]] = {}
         self._bbox: Rect | None = None
 
     def _touched_buckets(self, rect: Rect) -> list[int]:
@@ -123,18 +126,18 @@ class CoveredArea:
         hi = int((rect.bottom - 1) // self.BUCKET)
         return list(range(lo, hi + 1))
 
-    def insert(self, rect: Rect) -> None:
+    def insert(self, rect: Rect, source: int = 0) -> None:
         if rect.is_empty():
             return
         for bk in self._touched_buckets(rect):
-            for r in self._buckets.get(bk, ()):
+            for r, _src in self._buckets.get(bk, ()):
                 if (r.x <= rect.x and r.y <= rect.y
                         and r.right >= rect.right and r.bottom >= rect.bottom):
                     return  # fully inside an existing piece
         # subtract existing pieces (per bucket) from the new rect
         remaining = [rect]
         for bk in self._touched_buckets(rect):
-            for r in self._buckets.get(bk, ()):
+            for r, _src in self._buckets.get(bk, ()):
                 new_remaining = []
                 for piece in remaining:
                     if piece.overlaps(r):
@@ -146,10 +149,10 @@ class CoveredArea:
             if piece.is_empty():
                 continue
             for bk in self._touched_buckets(piece):
-                self._buckets.setdefault(bk, []).append(piece)
+                self._buckets.setdefault(bk, []).append((piece, source))
             self._bbox = (self._bbox.bbox(piece) if self._bbox else piece)
 
-    def visible_area(self, rect: Rect) -> float:
+    def visible_area(self, rect: Rect, exclude: frozenset[int] = frozenset()) -> float:
         if rect.is_empty():
             return 0.0
         if self._bbox is None or not rect.overlaps(self._bbox):
@@ -158,7 +161,9 @@ class CoveredArea:
         for bk in self._touched_buckets(rect):
             if not remaining:
                 return 0.0
-            for r in self._buckets.get(bk, ()):
+            for r, src in self._buckets.get(bk, ()):
+                if src in exclude:
+                    continue
                 new_remaining = []
                 for piece in remaining:
                     if piece.overlaps(r):
@@ -211,22 +216,39 @@ def is_occluder(className: str) -> bool:
 # Tree walking
 # ---------------------------------------------------------------------------
 
-def iter_nodes(root: dict):
-    """Yield (node, parent) for every node in a snapshot tree (incl. root)."""
-    yield root, None
+def iter_nodes(root: dict, ancestors: frozenset[int] = frozenset()):
+    """Yield (node, ancestors) for every node in a snapshot tree.
+
+    ``ancestors`` is the set of ancestor objIDs, used so a parent never
+    counts as occluding its own descendants (children paint on top).
+    """
+    yield root, ancestors
+    oid = root.get("objID")
     for child in root.get("children", []):
-        yield from iter_nodes(child)
+        new_anc = ancestors | ({oid} if oid is not None else set())
+        yield from iter_nodes(child, new_anc)
 
 
-def rebuild_tree(root: dict, keep: set[int]) -> dict:
-    """Deep-copy the tree keeping only nodes whose objID is in ``keep``."""
-    out = dict(root)
-    out.pop("children", None)
-    kids = root.get("children", [])
-    kept = [rebuild_tree(k, keep) for k in kids if k.get("objID") in keep]
-    if kept:
-        out["children"] = kept
-    return out
+def rebuild_tree(root: dict, keep: set[int], out_list: list[dict]) -> None:
+    """Append the kept nodes of ``root``'s subtree to ``out_list``.
+
+    A removed node is dropped entirely; its kept descendants are
+    reparented one level up (they may still be visible even when their
+    container is fully covered).
+    """
+    oid = root.get("objID")
+    if oid in keep:
+        out = dict(root)
+        out.pop("children", None)
+        child_out: list[dict] = []
+        for k in root.get("children", []):
+            rebuild_tree(k, keep, child_out)
+        if child_out:
+            out["children"] = child_out
+        out_list.append(out)
+    else:
+        for k in root.get("children", []):
+            rebuild_tree(k, keep, out_list)
 
 
 # ---------------------------------------------------------------------------
@@ -251,10 +273,11 @@ def prune_snapshot(snapshot: dict) -> dict:
         return out
 
     # ---- collect all elements with their geometry ---------------------
-    elements = []  # (topLevelId, z_order, objID, rect, node)
+    elements = []  # (topLevelId, z_order, order, objID, rect, node, ancestors)
     kept_ids: set[int] = set()  # no-geometry elements are kept as-is
+    order = 0
     for root in nodes:
-        for node, _parent in iter_nodes(root):
+        for node, ancestors in iter_nodes(root):
             oid = node.get("objID")
             if oid is None:
                 continue
@@ -268,46 +291,36 @@ def prune_snapshot(snapshot: dict) -> dict:
             except (TypeError, ValueError):
                 z = 0.0
             top = node.get("topLevelId", 0)
-            elements.append((top, z, oid, rect, node))
+            elements.append((top, z, order, oid, rect, node, ancestors))
+            order += 1
 
-    # ---- per window: sort by z DESCENDING, accumulate coverage ---------
-    # Higher z renders on top, so it must be registered as an occluder
-    # before lower-z elements are queried.  Elements at the same z do not
-    # occlude each other (conservative), so process each z level in two
-    # passes: query all, then insert all occluders.
+    # ---- per window: sort and accumulate coverage ----------------------
+    # Sort by z DESCENDING then tree order DESCENDING: Qt paints siblings
+    # in tree order (children array order) at equal z, so the later-created
+    # element covers the earlier one.  Processing each element in this
+    # order (query visibility, then register occluders) reproduces both
+    # z-level and same-z occlusion.
     by_window: dict[int, list] = {}
     for e in elements:
         by_window.setdefault(e[0], []).append(e)
     for win_elems in by_window.values():
-        win_elems.sort(key=lambda e: e[1], reverse=True)
+        win_elems.sort(key=lambda e: (e[1], e[2]), reverse=True)
 
     covered: dict[int, CoveredArea] = {}
     visible_ratio: dict[int, float] = {}
     for win, win_elems in by_window.items():
         cov = covered.setdefault(win, CoveredArea())
-        i = 0
-        while i < len(win_elems):
-            z = win_elems[i][1]
-            j = i
-            while j < len(win_elems) and win_elems[j][1] == z:
-                j += 1
-            # pass 1: query visibility for the whole z level
-            for k in range(i, j):
-                _top, _z, oid, rect, node = win_elems[k]
-                visible = cov.visible_area(rect)
-                if visible < rect.area:
-                    ratio = visible / rect.area if rect.area > 0 else 0.0
-                    visible_ratio[oid] = ratio
-            # pass 2: register occluders of this z level
-            for k in range(i, j):
-                _top, _z, oid, rect, node = win_elems[k]
-                if is_occluder(node.get("className", "")):
-                    cov.insert(rect)
-            i = j
+        for _top, _z, _order, oid, rect, node, ancestors in win_elems:
+            visible = cov.visible_area(rect, exclude=ancestors)
+            if visible < rect.area:
+                ratio = visible / rect.area if rect.area > 0 else 0.0
+                visible_ratio[oid] = ratio
+            if is_occluder(node.get("className", "")):
+                cov.insert(rect, source=oid)
 
     # ---- decide what to keep ------------------------------------------
     removed = 0
-    for _top, _z, oid, rect, node in elements:
+    for _top, _z, _order, oid, rect, node, _anc in elements:
         ratio = visible_ratio.get(oid)
         if ratio is not None and ratio <= 0.0:
             removed += 1
@@ -315,13 +328,9 @@ def prune_snapshot(snapshot: dict) -> dict:
         kept_ids.add(oid)
 
     # ---- rebuild the tree with annotations ----------------------------
-    new_nodes = []
+    new_nodes: list[dict] = []
     for root in nodes:
-        kept_root = rebuild_tree(root, kept_ids)
-        if kept_root.get("objID") in kept_ids:
-            new_nodes.append(kept_root)
-        elif kept_root.get("children"):
-            new_nodes.append(kept_root)  # keep container with visible kids
+        rebuild_tree(root, kept_ids, new_nodes)
 
     # attach visible_ratio annotations (post-rebuild so objIDs match)
     _annotate(new_nodes, visible_ratio)

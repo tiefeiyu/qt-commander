@@ -134,13 +134,37 @@ class TestPruneSnapshot:
         assert n1["visible_ratio"] == pytest.approx(0.5)
         assert "visible_ratio" not in out["nodes"][1]
 
-    def test_equal_z_does_not_occlude(self):
+    def test_same_z_later_created_occludes_earlier(self):
+        # Qt paints equal-z siblings in tree order: the later-created
+        # element (later in the children array) covers the earlier one.
         s = snap(
             node(1, "QWidget", 0, 0, 100, 100, z=1),
             node(2, "QWidget", 0, 0, 100, 100, z=1),
         )
         out = prune_snapshot(s)
-        assert sorted(ids(out["nodes"])) == [1, 2]
+        kept = ids(out["nodes"])
+        assert 2 in kept and 1 not in kept
+
+    def test_same_z_partial_overlap(self):
+        s = snap(
+            node(1, "QWidget", 0, 0, 100, 100, z=1),
+            node(2, "QWidget", 0, 0, 50, 100, z=1),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 1 in kept and 2 in kept
+        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.5)
+
+    def test_same_z_nested_tree_order(self):
+        # Tree order is global (DFS): at equal z a later top-level
+        # sibling covers the whole subtree of an earlier one.
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=1, children=[
+            node(3, "QWidget", 0, 0, 100, 100, z=1),
+            node(4, "QWidget", 0, 0, 100, 100, z=1),
+        ]), node(2, "QWidget", 0, 0, 100, 100, z=1))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [2]
 
     def test_transparent_does_not_occlude(self):
         s = snap(
@@ -193,7 +217,8 @@ class TestPruneSnapshot:
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
         assert 3 in kept and 2 in kept and 1 in kept
-        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.5)
+        # 1 is covered by 2 (top half) and by its own child 3 (10x10)
+        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.49)
 
     def test_fully_covered_child_removed(self):
         # 2 covers the whole container incl. its child
@@ -203,6 +228,35 @@ class TestPruneSnapshot:
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
         assert kept == [2]
+
+    def test_parent_never_occludes_own_child(self):
+        # children always paint above their parent: a fully covered
+        # container still keeps its visible children
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, children=[
+            node(3, "QWidget", 0, 0, 100, 100, z=0),
+        ]), node(2, "QWidget", 0, 0, 100, 100, z=1))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 2 in kept and 3 not in kept  # 3 is covered by 2, not by 1
+
+    def test_child_paints_over_parent(self):
+        # a small child only covers its own area of the parent
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, children=[
+            node(3, "QWidget", 50, 50, 10, 10, z=0),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 3 in kept and 1 in kept
+        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.99)
+
+    def test_fullsize_child_covers_parent(self):
+        # an opaque full-size child paints over the whole parent
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, children=[
+            node(3, "QWidget", 0, 0, 100, 100, z=0),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [3]
 
     def test_empty_snapshot(self):
         out = prune_snapshot(snap())

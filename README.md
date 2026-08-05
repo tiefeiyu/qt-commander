@@ -64,7 +64,7 @@ Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
 | `qt_detect_msvc_and_qt` | Auto-detect MSVC, MinGW toolchains, and Qt installations available for building |
 | `qt_build` | Compile injector + library on demand — `toolchain` selects `msvc` (vcvars + qtenv bat) or `mingw` (MinGW bin dir + Qt bin dir) |
 | `qt_snapshot` | Capture the UI element tree — `detail` selects the property tier: `core` (geometry/visibility/text, no properties), `extended` (common interaction state), `full` (every Q_PROPERTY) |
-| `qt_prune_snapshot` | Occlusion-prune a snapshot: remove elements fully covered by higher-z opaque elements, mark partially covered ones with `visible_ratio`, write a compact pruned snapshot |
+| `qt_prune_snapshot` | Occlusion-prune a snapshot: remove elements fully covered by higher-z opaque elements (equal z ordered by creation, later covers earlier; children paint above their parent), mark partially covered ones with `visible_ratio`, write a compact pruned snapshot |
 | `qt_find_element` | Find elements by type, text, or property query |
 | `qt_get_property` | Read a QObject property |
 | `qt_set_property` | Write a QObject property |
