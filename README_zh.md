@@ -41,12 +41,12 @@
 ## 快速开始
 
 ```bash
-# 安装（自动拉取 fastmcp 等运行时依赖）
-pip install -e .
-
-# 启动 MCP 服务器
-python -m qt_commander
+# 通过 uv 启动 MCP 服务器（无需全局安装 Python 包——uv 依据
+# pyproject.toml / uv.lock 自动管理隔离环境）
+uv run python -m qt_commander
 ```
+
+需要 [uv](https://docs.astral.sh/uv) 与 Python 3.10+。
 
 > **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
 

@@ -44,12 +44,12 @@ QWidget and QML interfaces.
 ## Quick Start
 
 ```bash
-# Install (pulls fastmcp and other runtime dependencies automatically)
-pip install -e .
-
-# Launch MCP server
-python -m qt_commander
+# Launch MCP server via uv (no global Python install needed — uv resolves
+# pyproject.toml / uv.lock and manages an isolated environment)
+uv run python -m qt_commander
 ```
+
+Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
 
 > **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
 

@@ -6,28 +6,23 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 
 > Please install qt-commander MCP Server — an MCP server for Qt application introspection and automation (widget tree inspection, property read/write, mouse/keyboard input, screenshot, etc.):
 >
-> 1. Install the Python package from the current directory:
->    ```bash
->    pip install -e .
->    ```
->    Requires Python 3.10+. Dependencies: `fastmcp`, `psutil`.
->
->    **uv (recommended — no global install needed):** run the server via
+> 1. Run the server with **uv** (no global Python install needed — uv resolves
+>    `pyproject.toml` / `uv.lock` and manages an isolated environment):
 >    ```bash
 >    uv run python -m qt_commander
 >    ```
->    uv resolves `pyproject.toml` / `uv.lock` and manages an isolated
->    environment automatically (first run creates it, later runs are fast).
+>    Requires uv (https://docs.astral.sh/uv) and Python 3.10+.
 >
-> 2. Add qt-commander to the MCP configuration for this platform.
->    The `command` below works with a normal `pip install -e .`; if you
->    use uv instead, replace `python` with `uv run python` (keep the
->    `cwd` pointing at the project root):
+> 2. Add qt-commander to the MCP configuration for this platform. The
+>    `command` is `uv` with `run python -m qt_commander`, and `cwd` must
+>    point at the qt-commander project root:
 >
 >    **Claude Code** — run:
 >    ```bash
->    claude mcp add qt-commander -- python -m qt_commander
+>    claude mcp add qt-commander -- uv run python -m qt_commander
 >    ```
+>    (or add it manually to the Claude Code MCP config with the
+>    `cwd` set to the project root)
 >
 >    **Claude Desktop** — edit `claude_desktop_config.json`:
 >    - macOS:   `~/Library/Application Support/Claude/`
@@ -37,8 +32,8 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >    {
 >      "mcpServers": {
 >        "qt-commander": {
->          "command": "python",
->          "args": ["-c", "from qt_commander.server import main; main()"],
+>          "command": "uv",
+>          "args": ["run", "python", "-m", "qt_commander"],
 >          "cwd": "/absolute/path/to/qt-commander"
 >        }
 >      }
@@ -50,8 +45,8 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >    {
 >      "mcpServers": {
 >        "qt-commander": {
->          "command": "python",
->          "args": ["-c", "from qt_commander.server import main; main()"],
+>          "command": "uv",
+>          "args": ["run", "python", "-m", "qt_commander"],
 >          "cwd": "${workspaceFolder}"
 >        }
 >      }
@@ -63,8 +58,8 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >    {
 >      "mcpServers": {
 >        "qt-commander": {
->          "command": "python",
->          "args": ["-c", "from qt_commander.server import main; main()"],
+>          "command": "uv",
+>          "args": ["run", "python", "-m", "qt_commander"],
 >          "cwd": "/absolute/path/to/qt-commander"
 >        }
 >      }
@@ -77,8 +72,8 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >      "servers": {
 >        "qt-commander": {
 >          "type": "stdio",
->          "command": "python",
->          "args": ["-c", "from qt_commander.server import main; main()"],
+>          "command": "uv",
+>          "args": ["run", "python", "-m", "qt_commander"],
 >          "cwd": "${workspaceFolder}"
 >        }
 >      }
@@ -90,8 +85,8 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >    {
 >      "mcpServers": {
 >        "qt-commander": {
->          "command": "python",
->          "args": ["-c", "from qt_commander.server import main; main()"],
+>          "command": "uv",
+>          "args": ["run", "python", "-m", "qt_commander"],
 >          "cwd": "/absolute/path/to/qt-commander"
 >        }
 >      }
@@ -103,8 +98,8 @@ Copy the prompt below and paste it into your AI agent to install qt-commander MC
 >    {
 >      "mcpServers": {
 >        "qt-commander": {
->          "command": "python",
->          "args": ["-c", "from qt_commander.server import main; main()"],
+>          "command": "uv",
+>          "args": ["run", "python", "-m", "qt_commander"],
 >          "cwd": "/absolute/path/to/qt-commander"
 >        }
 >      }

@@ -484,7 +484,7 @@ async def read_screenshot_resource(session_id: str, filename: str) -> bytes:
 # ============================================================================
 
 def main():
-    """Entry point for 'qt-commander-mcp' console script.
+    """Entry point — run with: uv run python -m qt_commander.
 
     Session recovery (sessions.recover_on_startup) is invoked automatically
     on first tool call via a lazy-init pattern, or can be triggered manually.
