@@ -229,8 +229,10 @@ async def qt_find_element(session_id: str, query: dict) -> str:
 
     Supported query fields: type, type_inherits, text, text_contains,
     object_name, window_title, window_title_contains, properties,
-    ancestor_id, window_id.  The element map is refreshed (like a
-    snapshot) before matching, so returned ids are always usable.
+    ancestor_id, window_id.  Set ``include_hidden`` (bool) to also match
+    hidden elements — by default only visible elements are returned, so
+    the ids are usable for clicks/input.  The element map is refreshed
+    (like a snapshot) before matching, so returned ids are always usable.
     """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.findElement", {"query": query})

@@ -103,6 +103,11 @@ struct Fixture {
         map[3] = btnCancel;
         map[4] = emailEdit;
         map[5] = central;
+
+        // Show the window so the fixture's widgets count as visible
+        // (findElement excludes hidden elements by default).
+        mainWin->show();
+        QApplication::processEvents();
     }
 
     ~Fixture() {
@@ -326,8 +331,52 @@ static void test_find_empty_query()
     q[QStringLiteral("ancestor_id")] = 1.0;
 
     auto results = fx.find(q);
-    // mainWin + central + btnOk + btnCancel + emailEdit + QMenuBar + QStatusBar
-    CHECK_SZ(results, 7, "empty query should return all elements");
+    // mainWin + central + btnOk + btnCancel + emailEdit + QMenuBar +
+    // QStatusBar; showing the window can add a few internal widgets, so
+    // only assert the count grew past the fixture's own elements.
+    CHECK(results.size() >= 7, "empty query should return all visible elements");
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// 13. Hidden elements are excluded by default; include_hidden=true restores them
+// ---------------------------------------------------------------------------
+static void test_find_hidden_excluded_by_default()
+{
+    TEST("hidden elements excluded by default, include_hidden restores them");
+    Fixture fx;
+
+    // ---- 13a. all fixture widgets are visible after show()
+    {
+        QJsonObject q;
+        q[QStringLiteral("type")]        = QStringLiteral("QPushButton");
+        q[QStringLiteral("ancestor_id")] = 1.0;
+        auto results = fx.find(q);
+        CHECK_SZ(results, 2, "both buttons visible -> 2 results");
+    }
+
+    // ---- 13b. hide one button -> only the visible one matches by default
+    fx.btnCancel->hide();
+    QApplication::processEvents();
+    {
+        QJsonObject q;
+        q[QStringLiteral("type")]        = QStringLiteral("QPushButton");
+        q[QStringLiteral("ancestor_id")] = 1.0;
+        auto results = fx.find(q);
+        CHECK_SZ(results, 1, "hidden Cancel excluded by default");
+        CHECK(results[0].id == 2, "remaining result is btnOk (id=2)");
+    }
+
+    // ---- 13c. include_hidden=true returns both
+    {
+        QJsonObject q;
+        q[QStringLiteral("type")]          = QStringLiteral("QPushButton");
+        q[QStringLiteral("ancestor_id")]   = 1.0;
+        q[QStringLiteral("include_hidden")] = true;
+        auto results = fx.find(q);
+        CHECK_SZ(results, 2, "include_hidden=true restores hidden button");
+    }
+
     PASS();
 }
 
@@ -396,8 +445,12 @@ static void test_combo_popup_no_duplicates()
     for (QWidget* w : QApplication::topLevelWidgets())
         addTree(w);
 
+    // include_hidden: this test is about duplicate traversal, not
+    // visibility — the popup animates in, so its view may not be
+    // visible yet when the query runs.
     QJsonObject query;
     query[QStringLiteral("type_inherits")] = QStringLiteral("QAbstractItemView");
+    query[QStringLiteral("include_hidden")] = true;
     const QVector<SelectorResult> results =
         ElementSelector::find(query, map);
 
@@ -971,6 +1024,7 @@ int main(int argc, char* argv[])
     test_find_with_limit();
     test_find_and_combination();
     test_find_empty_query();
+    test_find_hidden_excluded_by_default();
     test_find_no_matches();
     test_find_type_inherits_all_widgets();
     test_combo_popup_no_duplicates();

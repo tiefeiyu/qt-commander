@@ -347,6 +347,16 @@ bool ElementSelector::matchesQuery(
 {
     if (!obj) return false;
 
+    // ---- visibility: hidden elements are excluded unless the query asks
+    // for them explicitly.  Matches the snapshot's include_hidden contract:
+    // callers interact with what they can see, so find results should not
+    // contain invisible elements (whose ids are unusable for clicks, etc.).
+    if (!query.value(QStringLiteral("include_hidden")).toBool(false)) {
+        if (!UiScanner::isEffectivelyVisible(obj)) {
+            return false;
+        }
+    }
+
     // ---- type: exact class name match ------------------------------------
     const QJsonValue typeVal = query.value(QStringLiteral("type"));
     if (!typeVal.isUndefined()) {
