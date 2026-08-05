@@ -3,6 +3,15 @@ import json
 import os
 from pathlib import Path
 
+
+def _dumps(obj, **kwargs):
+    """Serialize with UTF-8 text (no \\uXXXX escapes).
+
+    Qt UI text is overwhelmingly UTF-8; escaping every non-ASCII code
+    point makes snapshots and property reads unreadable.
+    """
+    return json.dumps(obj, ensure_ascii=False, **kwargs)
+
 from fastmcp import FastMCP
 
 from .builder import BUILD_DIR, check_build_state, run_build, BuildState
@@ -39,7 +48,7 @@ def _resolve_session(session_id: str):
 async def qt_list_processes() -> str:
     """List running Qt processes that may be attachable."""
     procs = list_qt_processes()
-    return json.dumps({"processes": procs}, indent=2)
+    return _dumps({"processes": procs}, indent=2)
 
 
 @mcp.tool()
@@ -75,7 +84,7 @@ async def qt_attach(pid: int) -> str:
         await sessions.destroy(session.id, purge=True)
         return tool_error(2002, str(e))
 
-    return json.dumps({
+    return _dumps({
         "session_id": session.id,
         "pid": pid,
         "connected": session.connected,
@@ -88,13 +97,13 @@ async def qt_detach(session_id: str, purge: bool = False) -> str:
     ok = await sessions.destroy(session_id, purge=purge)
     if not ok:
         return tool_error(-32602, f"Session not found: {session_id}")
-    return json.dumps({"status": "detached", "session_id": session_id, "purged": purge})
+    return _dumps({"status": "detached", "session_id": session_id, "purged": purge})
 
 
 @mcp.tool()
 async def qt_list_sessions() -> str:
     """List all active sessions."""
-    return json.dumps({"sessions": sessions.list_sessions()}, indent=2)
+    return _dumps({"sessions": sessions.list_sessions()}, indent=2)
 
 
 # ============================================================================
@@ -126,7 +135,7 @@ async def qt_detect_msvc_and_qt() -> str:
     vs_list = detect_vs_environments()
     mingw_list = detect_mingw_toolchains()
     qt_list = detect_qt_environments()
-    return json.dumps({
+    return _dumps({
         "vs_installations": vs_list,
         "mingw_toolchains": mingw_list,
         "qt_installations": qt_list,
@@ -175,7 +184,7 @@ async def qt_build(
         with_qml=with_qml,
         toolchain=toolchain,
     )
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 # ============================================================================
@@ -214,9 +223,9 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
 
     filename = f"snapshot_{session.snapshot_count:08d}.json"
     snap_path = session.session_dir / "snapshots" / filename
-    snap_path.write_text(json.dumps(result, indent=2))
+    snap_path.write_text(_dumps(result, indent=2))
 
-    return json.dumps({
+    return _dumps({
         "session_id": session_id,
         "snapshot_id": session.snapshot_count,
         "uri": f"qt-commander://sessions/{session_id}/snapshots/{filename}",
@@ -236,7 +245,7 @@ async def qt_find_element(session_id: str, query: dict) -> str:
     """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.findElement", {"query": query})
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -246,7 +255,7 @@ async def qt_get_property(session_id: str, element_id: int, name: str) -> str:
     result = await session.send_rpc("qt.getProperty", {
         "element_id": element_id, "name": name,
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -260,7 +269,7 @@ async def qt_set_property(session_id: str, element_id: int, name: str, value: st
     result = await session.send_rpc("qt.setProperty", {
         "element_id": element_id, "name": name, "value": parsed_value,
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -270,7 +279,7 @@ async def qt_call_method(session_id: str, element_id: int, method: str, args: li
     result = await session.send_rpc("qt.callMethod", {
         "element_id": element_id, "method": method, "args": args or [],
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -299,7 +308,7 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
         try:
             png_bytes = src.read_bytes()
         except OSError as exc:
-            return json.dumps({"error": f"failed to read screenshot file {src}: {exc}"})
+            return _dumps({"error": f"failed to read screenshot file {src}: {exc}"})
         ss_path.write_bytes(png_bytes)
         # The library names its file {seq:06d}_{uuid}.png; drop it to keep
         # the session dir tidy (we keep the canonical name above).
@@ -309,9 +318,9 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
             pass
     else:
         # Keep the failure payload readable through the resource endpoint.
-        ss_path.write_text(json.dumps(result))
+        ss_path.write_text(_dumps(result))
 
-    return json.dumps({
+    return _dumps({
         "session_id": session_id,
         "uri": f"qt-commander://sessions/{session_id}/screenshots/{filename}",
     })
@@ -323,12 +332,18 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
 
 @mcp.tool()
 async def qt_mouse_click(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None) -> str:
-    """Send a mouse click to a UI element."""
+    """Send a mouse click to a UI element (direct delivery).
+
+    Prefer the real-pipeline variants when this does not land on a custom
+    QML component: qt_mouse_click_region (element center) or
+    qt_mouse_click_at (exact coordinates) route through the Qt input
+    pipeline with real hit testing and are far more reliable against
+    QML custom controls (buttons, nav rows, list items)."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.click", {
         "element_id": element_id, "button": button, "modifiers": modifiers or [],
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -346,7 +361,7 @@ async def qt_mouse_click_at(session_id: str, x: float, y: float, button: str = "
         "x": x, "y": y, "button": button,
         "modifiers": modifiers or [], "window_id": window_id,
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -362,7 +377,7 @@ async def qt_mouse_click_region(session_id: str, element_id: int, button: str = 
     result = await session.send_rpc("qt.clickRegion", {
         "element_id": element_id, "button": button, "modifiers": modifiers or [],
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -381,7 +396,7 @@ async def qt_mouse_press(session_id: str, element_id: int, button: str = "left",
         params["x"] = float(x)
         params["y"] = float(y)
     result = await session.send_rpc("qt.mousePress", params)
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -400,7 +415,7 @@ async def qt_mouse_release(session_id: str, element_id: int, button: str = "left
         params["x"] = float(x)
         params["y"] = float(y)
     result = await session.send_rpc("qt.mouseRelease", params)
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -413,7 +428,7 @@ async def qt_mouse_move(session_id: str, element_id: int, x: float, y: float) ->
     result = await session.send_rpc("qt.mouseMove", {
         "element_id": element_id, "x": float(x), "y": float(y),
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -423,7 +438,7 @@ async def qt_keyboard_input(session_id: str, element_id: int, text: str, modifie
     result = await session.send_rpc("qt.typeText", {
         "element_id": element_id, "text": text, "modifiers": modifiers or [],
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -438,7 +453,7 @@ async def qt_key_combo(session_id: str, element_id: int, keys: str) -> str:
     result = await session.send_rpc("qt.keyCombo", {
         "element_id": element_id, "keys": keys,
     })
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -446,7 +461,7 @@ async def qt_focus(session_id: str, element_id: int) -> str:
     """Set focus on a UI element."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.focus", {"element_id": element_id})
-    return json.dumps(result, indent=2)
+    return _dumps(result, indent=2)
 
 
 # ============================================================================
@@ -457,13 +472,13 @@ async def qt_focus(session_id: str, element_id: int) -> str:
 async def read_snapshot_resource(session_id: str, filename: str) -> str:
     """Read a snapshot resource."""
     if ".." in filename or "/" in filename or "\\" in filename:
-        return json.dumps({"error": "invalid filename"})
+        return _dumps({"error": "invalid filename"})
     sess = _resolve_session(session_id)
     path = (sess.session_dir / "snapshots" / filename).resolve()
     if not str(path).startswith(str(sess.session_dir.resolve())):
-        return json.dumps({"error": "path traversal detected"})
+        return _dumps({"error": "path traversal detected"})
     if not path.exists():
-        return json.dumps({"error": "resource not found"})
+        return _dumps({"error": "resource not found"})
     return path.read_text(encoding="utf-8")
 
 
