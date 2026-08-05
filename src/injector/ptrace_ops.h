@@ -40,9 +40,10 @@ bool remote_syscall(int pid, long nr,
                     uintptr_t& out);
 
 // ---- remote function call --------------------------------------------------
-// Call fn(arg) in the target via register-hijack + int3 return trap.
+// Call fn(arg1, arg2) in the target via register-hijack + int3 return trap.
+// arg1→RDI, arg2→RSI (x86-64 ABI).  Pass 0 for unused arg2.
 // scratch_page: writable+executable page in target (allocated via remote mmap).
-bool remote_call(int pid, uintptr_t fn, uintptr_t arg,
+bool remote_call(int pid, uintptr_t fn, uintptr_t arg1, uintptr_t arg2,
                  uintptr_t scratch_page, uintptr_t& retval);
 
 // ---- control ---------------------------------------------------------------

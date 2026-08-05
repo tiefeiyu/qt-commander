@@ -587,6 +587,7 @@ bool remote_syscall(int pid, long nr,
     afterRegs.r10 = prev_r10;
     afterRegs.r8  = prev_r8;
     afterRegs.r9  = prev_r9;
+    // Preserve fs_base from afterRegs (it should match savedRegs.fs_base)
     set_regs(pid, &afterRegs, sizeof(afterRegs));
 
     return true;
@@ -594,13 +595,13 @@ bool remote_syscall(int pid, long nr,
 
 // ---- remote function call --------------------------------------------------
 
-bool remote_call(int pid, uintptr_t fn, uintptr_t arg,
+bool remote_call(int pid, uintptr_t fn, uintptr_t arg1, uintptr_t arg2,
                  uintptr_t scratch_page, uintptr_t& retval) {
     // The scratch page is pre-populated with an `int3` at offset 0.
     // Strategy:
-    //   1. Save current RIP / RSP / RDI / RAX
+    //   1. Save current registers (RIP / RSP / RDI / RSI / RAX / caller-saved)
     //   2. Push a "return address" = scratch_page (contains int3)
-    //   3. Set RDI = arg
+    //   3. Set RDI = arg1, RSI = arg2  (x86-64 ABI first two integer args)
     //   4. Set RIP = fn
     //   5. PTRACE_CONT
     //   6. waitpid for SIGTRAP
@@ -610,34 +611,33 @@ bool remote_call(int pid, uintptr_t fn, uintptr_t arg,
     uintptr_t saved_rip = peek_reg(pid, REG_RIP);
     uintptr_t saved_rsp = peek_reg(pid, REG_RSP);
     uintptr_t saved_rdi = peek_reg(pid, REG_RDI);
+    uintptr_t saved_rsi = peek_reg(pid, REG_RSI);
     uintptr_t saved_rax = peek_reg(pid, REG_RAX);
     uintptr_t saved_rbx = peek_reg(pid, REG_RBX);
     uintptr_t saved_rcx = peek_reg(pid, REG_RCX);
     uintptr_t saved_rdx = peek_reg(pid, REG_RDX);
-    uintptr_t saved_rsi = peek_reg(pid, REG_RSI);
 
-    // On x86-64, we need 16-byte stack alignment at the call site.
-    // The call instruction pushes 8 bytes (return address), so we need
-    // RSP % 16 == 8 before the call.  We adjust RSP down if needed.
-    uintptr_t new_rsp = saved_rsp;
-    // Make space for a return address slot.
-    new_rsp -= 8;
-    // Ensure alignment: after the implicit push, the callee sees
-    // new_rsp % 16 == 0.  Before the push, RSP should be 16-aligned.
-    if (new_rsp & 0xF) {
-        new_rsp -= 8; // align to 16
-    }
+    // Use a safe stack inside the scratch page instead of the target's
+    // original RSP (which may point to non-writable or guard memory).
+    // The scratch page is 0x1000 bytes; we place the stack near the top.
+    //
+    // x86-64 ABI: at function entry, RSP % 16 == 8 (because CALL pushed
+    // an 8-byte return address).  We simulate this:
+    //   [new_rsp] = scratch_page (int3 return trap)
+    //   RSP = new_rsp, where new_rsp % 16 == 8
+    uintptr_t new_rsp = scratch_page + 0xFF0;  // near top of scratch page
+    new_rsp &= ~0xF;                            // 16-byte align → 0xFF0
+    new_rsp -= 8;                               // RSP % 16 == 8 (ABI entry state)
 
-    // We don't actually push anything — we set RIP=fn, and fn will RET
-    // to wherever [RSP] points.  So we write the scratch_page address
-    // (which contains int3) at new_rsp.
+    // Write the return address (scratch page has int3 at offset 0).
     if (!write_word(pid, new_rsp, scratch_page)) {
         set_error("remote_call: write_word(return_addr) failed");
         return false;
     }
 
-    // Set up registers for the call.
-    if (!poke_reg(pid, REG_RDI, arg)) return false;
+    // Set up registers for the call (x86-64 ABI: RDI=arg1, RSI=arg2).
+    if (!poke_reg(pid, REG_RDI, arg1)) return false;
+    if (!poke_reg(pid, REG_RSI, arg2)) return false;
     if (!poke_reg(pid, REG_RSP, new_rsp)) return false;
     if (!poke_reg(pid, REG_RIP, fn)) return false;
 
@@ -680,15 +680,14 @@ bool remote_call(int pid, uintptr_t fn, uintptr_t arg,
     poke_reg(pid, REG_RIP, saved_rip);
     poke_reg(pid, REG_RSP, saved_rsp);
     poke_reg(pid, REG_RDI, saved_rdi);
+    poke_reg(pid, REG_RSI, saved_rsi);
     poke_reg(pid, REG_RAX, saved_rax);
     poke_reg(pid, REG_RBX, saved_rbx);
     poke_reg(pid, REG_RCX, saved_rcx);
     poke_reg(pid, REG_RDX, saved_rdx);
-    poke_reg(pid, REG_RSI, saved_rsi);
 
     return true;
 }
-
 // ---- control ---------------------------------------------------------------
 
 bool single_step(int pid) {
@@ -771,15 +770,22 @@ bool read_maps(int pid, std::vector<MapEntry>& out) {
 uintptr_t find_library_base(int pid, const std::string& soname) {
     std::vector<MapEntry> maps;
     if (!read_maps(pid, maps)) return 0;
+    // The base load address is the lowest start address of any mapping
+    // for a given library.  The first mapping (typically r--p for modern
+    // glibc) is the ELF load base, and ELF symbol st_value offsets are
+    // relative to that base — not to the executable segment start.
+    uintptr_t base = 0;
     for (const auto& m : maps) {
-        if (m.perms.find('x') == std::string::npos) continue;
-        // Match by basename.
         auto lastSlash = m.path.rfind('/');
-        std::string base = (lastSlash != std::string::npos)
+        std::string bname = (lastSlash != std::string::npos)
                            ? m.path.substr(lastSlash + 1) : m.path;
-        if (base == soname) return m.start;
+        if (bname == soname) {
+            if (base == 0 || m.start < base) {
+                base = m.start;
+            }
+        }
     }
-    return 0;
+    return base;
 }
 
 // ---- error -----------------------------------------------------------------
@@ -797,8 +803,41 @@ bool can_attach(int pid) {
         int scope = 0;
         f >> scope;
         if (scope >= 2) {
-            set_error("ptrace_scope >= 2: attach requires root or CAP_SYS_PTRACE");
+            set_error("ptrace_scope >= 2: attach requires root or CAP_SYS_PTRACE. "
+                      "Run as root, or set scope to 0: "
+                      "echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope");
             return false;
+        }
+        if (scope == 1) {
+            // ptrace_scope=1: only parent->child or PR_SET_PTRACER is allowed.
+            // Check whether we are the parent of the target process.
+            // /proc/<pid>/stat format: pid (comm) state ppid ...
+            std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+            if (stat.is_open()) {
+                std::string line;
+                if (std::getline(stat, line)) {
+                    // comm field is in parentheses and may contain spaces.
+                    // Find the closing paren, then parse state + ppid.
+                    auto rparen = line.rfind(')');
+                    if (rparen != std::string::npos && rparen + 2 < line.size()) {
+                        std::istringstream rest(line.substr(rparen + 2));
+                        int ppid = 0;
+                        rest >> ppid;
+                        if (ppid != ::getpid()) {
+                            std::string msg = "ptrace_scope=1: only parent->child ptrace "
+                                      "is allowed.  The target (PID " +
+                                      std::to_string(pid) + ") is not a child "
+                                      "of this process.  Run as parent of the "
+                                      "target, or set scope to 0: "
+                                      "echo 0 | sudo tee "
+                                      "/proc/sys/kernel/yama/ptrace_scope";
+                            set_error(msg.c_str());
+                            return false;
+                        }
+                    }
+                }
+            }
+            // If we cannot read /proc/<pid>/stat, let PTRACE_ATTACH decide.
         }
     }
     // Check if we can access /proc/<pid>/mem (same user check).

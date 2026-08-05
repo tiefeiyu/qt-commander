@@ -249,7 +249,7 @@ bool PosixProcessOps::create_remote_thread(void* handle,
 
     uintptr_t retval = 0;
     if (!ptrace_ops::remote_call(pid, reinterpret_cast<uintptr_t>(start_addr),
-                                  reinterpret_cast<uintptr_t>(arg),
+                                  reinterpret_cast<uintptr_t>(arg), 0,
                                   scratch, retval)) {
         // Free scratch page.
         ptrace_ops::remote_syscall(pid, 11, scratch, 0x1000,
