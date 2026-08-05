@@ -223,7 +223,9 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
 
     filename = f"snapshot_{session.snapshot_count:08d}.json"
     snap_path = session.session_dir / "snapshots" / filename
-    snap_path.write_text(_dumps(result, indent=2))
+    # _dumps() emits UTF-8 text; write_text defaults to the locale encoding
+    # (e.g. cp936 on a Chinese Windows), which would corrupt the file.
+    snap_path.write_text(_dumps(result, indent=2), encoding="utf-8")
 
     return _dumps({
         "session_id": session_id,
@@ -318,7 +320,7 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
             pass
     else:
         # Keep the failure payload readable through the resource endpoint.
-        ss_path.write_text(_dumps(result))
+        ss_path.write_text(_dumps(result), encoding="utf-8")
 
     return _dumps({
         "session_id": session_id,
