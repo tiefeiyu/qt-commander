@@ -56,8 +56,22 @@ async def qt_list_processes() -> str:
 async def qt_attach(pid: int) -> str:
     """Inject the helper library into a running Qt process and open a session.
 
-    If the build has not been completed, follows the full workflow:
-    qt_detect_msvc_and_qt → AskUserQuestion → qt_build → qt_attach.
+    Find the target pid with qt_list_processes first (only Qt processes are
+    listed, each with its qt_version/arch/bitness).  The build artifacts in
+    .qt-commander/bin must match the target process: same Qt major
+    (qt_major used in qt_build), same toolchain (msvc/mingw), same
+    Debug/Release build type, same 64/32-bit — a mismatch makes injection
+    fail with code 2002.  A process that is already attached fails with
+    2006; detach first.
+
+    If the build has not been completed, this returns error code 2001 with
+    the steps to follow (qt_detect_msvc_and_qt → AskUserQuestion →
+    qt_build → qt_attach again); it does not build automatically.
+
+    Injection modifies the target process (loads a DLL, starts a local
+    RPC thread/listener).  If the target process exits, the session goes
+    dead: operations then fail with connection/timeout errors — check
+    qt_list_sessions and re-attach.
     """
     if check_build_state() != BuildState.BUILT:
         return tool_error(2001, (
@@ -94,7 +108,14 @@ async def qt_attach(pid: int) -> str:
 
 @mcp.tool()
 async def qt_detach(session_id: str, purge: bool = False) -> str:
-    """Disconnect from a Qt process session. Optionally purge artifacts."""
+    """Disconnect from a Qt process session.
+
+    ``purge=True`` (default False) also **ejects the injected DLL from the
+    target process** and **deletes the session's saved files** (snapshots,
+    screenshots, session metadata) — irreversible.  Use purge=True before
+    rebuilding the library: otherwise the DLL file stays locked by the
+    target process and qt_build fails.  With purge=False the DLL stays
+    loaded in the target until that process exits."""
     ok = await sessions.destroy(session_id, purge=purge)
     if not ok:
         return tool_error(-32602, f"Session not found: {session_id}")
@@ -174,6 +195,15 @@ async def qt_build(
     The AI MUST also ask the user to choose the ``build_type`` (Debug or
     Release).  The build type must match the target process — a Debug
     process requires a Debug build, a Release process requires Release.
+
+    ``qt_major`` (default 5) must match the target application's Qt major
+    version — read it from qt_list_processes' ``qt_version`` field or from
+    the qt_detect_msvc_and_qt result; a Qt6 target built with qt_major=5
+    fails to inject.  ``vcvars_args`` — extra args for the VS vcvars batch
+    (e.g. "-arch x64").  ``generator`` — CMake generator override; omit to
+    auto-select.  Before rebuilding, detach any session that still holds
+    the old DLL (qt_detach with purge=True) or the build fails on a locked
+    file.
     """
     result = await run_build(
         vcvars_path=vcvars_path,
@@ -197,20 +227,37 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
                        detail: str = "extended",
                        root_id: int = 0, max_depth: int = 1,
                        prop_depth: int = 1) -> str:
-    """Take a full snapshot of the UI widget tree for the session.
+    """Capture the UI element tree of the session's windows.
 
-    ``root_id`` — 0 to start from all top-level windows; >0 to start from a
-    specific element from a previous snapshot.
-    ``max_depth`` — how many levels of child elements to include.
-    0 = root element(s) only, 1 = root + direct children, etc.
-    Use -1 for unlimited depth (entire tree).
-    ``prop_depth`` — how many levels of QObject property values to expand.
-    0 = no properties, 1 = direct properties only, etc.
-    Use -1 for unlimited depth.
-    ``detail`` — property tier on each node: "core" (default; first-class
-    fields only — geometry, visibility, text, window info — no properties),
-    "extended" (plus common interaction-state properties like text/checked/
-    value), or "full" (every Q_PROPERTY; slow on large UIs).
+    The tree is NOT in this result — it is written to the file exposed at
+    the returned ``uri`` (resource `qt-commander://sessions/.../snapshots/
+    snapshot_N.json`); read that resource to inspect the tree.  The result
+    carries only session_id / snapshot_id / uri.  Node fields: className,
+    objID, objectName, rect (window-local logical px), global_rect (screen
+    coords), z_order, visible/enabled/opacity/color_alpha/clip, text,
+    topLevelId, windowTitle, properties (per ``detail``).
+
+    ``detail`` — property tier per node: "core" (first-class fields only,
+    no properties), "extended" (DEFAULT; common interaction-state
+    properties like text/checked/value), "full" (every Q_PROPERTY; slow on
+    large UIs).
+    ``include_hidden`` (default False) — hidden elements are pruned
+    together with their whole subtree (hidden tabs, unopened dialogs).
+    Set True to include them; note hidden elements are still rejected by
+    click/input/property tools.
+    ``max_depth`` — levels of children: 0 = roots only, 1 = roots +
+    direct children, -1 = entire tree (default 1).
+    ``prop_depth`` — levels of QObject property expansion (0 = none,
+    -1 = unlimited).
+    ``root_id`` — 0 = all top-level windows; >0 = subtree of an element
+    from the MOST RECENT snapshot/find.  Ids expire on every refresh: if
+    root_id no longer resolves, the tool silently falls back to all
+    top-level windows — pass it only when you know it is fresh.
+
+    ID LIFECYCLE: this call rebuilds the element map, so every element_id
+    and window_id from previous snapshots/finds becomes invalid.  The
+    snapshot runs on the target process's GUI thread (brief UI freeze);
+    if the target is busy, calls can time out after ~30s.
     """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.snapshot", {
@@ -239,12 +286,21 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
 async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
     """Occlusion-prune a saved snapshot.
 
-    Reads the saved snapshot JSON and computes which elements are
-    actually visible on screen: elements fully covered by higher-z
-    opaque elements are removed (their still-visible descendants are
-    reparented up), partially covered ones get a ``visible_ratio``
-    field.  Writes a new file ``snapshot_<id>_pruned.json`` next to the
-    original.
+    ``snapshot_id`` is the value returned by the last qt_snapshot call of
+    this session.  When to use: after a snapshot, when elements overlap
+    inside the same window and you need to know which one is really on
+    top / how much of a target is visible — e.g. before deciding which
+    element to click or whether a covered element matters.
+
+    Reads the saved snapshot JSON and computes what is actually visible:
+    elements fully covered by higher-z opaque elements are removed (their
+    still-visible descendants are reparented up), partially covered ones
+    get a ``visible_ratio`` field, fully hidden (opacity 0) elements are
+    dropped.  Writes ``snapshot_<id>_pruned.json`` next to the original —
+    read the tree at the returned ``uri`` (same objIDs as the source
+    snapshot plus ``visible_ratio`` annotations).  Result field
+    ``pruned`` = {"removed", "kept", "removed_ratio"}; window roots are
+    never removed.
 
     The solver is a geometric heuristic (axis-aligned rects, per-window
     z-order with same-z tree order; widgets and QML rectangles/images
@@ -252,7 +308,9 @@ async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
     custom QML components do not; a parent never occludes its own
     children).  Occlusion is per top-level window on purpose: the agent
     must stay able to operate an app that the user has covered or
-    minimised, so windows never occlude each other.
+    minimised, so windows never occlude each other.  The objIDs in the
+    pruned file expire with the next snapshot/find refresh like any other
+    id.
     """
     session = _resolve_session(session_id)
     src = session.session_dir / "snapshots" / f"snapshot_{snapshot_id:08d}.json"
@@ -275,12 +333,32 @@ async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
 async def qt_find_element(session_id: str, query: dict) -> str:
     """Find UI elements matching a query in a session.
 
-    Supported query fields: type, type_inherits, text, text_contains,
-    object_name, window_title, window_title_contains, properties,
-    ancestor_id, window_id.  Set ``include_hidden`` (bool) to also match
-    hidden elements — by default only visible elements are returned, so
-    the ids are usable for clicks/input.  The element map is refreshed
-    (like a snapshot) before matching, so returned ids are always usable.
+    Query fields (all AND-ed): ``type`` (exact C++ class name),
+    ``type_inherits`` (superclass chain — C++ classes only; custom QML
+    components are generated classes like ``X_QMLTYPE_8`` and do NOT match
+    a QML type name), ``text`` / ``text_contains`` (display text, CJK
+    supported), ``object_name``, ``window_title`` /
+    ``window_title_contains``, ``properties`` (all key-value pairs must
+    match), ``ancestor_id`` / ``window_id`` (scope limits), ``depth``
+    ("exact" = direct children, "shallow" = 2 levels, integer = that many,
+    "deep"/omitted = whole tree), ``limit`` (max matches).  ``include_hidden``
+    is a field INSIDE the query dict (default false) — hidden elements
+    are only matched when it is true.
+
+    Example: {"text_contains": "OK", "type_inherits": "QPushButton",
+    "depth": "shallow"} or {"object_name": "searchBox", "limit": 5}.
+
+    Result: {"ok": true, "count": N, "elements": [{id, className,
+    objectName, ...}]}; when nothing matches: {"ok": false, "message":
+    "No matching element found"} — adjust the query or set
+    include_hidden: true.  No prior snapshot is needed; this call rebuilds
+    the element map itself.
+
+    ID LIFECYCLE: the rebuild invalidates EVERY element_id/window_id from
+    previous snapshots/finds.  Use the returned ids immediately — if an
+    operation reports "Element not found: id=N", the id is stale or the
+    element was destroyed: re-run qt_find_element (or a snapshot) and
+    retry with the fresh id; never reuse old ids.
     """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.findElement", {"query": query})
@@ -289,7 +367,12 @@ async def qt_find_element(session_id: str, query: dict) -> str:
 
 @mcp.tool()
 async def qt_get_property(session_id: str, element_id: int, name: str) -> str:
-    """Read a property from a UI element."""
+    """Read a property from a UI element.
+
+    Read-only, no side effects on the target.  Note: hidden, disabled and
+    zero-size elements are rejected even for reads ("Element is not
+    visible") — pass an id from a recent find/snapshot of a visible
+    element."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.getProperty", {
         "element_id": element_id, "name": name,
@@ -299,7 +382,17 @@ async def qt_get_property(session_id: str, element_id: int, name: str) -> str:
 
 @mcp.tool()
 async def qt_set_property(session_id: str, element_id: int, name: str, value: str) -> str:
-    """Write a property value on a UI element."""
+    """Write a property value on a UI element.
+
+    DESTRUCTIVE: directly modifies the target application's state (may
+    trigger property-notify signals, change geometry/visibility/business
+    state) with no undo.  Prefer real user input (clicks/typing) to
+    simulate user actions; use this only when a direct API write is
+    intended.
+
+    ``value`` is first parsed as JSON: "true" -> bool, "123" -> int,
+    "\\"hello\\"" -> string.  Unparseable text is sent as a plain string —
+    pass quoted strings explicitly when a string is intended."""
     session = _resolve_session(session_id)
     try:
         parsed_value = json.loads(value)
@@ -313,7 +406,14 @@ async def qt_set_property(session_id: str, element_id: int, name: str, value: st
 
 @mcp.tool()
 async def qt_call_method(session_id: str, element_id: int, method: str, args: list | None = None) -> str:
-    """Invoke a QMetaObject-invokable method on a UI element."""
+    """Invoke a QMetaObject-invokable method on a UI element.
+
+    DESTRUCTIVE: directly changes the target application's state with no
+    undo.  Methods like ``close()``, ``deleteLater()`` (destroys the
+    element and invalidates its id) or any app slot execute for real.
+    Prefer simulating user input (clicks/keys); call methods only when a
+    direct API invocation is intended.  Argument types are coerced
+    silently (up to 10 args)."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.callMethod", {
         "element_id": element_id, "method": method, "args": args or [],
@@ -323,7 +423,13 @@ async def qt_call_method(session_id: str, element_id: int, method: str, args: li
 
 @mcp.tool()
 async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
-    """Capture a screenshot of a UI element or the entire window."""
+    """Capture a screenshot of a UI element or the entire window.
+
+    ``element_id`` 0 captures the active (or first visible) top-level
+    window.  The PNG is written to the file at the returned ``uri`` —
+    read that resource (qt-commander://sessions/.../screenshots/N.png) to
+    obtain the image bytes.  On failure the result reports the error and
+    no image is written."""
     session = _resolve_session(session_id)
     ss_dir = session.session_dir / "screenshots"
     ss_dir.mkdir(parents=True, exist_ok=True)
@@ -355,9 +461,10 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
             src.unlink()
         except OSError:
             pass
-    else:
-        # Keep the failure payload readable through the resource endpoint.
-        ss_path.write_text(_dumps(result), encoding="utf-8")
+    if not result.get("ok"):
+        # Report the failure instead of writing error text into a .png.
+        return _dumps({"error": "screenshot failed", "detail": result},
+                      indent=2)
 
     return _dumps({
         "session_id": session_id,
@@ -373,11 +480,15 @@ async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
 async def qt_mouse_click(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None) -> str:
     """Send a mouse click to a UI element (direct delivery).
 
-    Prefer the real-pipeline variants when this does not land on a custom
-    QML component: qt_mouse_click_region (element center) or
-    qt_mouse_click_at (exact coordinates) route through the Qt input
-    pipeline with real hit testing and are far more reliable against
-    QML custom controls (buttons, nav rows, list items)."""
+    For plain QtWidgets (QPushButton, QLineEdit, ...) direct delivery
+    works and is the cheapest option.  Use qt_mouse_click_region (element
+    center) or qt_mouse_click_at (exact coordinates) for QML custom
+    components (buttons, nav rows, list items) — those route through the
+    real Qt input pipeline with real hit testing and are far more
+    reliable.  ``button``: "left"/"right"/"middle" (anything else falls
+    back to left); ``modifiers``: list of "Ctrl"/"Alt"/"Shift"/"Meta".
+    A result with ok:false means the element was rejected (hidden/
+    disabled/zero-size/stale id) — re-find and retry."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.click", {
         "element_id": element_id, "button": button, "modifiers": modifiers or [],
@@ -386,15 +497,36 @@ async def qt_mouse_click(session_id: str, element_id: int, button: str = "left",
 
 
 @mcp.tool()
+async def qt_mouse_dbl_click(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None, x: float | None = None, y: float | None = None) -> str:
+    """Send a double-click to a UI element (direct delivery).
+
+    x/y are optional logical-pixel coordinates relative to the element's
+    top-left corner; either both or neither (omitted = element center)."""
+    session = _resolve_session(session_id)
+    params = {
+        "element_id": element_id, "button": button,
+        "modifiers": modifiers or [],
+    }
+    if x is not None and y is not None:
+        params["x"] = float(x)
+        params["y"] = float(y)
+    result = await session.send_rpc("qt.dblClick", params)
+    return _dumps(result, indent=2)
+
+
+@mcp.tool()
 async def qt_mouse_click_at(session_id: str, x: float, y: float, button: str = "left", modifiers: list[str] | None = None, window_id: int = 0) -> str:
     """Click at an exact window coordinate, exactly like a real mouse click at that position.
 
     x/y are relative to the target window's client area (same space as
-    screenshots). The click goes through the real Qt input pipeline, so the
-    hit test (scene graph for QML, widget tree for QtWidgets) determines
-    what receives it -- identical behavior to a human clicking there.
-    window_id: element id of a top-level window from a snapshot; 0 uses the
-    session's first visible top-level window."""
+    screenshots, logical pixels — DPI is handled internally). The click
+    goes through the real Qt input pipeline, so the hit test (scene graph
+    for QML, widget tree for QtWidgets) determines what receives it —
+    identical behavior to a human clicking there, including real
+    consequences (menus, close buttons, destructive actions).  window_id:
+    id of a top-level window from the MOST RECENT snapshot/find (ids
+    expire on refresh); 0 uses the session's first visible top-level
+    window — pass it explicitly when the session has multiple windows."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.clickAt", {
         "x": x, "y": y, "button": button,
@@ -424,8 +556,11 @@ async def qt_mouse_press(session_id: str, element_id: int, button: str = "left",
     """Press a mouse button on an element WITHOUT releasing it.
 
     Pair with qt_mouse_release to split a click, or qt_mouse_move for a
-    drag (press -> move -> release).  x/y are optional element-local
-    coordinates (element center when omitted)."""
+    drag (press -> move -> release).  x/y are optional logical-pixel
+    coordinates relative to the element's top-left corner; either both or
+    neither (omitted = element center).  IMPORTANT: after a press you must
+    release in the same session, or the target app stays in a pressed/
+    dragging state."""
     session = _resolve_session(session_id)
     params = {
         "element_id": element_id, "button": button,
@@ -443,8 +578,9 @@ async def qt_mouse_release(session_id: str, element_id: int, button: str = "left
     """Release a previously pressed mouse button on an element.
 
     Completes a press/release pair (a click) or finishes a drag started
-    with qt_mouse_press + qt_mouse_move.  x/y are optional element-local
-    coordinates (element center when omitted)."""
+    with qt_mouse_press + qt_mouse_move.  x/y are optional logical-pixel
+    coordinates relative to the element's top-left corner; either both or
+    neither (omitted = element center)."""
     session = _resolve_session(session_id)
     params = {
         "element_id": element_id, "button": button,
@@ -454,6 +590,27 @@ async def qt_mouse_release(session_id: str, element_id: int, button: str = "left
         params["x"] = float(x)
         params["y"] = float(y)
     result = await session.send_rpc("qt.mouseRelease", params)
+    return _dumps(result, indent=2)
+
+
+@mcp.tool()
+async def qt_mouse_wheel(session_id: str, element_id: int, dx: float = 0.0, dy: float = 0.0, x: float | None = None, y: float | None = None, pixel: bool = False) -> str:
+    """Scroll the mouse wheel over an element.
+
+    dx/dy are the wheel deltas in either pixel (``pixel=True``) or line
+    (default) units.  x/y optionally position the wheel inside the
+    element (element-local logical px, both or neither — omitted = center).
+    Use this to scroll lists, tables, canvases and other scrollable
+    content."""
+    session = _resolve_session(session_id)
+    params = {
+        "element_id": element_id, "dx": dx, "dy": dy,
+        "pixel": pixel,
+    }
+    if x is not None and y is not None:
+        params["x"] = float(x)
+        params["y"] = float(y)
+    result = await session.send_rpc("qt.wheel", params)
     return _dumps(result, indent=2)
 
 
@@ -471,8 +628,31 @@ async def qt_mouse_move(session_id: str, element_id: int, x: float, y: float) ->
 
 
 @mcp.tool()
+async def qt_mouse_context_menu(session_id: str, element_id: int, x: float | None = None, y: float | None = None) -> str:
+    """Open the context menu at an element (right-click menu).
+
+    x/y are optional logical-pixel coordinates relative to the element's
+    top-left corner; either both or neither (omitted = element center)."""
+    session = _resolve_session(session_id)
+    params = {"element_id": element_id}
+    if x is not None and y is not None:
+        params["x"] = float(x)
+        params["y"] = float(y)
+    result = await session.send_rpc("qt.contextMenu", params)
+    return _dumps(result, indent=2)
+
+
+@mcp.tool()
 async def qt_keyboard_input(session_id: str, element_id: int, text: str, modifiers: list[str] | None = None) -> str:
-    """Send keyboard input to a UI element."""
+    """Send keyboard input (typed text) to a UI element.
+
+    Real input: the text lands in whatever the target would receive — it
+    can overwrite existing text and trigger real app behaviour.  If
+    element_id is 0 or does not resolve, the input goes to the widget
+    that currently has focus (be careful: a stale id silently redirects
+    the text).  Widgets that rely on focus (QLineEdit etc.) may ignore
+    input to an unfocused element — call qt_focus first when text does
+    not land.  Use qt_key_combo for shortcuts like Enter or Ctrl+C."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.typeText", {
         "element_id": element_id, "text": text, "modifiers": modifiers or [],
@@ -487,7 +667,8 @@ async def qt_key_combo(session_id: str, element_id: int, keys: str) -> str:
     Format: modifier names ("Ctrl", "Alt", "Shift", "Meta") joined with '+'
     followed by the key name ("C", "F5", "Enter", "Tab", "Escape", "Home",
     arrows, ...).  element_id 0 targets the widget that currently has focus.
-    Delivered as a real key press/release pair with the modifier state set."""
+    Delivered as a real key press/release pair with the modifier state set —
+    shortcuts can trigger real app actions (close window, save, submit)."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.keyCombo", {
         "element_id": element_id, "keys": keys,
@@ -497,7 +678,11 @@ async def qt_key_combo(session_id: str, element_id: int, keys: str) -> str:
 
 @mcp.tool()
 async def qt_focus(session_id: str, element_id: int) -> str:
-    """Set focus on a UI element."""
+    """Set focus on a UI element.
+
+    Best effort: QWidget focus works directly; some QML items may need an
+    explicit focus request from within the app and report ok without
+    changing focus."""
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.focus", {"element_id": element_id})
     return _dumps(result, indent=2)
@@ -540,9 +725,5 @@ async def read_screenshot_resource(session_id: str, filename: str) -> bytes:
 # ============================================================================
 
 def main():
-    """Entry point — run with: uv run python -m qt_commander.
-
-    Session recovery (sessions.recover_on_startup) is invoked automatically
-    on first tool call via a lazy-init pattern, or can be triggered manually.
-    """
+    """Entry point — run with: uv run python -m qt_commander."""
     mcp.run()

@@ -557,13 +557,12 @@ class TestScreenshotFailurePath:
 
         assert captured["dir"] == str(shot_dir)
         assert captured["seq"] == 1
-        assert "uri" in data
-        # The failure payload is written so the resource endpoint can serve it.
-        error_file = shot_dir / "screenshot_00000001.png"
-        assert error_file.exists()
-        assert json.loads(error_file.read_text()) == {
-            "ok": False, "error": "element not visible"
-        }
+        assert "uri" not in data
+        # Failure is reported in the result; no .png is written (writing
+        # error text into an image file would confuse the agent).
+        assert data["error"] == "screenshot failed"
+        assert data["detail"] == {"ok": False, "error": "element not visible"}
+        assert not (shot_dir / "screenshot_00000001.png").exists()
 
     @pytest.mark.asyncio
     async def test_screenshot_missing_png_file(self, sm, workspace, server_sessions):

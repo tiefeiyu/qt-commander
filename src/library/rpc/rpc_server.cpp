@@ -911,6 +911,20 @@ void run_rpc_server(socket_t listen_fd,
                     QObject* rootObj = nullptr;
                     if (rootId > 0) {
                         rootObj = elementMap->get(rootId);
+                        if (!rootObj) {
+                            // A stale root_id (every snapshot/find rebuilds
+                            // the map) must not silently fall back to the
+                            // whole tree -- the agent would plan against
+                            // wrong data.  Report it explicitly instead.
+                            result[QStringLiteral("ok")] = false;
+                            result[QStringLiteral("message")] =
+                                QStringLiteral(
+                                    "Element not found: id=%1 (ids expire on "
+                                    "every snapshot/find refresh; take a new "
+                                    "snapshot to get fresh ids)")
+                                    .arg(rootId);
+                            return;
+                        }
                     }
 
                     QJsonArray nodes;

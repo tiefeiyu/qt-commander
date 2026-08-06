@@ -112,6 +112,18 @@ class SnapshotTruncatedError(QtCommanderError):
         super().__init__(2010, f"snapshot truncated: {reason}")
 
 
+class SessionLostError(QtCommanderError):
+    """The target process died or the RPC connection dropped.
+
+    The session is marked disconnected (qt_list_sessions shows
+    connected:false); re-attach with qt_attach to recover.
+    """
+
+    def __init__(self, detail: str = ""):
+        super().__init__(2011, f"Session lost — target process exited or "
+                              f"connection dropped{': ' + detail if detail else ''}")
+
+
 class SessionNotFoundError(QtCommanderError):
     """Special: maps to JSON-RPC -32602 Invalid Params."""
     def __init__(self, session_id: str):

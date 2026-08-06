@@ -13,6 +13,7 @@ from .errors import (
     AuthFailedError,
     RpcTimeoutError,
     RpcError,
+    SessionLostError,
 )
 from .framing import FrameWriter, FrameReader
 
@@ -92,13 +93,24 @@ class Session:
             })
             assert self._frame_writer is not None
             assert self._frame_reader is not None
-            await self._frame_writer.write_frame(request.encode("utf-8"))
+            try:
+                await self._frame_writer.write_frame(request.encode("utf-8"))
+            except (ConnectionError, OSError, EOFError) as exc:
+                # The target process died between calls: mark the session
+                # dead so qt_list_sessions reports connected:false instead
+                # of a zombie session.
+                self.connected = False
+                raise SessionLostError(str(exc)) from exc
             try:
                 raw = await asyncio.wait_for(
                     self._frame_reader.read_frame(), timeout=30.0)
             except asyncio.TimeoutError:
                 raise RpcTimeoutError(
                     "target process did not respond") from None
+            except (ConnectionError, OSError, EOFError,
+                    asyncio.IncompleteReadError) as exc:
+                self.connected = False
+                raise SessionLostError(str(exc)) from exc
             response = json.loads(raw.decode("utf-8"))
             if "error" in response:
                 err = response["error"]
