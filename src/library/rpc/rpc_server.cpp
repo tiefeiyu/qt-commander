@@ -376,19 +376,34 @@ static QJsonObject collectProperties(QObject* obj, int propDepth,
     if (detail == QStringLiteral("core"))
         return props;
     const QMetaObject* meta = obj->metaObject();
+    if (detail == QStringLiteral("extended")) {
+        // Read the whitelist via QObject::property() instead of walking
+        // the static meta-object: QML components declare their properties
+        // dynamically (QQmlVMEMetaObject) and those never appear in
+        // [propertyOffset, propertyCount), so a static loop would silently
+        // drop e.g. `property string text` on a _QMLTYPE_ component
+        // (snapshot showed "properties": {} next to a real text).
+        static const QByteArray whitelist[] = {
+            "text", "checked", "checkState", "enabled", "visible",
+            "placeholderText", "currentText", "currentIndex", "value",
+            "minimum", "maximum", "singleStep", "readOnly", "echoMode",
+            "pressed", "selected", "expanded", "title", "windowTitle",
+            "toolTip", "accessibleName", "maxLength", "modified",
+        };
+        for (const QByteArray& name : whitelist) {
+            const QVariant v = obj->property(name.constData());
+            if (!v.isValid())
+                continue;  // property does not exist on this object
+            QJsonValue sv = serializeValue(v, propDepth);
+            if (!sv.isUndefined())
+                props[QString::fromLatin1(name)] = sv;
+        }
+        return props;
+    }
+    // "full": every static Q_PROPERTY.  QML dynamic properties have no
+    // public enumeration API; the extended tier covers the common ones.
     for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
         QMetaProperty prop = meta->property(i);
-        if (detail == QStringLiteral("extended")) {
-            static const QSet<QByteArray> whitelist = {
-                "text", "checked", "checkState", "enabled", "visible",
-                "placeholderText", "currentText", "currentIndex", "value",
-                "minimum", "maximum", "singleStep", "readOnly", "echoMode",
-                "pressed", "selected", "expanded", "title", "windowTitle",
-                "toolTip", "accessibleName", "maxLength", "modified",
-            };
-            if (!whitelist.contains(prop.name()))
-                continue;
-        }
         QVariant v = prop.read(obj);
         QJsonValue sv = serializeValue(v, propDepth);
         if (!sv.isUndefined())
