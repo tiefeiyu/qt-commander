@@ -23,6 +23,15 @@ This is a geometric heuristic, not a pixel-exact render:
 - Removed elements are dropped from the tree; their still-visible
   descendants are reparented one level up.
 - Occlusion is computed per top-level window (topLevelId).
+- Transparency: the effective opacity is the product down the ancestor
+  chain (a 50% parent renders the whole subtree at 50%); only a fully
+  opaque element (eff. opacity >= 1 and fill alpha 1 for QML
+  Rectangles) occludes.  opacity=0 elements are pixel-invisible even
+  though isVisible() is true, so they are dropped and never occlude.
+- The window root is never removed (it carries window meta like title
+  and dpr even when a full-size background covers it).
+- Geometry is clipped to the window rect and to `clip: true` ancestors
+  before solving (Flickable/ListView clip by default).
 """
 from __future__ import annotations
 
@@ -197,6 +206,11 @@ _TRANSPARENT_QQUICK = {
 }
 
 
+# Widget classes that paint no background by default (their base QWidget
+# draws nothing, so they must not occlude what is underneath).
+_TRANSPARENT_WIDGETS = {"QLabel", "QToolButton", "QStatusBar"}
+
+
 def is_occluder(className: str) -> bool:
     """Conservative opaqueness test for a snapshot element.
 
@@ -204,17 +218,42 @@ def is_occluder(className: str) -> bool:
     opaque -- most widgets paint a background.  QML elements occlude only
     when they are rectangles or images; every other QML type (custom
     components, containers, text, layouts) is treated as transparent.
+
+    This is the *class-level* test only; the effective opacity (ancestor
+    chain product) and the rectangle fill alpha are applied on top by
+    :func:`occludes`.
     """
     if not className:
         return False
     if "_QMLTYPE_" in className or className.endswith("_QML_"):
         return False  # custom QML component: transparent by default
+    if className in _TRANSPARENT_WIDGETS:
+        return False  # no background painted by default
     if className.startswith("QQuick"):
         return className not in _TRANSPARENT_QQUICK and (
             "Rectangle" in className or "Image" in className)
     if className.startswith("Q"):
         return True  # widget family
     return False
+
+
+def occludes(node: dict, eff_opacity: float) -> bool:
+    """Full opaqueness test: class + effective opacity + fill alpha.
+
+    ``eff_opacity`` is the node's own opacity multiplied down the
+    ancestor chain (a 50% parent makes the whole subtree 50%).  Only an
+    effective opacity of 1.0 and an opaque fill (color_alpha, QML
+    Rectangles only) fully hide what is underneath -- a semi-transparent
+    element lets the content below show through, so it never occludes.
+    """
+    if not is_occluder(node.get("className", "")):
+        return False
+    if eff_opacity < 0.999:
+        return False
+    ca = node.get("color_alpha")
+    if ca is not None and ca < 0.999:
+        return False
+    return True
 
 
 def is_qml_component(className: str) -> bool:
@@ -309,10 +348,19 @@ def prune_snapshot(snapshot: dict) -> dict:
     # children therefore render before the parent (so the parent's rect
     # covers them during the reverse solve) -- handled by their exclude
     # set dropping the direct parent.
-    elements = []  # (topLevelId, objID, rect, node, exclude)
+    elements = []  # (topLevelId, objID, rect, node, exclude, eff_opacity)
     kept_ids: set[int] = set()  # no-geometry elements are kept as-is
 
-    def visit(node: dict, ancestors: tuple) -> None:
+    def rect_intersect(a: Rect, b: Rect) -> Rect | None:
+        """Axis-aligned intersection, None when empty."""
+        x0, y0 = max(a.x, b.x), max(a.y, b.y)
+        x1, y1 = min(a.right, b.right), min(a.bottom, b.bottom)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return Rect(x0, y0, x1 - x0, y1 - y0)
+
+    def visit(node: dict, ancestors: tuple, eff_opacity: float,
+              clip_rect: Rect | None, window_rect: Rect | None) -> None:
         oid = node.get("objID")
         new_anc = ancestors if oid is None else ancestors + (oid,)
         children = node.get("children", [])
@@ -320,22 +368,58 @@ def prune_snapshot(snapshot: dict) -> dict:
         def zkey(c: dict):
             return (float(c.get("z_order", 0) or 0), c.get("objID", 0))
 
+        # Effective opacity is the product down the ancestor chain: a 50%
+        # parent renders the whole subtree at 50% (QML combinedOpacity /
+        # QGraphicsOpacityEffect whole-layer rendering).
+        # NB: `or 1.0` would silently turn opacity=0.0 into 1.0.
+        op = node.get("opacity")
+        own_op = float(op) if op is not None else 1.0
+        eff = eff_opacity * own_op
+        if eff <= 0.0:
+            # opacity=0: pixel-invisible although isVisible() is true.
+            # Neither occlude nor be occluded -- walk children (they are
+            # equally invisible, the product stays 0) but keep nothing.
+            for child in children:
+                visit(child, new_anc, 0.0, clip_rect, window_rect)
+            return
+
         neg = [c for c in children if (float(c.get("z_order", 0) or 0)) < 0]
         pos = [c for c in children if (float(c.get("z_order", 0) or 0)) >= 0]
         # negative-z children paint before the parent
         for child in sorted(neg, key=zkey):
-            visit(child, new_anc)
+            visit(child, new_anc, eff, clip_rect, window_rect)
+
         if oid is not None and node.get("visible") is not False:
+            top = node.get("topLevelId", 0)
             rect = rect_from_node(node)
             if rect is not None:
-                top = node.get("topLevelId", 0)
+                # Window-root rect (first seen per window) doubles as the
+                # clip boundary for everything inside that window.
+                if window_rect is None:
+                    window_rect = rect
+                # orig_area drives visible_ratio: what the eye sees of the
+                # ORIGINAL geometry (window/clip cuts count as hidden too).
+                orig_area = rect.area
+                # Clip to the window and to clip:true ancestors; what
+                # remains is all the eye can see of this element.
+                vis = rect
+                if window_rect is not None:
+                    vis = rect_intersect(vis, window_rect)
+                if vis is None:
+                    return  # fully outside the window: invisible
+                if clip_rect is not None:
+                    vis = rect_intersect(vis, clip_rect)
+                    if vis is None:
+                        return  # fully clipped away: invisible
+                rect = vis
                 # z < 0: painted under the parent's content, so the
                 # direct parent (last ancestor) participates in covering
                 # it; every higher ancestor still paints before it.
                 exclude = frozenset(ancestors[:-1]) \
                     if (float(node.get("z_order", 0) or 0)) < 0 and ancestors \
                     else frozenset(ancestors)
-                elements.append((top, oid, rect, node, exclude))
+                elements.append((top, oid, rect, orig_area, node, exclude,
+                                 eff))
             else:
                 kept_ids.add(oid)  # zero-size / missing geometry: keep
         # Hidden elements neither occlude nor are occluded; they are
@@ -344,11 +428,18 @@ def prune_snapshot(snapshot: dict) -> dict:
         # UI underneath it (e.g. an invisible modal dialog), so hidden
         # nodes never enter `elements` -- but we still walk their
         # children for visible descendants.
+        # clip: true clips this item AND its children to its own rect.
+        child_clip = clip_rect
+        if node.get("clip"):
+            r = rect_from_node(node)
+            if r is not None:
+                child_clip = rect_intersect(r, clip_rect) \
+                    if clip_rect is not None else r
         for child in sorted(pos, key=zkey):
-            visit(child, new_anc)
+            visit(child, new_anc, eff, child_clip, window_rect)
 
     for root in nodes:
-        visit(root, ())
+        visit(root, (), 1.0, None, None)
 
     # ---- per window: accumulate coverage in reverse paint order -------
     # Walk the paint sequence backwards (last-painted first): each element
@@ -362,17 +453,26 @@ def prune_snapshot(snapshot: dict) -> dict:
     visible_ratio: dict[int, float] = {}
     for win, win_elems in by_window.items():
         cov = covered.setdefault(win, CoveredArea())
-        for _top, oid, rect, node, exclude in reversed(win_elems):
+        for _top, oid, rect, orig_area, node, exclude, eff_op \
+                in reversed(win_elems):
             visible = cov.visible_area(rect, exclude=exclude)
-            if visible < rect.area:
-                ratio = visible / rect.area if rect.area > 0 else 0.0
+            if visible < orig_area:
+                ratio = visible / orig_area if orig_area > 0 else 0.0
                 visible_ratio[oid] = ratio
-            if is_occluder(node.get("className", "")):
+            if occludes(node, eff_op):
                 cov.insert(rect, source=oid)
 
     # ---- decide what to keep ------------------------------------------
     removed = 0
-    for _top, oid, _rect, _node, _exclude in elements:
+    for _top, oid, _rect, _orig_area, _node, _exclude, _eff_op in elements:
+        # The window root is never removed: it carries the window meta
+        # (title, dpr, active state) that the AI needs to target the
+        # window, even when a full-size background covers it entirely.
+        # In real snapshots the window root is the element whose
+        # topLevelId equals its own objID.
+        if _top == oid:
+            kept_ids.add(oid)
+            continue
         ratio = visible_ratio.get(oid)
         if ratio is not None and ratio <= 0.0:
             removed += 1

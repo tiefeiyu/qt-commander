@@ -12,13 +12,19 @@ from qt_commander.occlusion import (
 )
 
 
-def node(oid, cls, x, y, w, h, z=0, top=1, children=None, visible=True):
-    return {
+def node(oid, cls, x, y, w, h, z=0, top=1, children=None, visible=True,
+         opacity=1.0, color_alpha=None, clip=False):
+    n = {
         "objID": oid, "className": cls, "visible": visible, "z_order": z,
-        "topLevelId": top,
+        "topLevelId": top, "opacity": opacity,
         "global_rect": {"x": x, "y": y, "width": w, "height": h},
         "children": children or [],
     }
+    if color_alpha is not None:
+        n["color_alpha"] = color_alpha
+    if clip:
+        n["clip"] = True
+    return n
 
 
 def snap(*nodes):
@@ -93,7 +99,8 @@ class TestCoveredArea:
 class TestIsOccluder:
     @pytest.mark.parametrize("cls,expected", [
         ("QWidget", True), ("QMainWindow", True), ("QPushButton", True),
-        ("QLabel", True), ("QLineEdit", True),
+        ("QLabel", False), ("QLineEdit", True),  # QLabel paints no bg
+        ("QToolButton", False), ("QStatusBar", False),
         ("QQuickRectangle", True), ("QQuickImage", True),
         ("QQuickItem", False), ("QQuickText", False),
         ("QQuickLoader", False), ("QQuickMouseArea", False),
@@ -114,8 +121,8 @@ class TestIsOccluder:
 class TestPruneSnapshot:
     def test_full_cover_removes_element(self):
         s = snap(
-            node(1, "QWidget", 0, 0, 100, 100, z=0),
-            node(2, "QWidget", 0, 0, 100, 100, z=1),
+            node(1, "QWidget", 0, 0, 100, 100, z=0, top=9),
+            node(2, "QWidget", 0, 0, 100, 100, z=1, top=9),
         )
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
@@ -138,8 +145,8 @@ class TestPruneSnapshot:
         # Qt paints equal-z siblings in tree order: the later-created
         # element (later in the children array) covers the earlier one.
         s = snap(
-            node(1, "QWidget", 0, 0, 100, 100, z=1),
-            node(2, "QWidget", 0, 0, 100, 100, z=1),
+            node(1, "QWidget", 0, 0, 100, 100, z=1, top=9),
+            node(2, "QWidget", 0, 0, 100, 100, z=1, top=9),
         )
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
@@ -158,10 +165,10 @@ class TestPruneSnapshot:
     def test_same_z_nested_tree_order(self):
         # Tree order is global (DFS): at equal z a later top-level
         # sibling covers the whole subtree of an earlier one.
-        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=1, children=[
-            node(3, "QWidget", 0, 0, 100, 100, z=1),
-            node(4, "QWidget", 0, 0, 100, 100, z=1),
-        ]), node(2, "QWidget", 0, 0, 100, 100, z=1))
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=1, top=9, children=[
+            node(3, "QWidget", 0, 0, 100, 100, z=1, top=9),
+            node(4, "QWidget", 0, 0, 100, 100, z=1, top=9),
+        ]), node(2, "QWidget", 0, 0, 100, 100, z=1, top=9))
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
         assert kept == [2]
@@ -177,8 +184,8 @@ class TestPruneSnapshot:
 
     def test_qml_rectangle_occludes(self):
         s = snap(
-            node(1, "QWidget", 0, 0, 100, 100, z=0),
-            node(2, "QQuickRectangle", 0, 0, 100, 100, z=1),
+            node(1, "QWidget", 0, 0, 100, 100, z=0, top=9),
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=1, top=9),
         )
         out = prune_snapshot(s)
         assert 2 in ids(out["nodes"]) and 1 not in ids(out["nodes"])
@@ -194,16 +201,16 @@ class TestPruneSnapshot:
     def test_z_order_sorting(self):
         # z=0 bottom, z=2 top: bottom fully covered by top
         s = snap(
-            node(1, "QWidget", 0, 0, 100, 100, z=0),
-            node(2, "QWidget", 0, 0, 100, 100, z=2),
+            node(1, "QWidget", 0, 0, 100, 100, z=0, top=9),
+            node(2, "QWidget", 0, 0, 100, 100, z=2, top=9),
         )
         out = prune_snapshot(s)
         assert 2 in ids(out["nodes"]) and 1 not in ids(out["nodes"])
 
     def test_nested_tree_removes_covered_child(self):
-        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, children=[
-            node(3, "QWidget", 0, 0, 100, 100, z=0),
-        ]), node(2, "QWidget", 0, 0, 100, 100, z=1))
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, top=9, children=[
+            node(3, "QWidget", 0, 0, 100, 100, z=0, top=9),
+        ]), node(2, "QWidget", 0, 0, 100, 100, z=1, top=9))
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
         assert 2 in kept and 1 not in kept and 3 not in kept
@@ -222,9 +229,9 @@ class TestPruneSnapshot:
 
     def test_fully_covered_child_removed(self):
         # 2 covers the whole container incl. its child
-        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, children=[
-            node(3, "QWidget", 50, 50, 10, 10, z=0),
-        ]), node(2, "QWidget", 0, 0, 100, 100, z=1))
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, top=9, children=[
+            node(3, "QWidget", 50, 50, 10, 10, z=0, top=9),
+        ]), node(2, "QWidget", 0, 0, 100, 100, z=1, top=9))
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
         assert kept == [2]
@@ -251,8 +258,8 @@ class TestPruneSnapshot:
 
     def test_fullsize_child_covers_parent(self):
         # an opaque full-size child paints over the whole parent
-        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, children=[
-            node(3, "QWidget", 0, 0, 100, 100, z=0),
+        s = snap(node(1, "QWidget", 0, 0, 100, 100, z=0, top=9, children=[
+            node(3, "QWidget", 0, 0, 100, 100, z=0, top=9),
         ]))
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
@@ -288,8 +295,8 @@ class TestPruneSnapshot:
         # A custom component root (button) covered by its own full-size
         # background child is fully hidden: the root is removed and the
         # visible background child is reparented up.
-        s = snap(node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0, children=[
-            node(3, "QQuickRectangle", 0, 0, 100, 100, z=0),
+        s = snap(node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0, top=9, children=[
+            node(3, "QQuickRectangle", 0, 0, 100, 100, z=0, top=9),
         ]))
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
@@ -299,8 +306,8 @@ class TestPruneSnapshot:
         # ...but a component covered by a *sibling* opaque element is
         # still removed (it is genuinely hidden).
         s = snap(
-            node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0),
-            node(2, "QWidget", 0, 0, 100, 100, z=1),
+            node(1, "QGCButton_QMLTYPE_8", 0, 0, 100, 100, z=0, top=9),
+            node(2, "QWidget", 0, 0, 100, 100, z=1, top=9),
         )
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
@@ -353,11 +360,11 @@ class TestPruneSnapshot:
         # descendant's z: A (z=0, child z=5) paints entirely below B
         # (z=2).  B's background (z=0) still covers A's child (z=5).
         s = snap(
-            node(1, "QQuickItem", 0, 0, 100, 100, z=0, children=[
-                node(2, "QQuickRectangle", 0, 0, 100, 100, z=5),
+            node(1, "QQuickItem", 0, 0, 100, 100, z=0, top=9, children=[
+                node(2, "QQuickRectangle", 0, 0, 100, 100, z=5, top=9),
             ]),
-            node(3, "QQuickItem", 0, 0, 100, 100, z=2, children=[
-                node(4, "QQuickRectangle", 0, 0, 100, 100, z=0),
+            node(3, "QQuickItem", 0, 0, 100, 100, z=2, top=9, children=[
+                node(4, "QQuickRectangle", 0, 0, 100, 100, z=0, top=9),
             ]),
         )
         out = prune_snapshot(s)
@@ -370,8 +377,8 @@ class TestPruneSnapshot:
         # QML-only: a negative-z child paints under its parent's content,
         # so the parent's rect covers it (QtWidgets has no such concept).
         # A fully covering opaque parent hides the negative-z child.
-        s = snap(node(1, "QQuickRectangle", 0, 0, 100, 100, z=0, children=[
-            node(2, "QQuickRectangle", 0, 0, 100, 100, z=-1),
+        s = snap(node(1, "QQuickRectangle", 0, 0, 100, 100, z=0, top=9, children=[
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=-1, top=9),
         ]))
         out = prune_snapshot(s)
         kept = ids(out["nodes"])
@@ -394,3 +401,132 @@ class TestPruneSnapshot:
         # lower half (3 covers the top half)
         assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.5)
         assert out["nodes"][0]["children"][0]["visible_ratio"] == pytest.approx(0.5)
+
+    # ---- transparency -------------------------------------------------
+
+    def test_semitransparent_rect_does_not_occlude(self):
+        # opacity 0.5: the content below shows through, so the rectangle
+        # must not hide what it covers.
+        s = snap(
+            node(1, "QQuickRectangle", 0, 0, 100, 100, z=0, opacity=0.5),
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=1),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert sorted(kept) == [1, 2]
+
+    def test_zero_opacity_element_dropped_and_not_occluding(self):
+        # opacity=0 is pixel-invisible even though isVisible() is true:
+        # it must not appear and must not hide what is underneath.
+        s = snap(
+            node(1, "QQuickRectangle", 0, 0, 100, 100, z=0),
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=1, opacity=0.0),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [1]
+
+    def test_semitransparent_parent_subtree_does_not_occlude(self):
+        # a 50% parent renders the whole subtree at 50%: the opaque child
+        # inherits the effective opacity and must not occlude either.
+        # 3 (half height, opaque) partially covers the 50% subtree; both
+        # the parent and its child survive with the visible half.
+        s = snap(node(1, "QQuickItem", 0, 0, 100, 100, z=0, opacity=0.5,
+                        children=[
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=0),
+        ]), node(3, "QQuickRectangle", 0, 0, 100, 50, z=1))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert sorted(kept) == [1, 2, 3]
+        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.5)
+        assert out["nodes"][0]["children"][0]["visible_ratio"] == \
+            pytest.approx(0.5)
+
+    def test_transparent_fill_alpha_does_not_occlude(self):
+        # Rectangle fill with alpha (#80......): semi-transparent.
+        s = snap(
+            node(1, "QQuickRectangle", 0, 0, 100, 100, z=0),
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=1,
+                 color_alpha=0.5),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert sorted(kept) == [1, 2]
+
+    # ---- window root / window clipping --------------------------------
+
+    def test_window_root_never_removed(self):
+        # a full-size background covers the window root entirely, but the
+        # root carries window meta (title, dpr) and must survive.
+        s = snap(node(1, "QMainWindow", 0, 0, 100, 100, z=0, top=1,
+                       children=[
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=0, top=1),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 1 in kept and 2 in kept
+
+    def test_partially_outside_window_clipped(self):
+        # the element sticks out of the window to the left by half its
+        # width: only the in-window half is visible.
+        s = snap(node(1, "QMainWindow", 0, 0, 100, 100, z=0, top=1,
+                       children=[
+            node(2, "QQuickRectangle", -50, 0, 100, 100, z=0, top=1),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 1 in kept and 2 in kept
+        assert out["nodes"][0]["children"][0]["visible_ratio"] == \
+            pytest.approx(0.5)
+
+    def test_fully_outside_window_removed(self):
+        s = snap(node(1, "QMainWindow", 0, 0, 100, 100, z=0, top=1,
+                       children=[
+            node(2, "QQuickRectangle", 200, 0, 100, 100, z=0, top=1),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [1]
+
+    def test_clip_cuts_overflowing_children(self):
+        # clip:true container cuts its children to its own rect; the
+        # overflow part of child 2 must not be visible (ratio 0.5).
+        s = snap(node(1, "QQuickItem", 0, 0, 100, 100, z=0, top=1,
+                       clip=True, children=[
+            node(2, "QQuickRectangle", 50, 0, 100, 100, z=0, top=1),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert 1 in kept and 2 in kept
+        assert out["nodes"][0]["children"][0]["visible_ratio"] == \
+            pytest.approx(0.5)
+
+    def test_clip_fully_hides_child(self):
+        s = snap(node(1, "QQuickItem", 0, 0, 50, 50, z=0, top=1,
+                       clip=True, children=[
+            node(2, "QQuickRectangle", 60, 0, 100, 100, z=0, top=1),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [1]
+
+    def test_snapshot_without_opacity_fields_still_works(self):
+        # snapshots from older builds have no opacity/color_alpha fields
+        s = {"epoch": 1, "maxDepth": -1, "propDepth": 1, "rootId": 0,
+             "nodes": [
+                 {"objID": 1, "className": "QMainWindow", "visible": True,
+                  "z_order": 0, "topLevelId": 1,
+                  "global_rect": {"x": 0, "y": 0, "width": 100,
+                                  "height": 100},
+                  "children": [
+                      {"objID": 2, "className": "QQuickRectangle",
+                       "visible": True, "z_order": 0, "topLevelId": 1,
+                       "global_rect": {"x": 0, "y": 0, "width": 100,
+                                       "height": 100},
+                       "children": []},
+                  ]},
+             ]}
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        # child fully covers the window root; root kept, child kept
+        assert 1 in kept and 2 in kept

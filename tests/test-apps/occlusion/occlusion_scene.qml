@@ -106,4 +106,58 @@ Window {
         font.pixelSize: 14
         x: 10; y: 250
     }
+
+    // ---- transparency scenarios (right side) ----
+    // Expected:
+    //   occlSemiBase    kept (semi-transparent occlSemi does NOT occlude)
+    //   occlSemi        kept (it is visible itself)
+    //   occlZeroBase    kept; occlZero REMOVED (opacity=0, isVisible true)
+    //   occlAlphaBase   kept (fill-alpha rectangle does not occlude)
+    //   occlAlphaColor  kept
+    //   occlSemiParent  kept; occlSemiChild kept, does NOT occlude
+    //   occlClipChild   ratio 0.5 (clip: true cuts the overflow)
+    //   occlHalfOut     ratio 0.6 (half outside the window)
+    Item {
+        objectName: "occlTransparent"
+        x: 460; y: 10; width: 170; height: 380
+
+        Rectangle { x: 0; y: 0; width: 120; height: 80; color: "red";
+                    objectName: "occlSemiBase" }
+        Rectangle { x: 30; y: 20; width: 120; height: 80; color: "blue";
+                    opacity: 0.5; objectName: "occlSemi" }
+
+        Rectangle { x: 0; y: 100; width: 120; height: 80; color: "green";
+                    objectName: "occlZeroBase" }
+        Rectangle { x: 0; y: 100; width: 120; height: 80; color: "black";
+                    opacity: 0.0; objectName: "occlZero" }
+
+        Rectangle { x: 0; y: 200; width: 120; height: 80; color: "orange";
+                    objectName: "occlAlphaBase" }
+        Rectangle { x: 30; y: 215; width: 120; height: 80;
+                    color: "#80000000"; objectName: "occlAlphaColor" }
+
+        Item {
+            objectName: "occlSemiParent"
+            x: 0; y: 300; width: 120; height: 80
+            opacity: 0.5
+            Rectangle { anchors.fill: parent; color: "purple";
+                        objectName: "occlSemiChild" }
+        }
+    }
+
+    // clip: true cuts the overflowing child to the container rect
+    Item {
+        objectName: "occlClipBox"
+        x: 460; y: 0; width: 100; height: 100
+        clip: true
+        Rectangle { x: 50; y: 0; width: 100; height: 100; color: "teal";
+                    objectName: "occlClipChild" }
+    }
+
+    // sticks half out of the window (x = -40): only 60% is on screen
+    Rectangle {
+        objectName: "occlHalfOut"
+        x: -40; y: 330; width: 100; height: 50
+        color: "#FF9800"
+    }
 }

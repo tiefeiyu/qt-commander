@@ -24,6 +24,8 @@
 #include <QApplication>
 #include <QWidget>
 #include <QWindow>
+#include <QGraphicsOpacityEffect>
+#include <QColor>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QJsonDocument>
@@ -438,13 +440,37 @@ static QJsonObject makeNode(QObject* obj, uint64_t id,
         // snapshot (focusW) and compare pointers here (O(1) per node).
         if (focusW)
             node["focused"] = (focusW == w);
+        // Own opacity: windowOpacity applies to top-level windows only;
+        // QGraphicsOpacityEffect applies to any widget (it is a QObject
+        // child, so it never appears in the snapshot tree itself).
+        double op = 1.0;
+        if (w->isWindow())
+            op *= w->windowOpacity();
+        if (auto* eff = qobject_cast<QGraphicsOpacityEffect*>(
+                w->graphicsEffect()))
+            op *= eff->opacity();
+        node["opacity"] = op;
     }
 #ifdef QT_COMMANDER_WITH_QML
     else if (auto* item = qobject_cast<QQuickItem*>(obj)) {
         node["visible"] = item->isVisible();
         node["enabled"] = item->isEnabled();
+        node["opacity"] = item->opacity();
+        // clip: true clips this item AND its children to its bounding
+        // rect (Flickable/ListView set it by default).
+        node["clip"] = item->clip();
+        // Rectangle fill alpha (via the generic meta path -- QQuickRectangle
+        // is a private class with no public color() accessor).  Absent for
+        // non-color items.
+        const QVariant color = obj->property("color");
+        if (color.isValid() && color.canConvert<QColor>())
+            node["color_alpha"] = color.value<QColor>().alphaF();
         if (QQuickWindow* qw = item->window())
             node["focused"] = (qw->activeFocusItem() == item);
+    }
+    else if (auto* win = qobject_cast<QWindow*>(obj)) {
+        // Top-level QML Window / QQuickWindow: whole-window opacity.
+        node["opacity"] = win->opacity();
     }
 #endif
     // Text (non-empty only, mirrors findElement's "text" semantics).

@@ -14,6 +14,7 @@
 #include <QWidget>
 #include <QVBoxLayout>
 #include <QLabel>
+#include <QGraphicsOpacityEffect>
 
 #if defined(_WIN32) && defined(_MSC_VER)
 #include <windows.h>
@@ -79,6 +80,43 @@ public:
         hidden->setGeometry(270, 130, 150, 100);
         hidden->setStyleSheet(QStringLiteral("background-color: black;"));
         hidden->hide();
+
+        // Semi-transparent panel (QGraphicsOpacityEffect 0.5) over a base
+        // rect: the base must be kept (semi-transparent does not occlude).
+        auto* semiBase = new QWidget(occl);
+        semiBase->setObjectName(QStringLiteral("occlSemiBase"));
+        semiBase->setGeometry(500, 250, 100, 80);
+        semiBase->setStyleSheet(QStringLiteral("background-color: red;"));
+        auto* semiPanel = new QWidget(occl);
+        semiPanel->setObjectName(QStringLiteral("occlSemiPanel"));
+        semiPanel->setGeometry(520, 260, 100, 80);
+        semiPanel->setStyleSheet(QStringLiteral("background-color: blue;"));
+        auto* semiEff = new QGraphicsOpacityEffect(semiPanel);
+        semiEff->setOpacity(0.5);
+        semiPanel->setGraphicsEffect(semiEff);
+
+        // Effect opacity 0: pixel-invisible although isVisible() is true.
+        // The panel must be dropped and must not occlude the base.
+        auto* zeroBase = new QWidget(occl);
+        zeroBase->setObjectName(QStringLiteral("occlZeroBase"));
+        zeroBase->setGeometry(500, 340, 100, 80);
+        zeroBase->setStyleSheet(QStringLiteral("background-color: green;"));
+        auto* zeroPanel = new QWidget(occl);
+        zeroPanel->setObjectName(QStringLiteral("occlZeroPanel"));
+        zeroPanel->setGeometry(500, 340, 100, 80);
+        zeroPanel->setStyleSheet(QStringLiteral("background-color: black;"));
+        auto* zeroEff = new QGraphicsOpacityEffect(zeroPanel);
+        zeroEff->setOpacity(0.0);
+        zeroPanel->setGraphicsEffect(zeroEff);
+
+        // QLabel paints no background: it must not occlude the base rect.
+        auto* labelBase = new QWidget(occl);
+        labelBase->setObjectName(QStringLiteral("occlLabelBase"));
+        labelBase->setGeometry(500, 430, 100, 80);
+        labelBase->setStyleSheet(QStringLiteral("background-color: orange;"));
+        auto* labelOver = new QLabel(QStringLiteral("LABEL"), occl);
+        labelOver->setObjectName(QStringLiteral("occlLabel"));
+        labelOver->setGeometry(520, 445, 100, 50);
     }
 };
 
