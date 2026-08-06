@@ -251,16 +251,14 @@ int UiScanner::getZOrder(QObject* obj)
 
 #ifdef QT_COMMANDER_WITH_QML
     if (auto* item = qobject_cast<QQuickItem*>(obj)) {
-        QQuickItem* pi = item->parentItem();
-        if (!pi)
-            return 0;
-
-        const auto& siblings = pi->childItems();
-        for (int i = 0; i < siblings.size(); ++i) {
-            if (siblings[i] == item)
-                return i;
-        }
-        return 0;
+        // QML's z property is the real stacking level *between siblings*
+        // (higher z paints above; negative z paints under the parent's
+        // content).  The previous code returned the sibling index, which
+        // silently dropped every explicit z value (e.g. z: -1 came back
+        // as a positive index) and broke occlusion solving.  The solver
+        // orders siblings by (z, declaration order) itself; here we must
+        // report the real z.
+        return static_cast<int>(item->z());
     }
 #endif
 
