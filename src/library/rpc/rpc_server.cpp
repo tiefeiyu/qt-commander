@@ -909,6 +909,7 @@ void run_rpc_server(socket_t listen_fd,
 
                     // Look up root object from the current element map (before rebuild)
                     QObject* rootObj = nullptr;
+                    bool rootError = false;
                     if (rootId > 0) {
                         rootObj = elementMap->get(rootId);
                         if (!rootObj) {
@@ -916,6 +917,8 @@ void run_rpc_server(socket_t listen_fd,
                             // the map) must not silently fall back to the
                             // whole tree -- the agent would plan against
                             // wrong data.  Report it explicitly instead.
+                            // NB: no `return` here -- the dispatch lambda
+                            // must fall through to the response send below.
                             result[QStringLiteral("ok")] = false;
                             result[QStringLiteral("message")] =
                                 QStringLiteral(
@@ -923,50 +926,52 @@ void run_rpc_server(socket_t listen_fd,
                                     "every snapshot/find refresh; take a new "
                                     "snapshot to get fresh ids)")
                                     .arg(rootId);
-                            return;
+                            rootError = true;
                         }
                     }
 
                     QJsonArray nodes;
-                    locker.unlock();
-                    {
-                        QWriteLocker wlock(elementMap->rwLock());
-                        elementMap->clear();
-                        uint64_t nextId = 1;
+                    if (!rootError) {
+                        locker.unlock();
+                        {
+                            QWriteLocker wlock(elementMap->rwLock());
+                            elementMap->clear();
+                            uint64_t nextId = 1;
 
-                        // QApplication::focusWidget() walks the whole focus
-                        // chain -- compute it once, compare pointers per node.
-                        QWidget* focusW = qApp ? qApp->focusWidget() : nullptr;
-                        auto addRoot = [&](QObject* obj) {
-                            const uint64_t id = nextId++;
-                            elementMap->insert(id, obj);
-                            nodes.append(makeNode(
-                                obj, id, obj, id, focusW,
-                                maxDepth, propDepth,
-                                elementMap.get(), nextId, includeHidden,
-                                detail));
-                        };
+                            // QApplication::focusWidget() walks the whole focus
+                            // chain -- compute it once, compare pointers per node.
+                            QWidget* focusW = qApp ? qApp->focusWidget() : nullptr;
+                            auto addRoot = [&](QObject* obj) {
+                                const uint64_t id = nextId++;
+                                elementMap->insert(id, obj);
+                                nodes.append(makeNode(
+                                    obj, id, obj, id, focusW,
+                                    maxDepth, propDepth,
+                                    elementMap.get(), nextId, includeHidden,
+                                    detail));
+                            };
 
-                        if (rootObj) {
-                            // rootId > 0: snapshot from a specific element
-                            addRoot(rootObj);
-                        } else {
-                            // rootId == 0: snapshot all top-level windows
-                            if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
-                                for (QWidget* w : app->topLevelWidgets())
-                                    addRoot(w);
-                            }
+                            if (rootObj) {
+                                // rootId > 0: snapshot from a specific element
+                                addRoot(rootObj);
+                            } else {
+                                // rootId == 0: snapshot all top-level windows
+                                if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+                                    for (QWidget* w : app->topLevelWidgets())
+                                        addRoot(w);
+                                }
 #ifdef QT_COMMANDER_WITH_QML
-                            for (QWindow* win : QGuiApplication::topLevelWindows()) {
-                                if (qobject_cast<QQuickWindow*>(win))
-                                    addRoot(win);
-                            }
+                                for (QWindow* win : QGuiApplication::topLevelWindows()) {
+                                    if (qobject_cast<QQuickWindow*>(win))
+                                        addRoot(win);
+                                }
 #endif
-                        }
+                            }
 
-                        elementMap->incrementEpoch();
+                            elementMap->incrementEpoch();
+                        }
+                        locker.relock();
                     }
-                    locker.relock();
                     result["rootId"] = static_cast<qint64>(rootId);
                     result["maxDepth"] = maxDepth;
                     result["propDepth"] = propDepth;

@@ -267,6 +267,10 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
         "maxDepth": max_depth,
         "propDepth": prop_depth,
     })
+    if result.get("ok") is False:
+        # e.g. a stale root_id: surface the error directly, do not write a
+        # misleading empty snapshot file.
+        return _dumps(result, indent=2)
     session.snapshot_count += 1
 
     filename = f"snapshot_{session.snapshot_count:08d}.json"
