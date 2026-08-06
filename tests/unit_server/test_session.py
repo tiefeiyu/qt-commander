@@ -268,6 +268,30 @@ class TestSessionManager:
         assert not s.session_dir.exists()
 
     @pytest.mark.asyncio
+    async def test_destroy_purge_ejects_with_absolute_injector_path(self, workspace):
+        """Purge eject must invoke the injector next to the library (an
+        absolute path), never a bare "qt-injector" that depends on PATH --
+        a uv-run MCP server has no PATH entry for the build dir."""
+        from unittest.mock import AsyncMock, patch
+
+        sm = SessionManager(workspace)
+        lib = workspace / "bin" / "libqt-commander.dll"
+        s = await sm.create(203, lib)
+
+        exec_mock = AsyncMock()
+        with patch("qt_commander.session.asyncio.create_subprocess_exec",
+                   exec_mock):
+            ok = await sm.destroy(s.id, purge=True)
+        assert ok is True
+
+        assert exec_mock.call_count == 1
+        args = exec_mock.call_args.args
+        assert Path(args[0]) == workspace / "bin" / "qt-injector.exe"
+        assert args[1] == "--eject"
+        assert args[2] == "203"
+        assert Path(args[3]) == lib
+
+    @pytest.mark.asyncio
     async def test_destroy_nonexistent(self, workspace):
         sm = SessionManager(workspace)
         ok = await sm.destroy("nonexistent", purge=False)

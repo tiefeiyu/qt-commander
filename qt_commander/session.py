@@ -172,10 +172,13 @@ class SessionManager:
                 # Unload the injected library from the target process first
                 # so its DLL file is not locked (the build/cleanup steps
                 # need to overwrite it).  Best-effort: a dead process or a
-                # missing injector is fine.
+                # missing injector is fine.  The injector sits next to the
+                # injected library in the build dir -- a bare "qt-injector"
+                # would depend on PATH, which a uv-run server does not have.
+                injector = session.lib_path.parent / "qt-injector.exe"
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        "qt-injector", "--eject", str(session.pid),
+                        str(injector), "--eject", str(session.pid),
                         str(session.lib_path),
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
@@ -229,9 +232,10 @@ class SessionManager:
                 continue
             lib_path = Path(meta.get("lib_path", ""))
             if lib_path.exists():
+                injector = lib_path.parent / "qt-injector.exe"
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        "qt-injector", "--eject", str(pid), str(lib_path),
+                        str(injector), "--eject", str(pid), str(lib_path),
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
