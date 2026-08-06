@@ -4,6 +4,86 @@ MCP server for Qt application introspection and automation — the
 [Playwright](https://playwright.dev) for native Qt, covering both
 QWidget and QML interfaces.
 
+![Qt 5.15](https://img.shields.io/badge/Qt-5.15-blue)
+![Qt 6.8](https://img.shields.io/badge/Qt-6.8-brightgreen)
+![MSVC](https://img.shields.io/badge/MSVC-supported-blue)
+![MinGW](https://img.shields.io/badge/MinGW-supported-blue)
+![Platform](https://img.shields.io/badge/Windows-supported-important)
+![License](https://img.shields.io/badge/License-Apache%202.0-orange)
+
+## Why qt-commander
+
+AI agents (Claude, Cursor, …) can drive **native Qt applications** the
+way Playwright drives web pages:
+
+- **No source changes** — the library is injected into a *running*
+  process; you control any Qt app (yours or a third party's) as-is.
+- **Both UI stacks** — QWidget *and* QML/Qt Quick, Qt 5.15 and Qt 6.8,
+  MSVC and MinGW.
+- **What the agent gets** — full UI snapshots with geometry, z-order,
+  visibility, opacity and properties; occlusion-pruned views of what a
+  human actually sees; element lookup by text / type / property;
+  real input pipeline clicks, typing, keyboard shortcuts, drags.
+- **Easy to try** — `uv run python -m qt_commander`; the injector and
+  library compile on demand against any detected Qt kit.
+
+## Quick Start
+
+```bash
+# Launch MCP server via uv (no global Python install needed — uv resolves
+# pyproject.toml / uv.lock and manages an isolated environment)
+uv run python -m qt_commander
+```
+
+Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
+
+### MCP client configuration
+
+**Claude Code** — add to `.mcp.json` / user-scope MCP config:
+
+```json
+{
+  "mcpServers": {
+    "qt-commander": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "qt_commander"],
+      "cwd": "path/to/qt-commander"
+    }
+  }
+}
+```
+
+**Cursor / other MCP clients** — same command shape; the server speaks
+stdio MCP and needs no other setup.  See [llms-install.md](llms-install.md)
+for the full install guide (including removing legacy pip installs).
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `qt_list_processes` | List running Qt processes (cross-platform via psutil) |
+| `qt_attach` | Inject library into a target process and open a session |
+| `qt_detach` | Disconnect from a session, optionally eject the library |
+| `qt_list_sessions` | List active sessions |
+| `qt_detect_msvc_and_qt` | Auto-detect MSVC, MinGW toolchains, and Qt installations available for building |
+| `qt_build` | Compile injector + library on demand — `toolchain` selects `msvc` (vcvars + qtenv bat) or `mingw` (MinGW bin dir + Qt bin dir) |
+| `qt_snapshot` | Capture the UI element tree — `detail` selects the property tier: `core` (geometry/visibility/text, no properties), `extended` (common interaction state), `full` (every Q_PROPERTY) |
+| `qt_prune_snapshot` | Occlusion-prune a snapshot: remove elements fully covered by higher-z opaque elements (equal z ordered by creation, later covers earlier; children paint above their parent), mark partially covered ones with `visible_ratio`, write a compact pruned snapshot |
+| `qt_find_element` | Find elements by type, text, or property query |
+| `qt_get_property` | Read a QObject property |
+| `qt_set_property` | Write a QObject property |
+| `qt_call_method` | Invoke a QObject method |
+| `qt_screenshot` | Capture a screenshot of a specific element or window |
+| `qt_mouse_click` | Send a mouse click to a UI element (direct delivery) |
+| `qt_mouse_click_at` | Click at an exact window coordinate — routed through the real Qt input pipeline (QPA), with real scene-graph/widget hit testing, identical to a human click |
+| `qt_mouse_click_region` | Click at the center of an element's on-screen region — real hit testing decides the actual target (e.g. a QML Rectangle's MouseArea) |
+| `qt_mouse_press` | Press a mouse button on an element without releasing it |
+| `qt_mouse_release` | Release a previously pressed mouse button (completes a click or a drag) |
+| `qt_mouse_move` | Move the pointer to an element-local position (drag = press → move → release) |
+| `qt_keyboard_input` | Send keyboard input (typed text, optionally with held modifiers) |
+| `qt_key_combo` | Send a shortcut such as `Ctrl+C` or `Ctrl+Shift+A` (real press/release pair with modifiers) |
+| `qt_focus` | Set focus on a specific element |
+
 ## Architecture
 
 ```
@@ -40,45 +120,6 @@ QWidget and QML interfaces.
    and prints the library's TCP port to stdout.
 4. **MCP Server** connects to the library over TCP and relays RPC calls
    (snapshot, click, input, etc.) using a 4-byte length-prefix frame protocol.
-
-## Quick Start
-
-```bash
-# Launch MCP server via uv (no global Python install needed — uv resolves
-# pyproject.toml / uv.lock and manages an isolated environment)
-uv run python -m qt_commander
-```
-
-Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
-
-> **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
-
-## MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `qt_list_processes` | List running Qt processes (cross-platform via psutil) |
-| `qt_attach` | Inject library into a target process and open a session |
-| `qt_detach` | Disconnect from a session, optionally eject the library |
-| `qt_list_sessions` | List active sessions |
-| `qt_detect_msvc_and_qt` | Auto-detect MSVC, MinGW toolchains, and Qt installations available for building |
-| `qt_build` | Compile injector + library on demand — `toolchain` selects `msvc` (vcvars + qtenv bat) or `mingw` (MinGW bin dir + Qt bin dir) |
-| `qt_snapshot` | Capture the UI element tree — `detail` selects the property tier: `core` (geometry/visibility/text, no properties), `extended` (common interaction state), `full` (every Q_PROPERTY) |
-| `qt_prune_snapshot` | Occlusion-prune a snapshot: remove elements fully covered by higher-z opaque elements (equal z ordered by creation, later covers earlier; children paint above their parent), mark partially covered ones with `visible_ratio`, write a compact pruned snapshot |
-| `qt_find_element` | Find elements by type, text, or property query |
-| `qt_get_property` | Read a QObject property |
-| `qt_set_property` | Write a QObject property |
-| `qt_call_method` | Invoke a QObject method |
-| `qt_screenshot` | Capture a screenshot of a specific element or window |
-| `qt_mouse_click` | Send a mouse click to a UI element (direct delivery) |
-| `qt_mouse_click_at` | Click at an exact window coordinate — routed through the real Qt input pipeline (QPA), with real scene-graph/widget hit testing, identical to a human click |
-| `qt_mouse_click_region` | Click at the center of an element's on-screen region — real hit testing decides the actual target (e.g. a QML Rectangle's MouseArea) |
-| `qt_mouse_press` | Press a mouse button on an element without releasing it |
-| `qt_mouse_release` | Release a previously pressed mouse button (completes a click or a drag) |
-| `qt_mouse_move` | Move the pointer to an element-local position (drag = press → move → release) |
-| `qt_keyboard_input` | Send keyboard input (typed text, optionally with held modifiers) |
-| `qt_key_combo` | Send a shortcut such as `Ctrl+C` or `Ctrl+Shift+A` (real press/release pair with modifiers) |
-| `qt_focus` | Set focus on a specific element |
 
 ## Testing
 

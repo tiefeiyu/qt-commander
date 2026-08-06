@@ -3,6 +3,58 @@
 面向 Qt 应用程序内省与自动化的 MCP 服务器 — 相当于浏览器领域的
 [Playwright](https://playwright.dev)，但作用于原生 Qt Widget 和 QML 界面。
 
+![Qt 5.15](https://img.shields.io/badge/Qt-5.15-blue)
+![Qt 6.8](https://img.shields.io/badge/Qt-6.8-brightgreen)
+![MSVC](https://img.shields.io/badge/MSVC-supported-blue)
+![MinGW](https://img.shields.io/badge/MinGW-supported-blue)
+![Platform](https://img.shields.io/badge/Windows-supported-important)
+![License](https://img.shields.io/badge/License-Apache%202.0-orange)
+
+## 为什么选择 qt-commander
+
+AI Agent（Claude、Cursor 等）可以像 Playwright 驱动网页一样**驱动原生
+Qt 应用程序**：
+
+- **无需修改源码** — 库被注入到*正在运行*的进程中；任何 Qt 应用
+  （自己开发的或第三方）都可以直接操作。
+- **两种 UI 栈全支持** — QWidget 与 QML/Qt Quick，Qt 5.15 与 Qt 6.8，
+  MSVC 与 MinGW。
+- **Agent 能拿到什么** — 完整 UI 快照（几何、z 序、可见性、透明度、
+  属性）；按人眼可见性做遮挡修剪的视图；按文本/类型/属性查找元素；
+  真实输入管线点击、打字、快捷键、拖拽。
+- **开箱即用** — `uv run python -m qt_commander`；注入器与库按需
+  针对检测到的任意 Qt kit 编译。
+
+## 快速开始
+
+```bash
+# 通过 uv 启动 MCP 服务器（无需全局安装 Python 包——uv 依据
+# pyproject.toml / uv.lock 自动管理隔离环境）
+uv run python -m qt_commander
+```
+
+需要 [uv](https://docs.astral.sh/uv) 与 Python 3.10+。
+
+### MCP 客户端配置
+
+**Claude Code** — 加入 `.mcp.json`（或用户级 MCP 配置）：
+
+```json
+{
+  "mcpServers": {
+    "qt-commander": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "qt_commander"],
+      "cwd": "path/to/qt-commander"
+    }
+  }
+}
+```
+
+**Cursor / 其他 MCP 客户端** — 命令格式相同；服务器走 stdio MCP 协议，
+无需其他配置。完整安装指南（含移除旧 pip 安装方式）见
+[llms-install.md](llms-install.md)。
+
 ## 架构
 
 ```
@@ -37,18 +89,6 @@
    将库的 TCP 端口号输出到 stdout。
 4. **MCP Server** 通过 TCP 连接到注入库，使用 4 字节大端长度前缀帧协议
    转发 RPC 调用（快照、点击、输入等）。
-
-## 快速开始
-
-```bash
-# 通过 uv 启动 MCP 服务器（无需全局安装 Python 包——uv 依据
-# pyproject.toml / uv.lock 自动管理隔离环境）
-uv run python -m qt_commander
-```
-
-需要 [uv](https://docs.astral.sh/uv) 与 Python 3.10+。
-
-> **AI Agent / MCP 客户端配置**：详见 [llms-install.md](llms-install.md)。
 
 ## MCP 工具列表
 
