@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 
 add_executable(qt-injector
     main.cpp
-    injector_win.cpp
     ../common/socket_utils.cpp
 )
 
@@ -14,6 +13,7 @@ target_include_directories(qt-injector PRIVATE
 target_compile_features(qt-injector PRIVATE cxx_std_17)
 
 if(WIN32)
+    target_sources(qt-injector PRIVATE injector_win.cpp)
     # Win32 import libs work for both MSVC and MinGW (mingw-w64 provides
     # psapi/bcrypt/ws2_32 as import libraries).
     target_link_libraries(qt-injector PRIVATE psapi bcrypt ws2_32)
@@ -21,6 +21,12 @@ if(WIN32)
         target_compile_options(qt-injector PRIVATE /utf-8)
     endif()
 elseif(UNIX)
+    target_sources(qt-injector PRIVATE
+        injector_linux.cpp
+        ptrace_ops.cpp
+        elf_parser.cpp
+        elf_loader.cpp
+    )
     target_link_libraries(qt-injector PRIVATE pthread dl)
 endif()
 

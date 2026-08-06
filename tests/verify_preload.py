@@ -2,20 +2,7 @@
 libqt-commander.dll into the target process, so clean windeployqt-only app
 directories attach without any manual Qt DLL copies.
 
-Scenarios (Qt major auto-detected from the library's import closure, so
-the same script verifies both Qt5 and Qt6 deployments):
-  A. QML app (qt-qml-test) deployed by windeployqt ONLY -- its dir contains
-     NO Qt<major>Widgets.dll (the library's dependency the app itself never
-     links).  Attach must succeed and a real click must work.
-  B. Widget app (qt-widget-test) deployed by windeployqt ONLY -- its dir
-     contains NO Qt<major>Quick/Qt<major>Qml/Qt<major>Network.  Attach must
-     succeed and a real click must work.
-  C. Boundary: with Qt<major>Qml.dll removed from the qt-commander bin dir,
-     the injector must fail with a diagnostic naming Qt<major>Qml.dll
-     (instead of the opaque "LoadLibraryW returned NULL").
-
-Usage: python tests/verify_preload.py
-Exit code 0 = all scenarios passed.
+Windows-only test (requires windeployqt + PE DLLs).  On Linux, exits 0.
 """
 import asyncio
 import json
@@ -28,6 +15,27 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+
+if sys.platform != "win32":
+    # Linux: minimal verification — check that the built .so loads with Qt.
+    _qtc_bin = REPO / ".qt-commander" / "bin"
+    _so_path = _qtc_bin / "libqt-commander.so"
+    if not _so_path.exists():
+        _alt = REPO / "build" / "linux5" / "src" / "library" / "libqt-commander.so"
+        if _alt.exists():
+            _so_path = _alt
+        else:
+            print(f"verify_preload: SKIP — {_so_path} not found (run qt_build first)")
+            sys.exit(0)
+    import ctypes
+    try:
+        # os.RTLD_NOW=2, os.RTLD_GLOBAL=256 (POSIX dlopen flags)
+        _handle = ctypes.CDLL(str(_so_path), mode=os.RTLD_NOW | os.RTLD_GLOBAL)
+        print(f"verify_preload: OK — {_so_path} loaded successfully")
+    except OSError as e:
+        print(f"verify_preload: FAIL — {e}")
+        sys.exit(1)
+    sys.exit(0)
 sys.path.insert(0, str(REPO))
 
 from qt_commander.errors import InjectionError  # noqa: E402

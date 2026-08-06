@@ -17,9 +17,11 @@ import os
 import re
 import subprocess
 import sys
-import winreg
+try:
+    import winreg
+except ImportError:
+    winreg = None  # type: ignore — non-Windows platform
 from pathlib import Path
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Visual Studio detection
@@ -30,7 +32,6 @@ def _vswhere_path() -> Path | None:
     pf86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
     p = Path(pf86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
     return p if p.exists() else None
-
 
 def _find_vcvars_scripts(inst_path: Path) -> list[dict]:
     """Enumerate available vcvars*.bat scripts in the Auxiliary Build dir."""
@@ -58,7 +59,6 @@ def _find_vcvars_scripts(inst_path: Path) -> list[dict]:
             scripts.append({"name": name, "path": str(full),
                             "arch": arch, "description": desc})
     return scripts
-
 
 def detect_vs_environments() -> list[dict]:
     """Return a list of detected Visual Studio installations.
@@ -134,7 +134,6 @@ def detect_vs_environments() -> list[dict]:
 
     return results
 
-
 def _detect_vs_modern_registry() -> list[dict]:
     """Detect VS 2019+ via registry Capabilities keys.
 
@@ -142,6 +141,8 @@ def _detect_vs_modern_registry() -> list[dict]:
     ``VisualStudio_*``, reads the ``Capabilities\\ApplicationDescription``
     value, and resolves the install root from the path embedded in that value.
     """
+    if winreg is None:
+        return []
     results: list[dict] = []
     vs_pattern = re.compile(r"^VisualStudio_")
 
@@ -211,9 +212,10 @@ def _detect_vs_modern_registry() -> list[dict]:
 
     return results
 
-
 def _detect_vs_registry() -> list[dict]:
     """Registry-based fallback for older Visual Studio versions."""
+    if winreg is None:
+        return []
     results: list[dict] = []
 
     # SxS key (VS 2017 style)
@@ -288,7 +290,6 @@ def _detect_vs_registry() -> list[dict]:
 
     return results
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Qt detection
 # ═══════════════════════════════════════════════════════════════════════════
@@ -313,7 +314,6 @@ def _run_qmake_query(qmake: Path) -> dict[str, str] | None:
             key, _, value = line.partition(":")
             props[key.strip()] = value.strip()
     return props
-
 
 def _inspect_qmake_env(qmake: Path) -> dict | None:
     """Given a qmake.exe path, extract Qt metadata via ``qmake -query``
@@ -350,7 +350,6 @@ def _inspect_qmake_env(qmake: Path) -> dict | None:
         "arch": "x64" if is_64 else "x86",
     }
 
-
 def _find_qmake_on_path() -> list[Path]:
     """Locate qmake.exe executables by walking PATH entries."""
     found: list[Path] = []
@@ -365,15 +364,17 @@ def _find_qmake_on_path() -> list[Path]:
             continue
         seen.add(normalized)
 
-        candidate = Path(entry) / "qmake.exe"
+        qmake_name = "qmake.exe" if sys.platform == "win32" else "qmake"
+        candidate = Path(entry) / qmake_name
         if candidate.exists():
             found.append(candidate)
 
     return found
 
-
 def _detect_qt_registry() -> list[dict]:
     """Detect Qt installations via Windows registry (Trolltech keys)."""
+    if winreg is None:
+        return []
     results: list[dict] = []
 
     reg_bases = [
@@ -423,7 +424,6 @@ def _detect_qt_registry() -> list[dict]:
 
     return results
 
-
 def _detect_qt_structured() -> list[dict]:
     """Look for Qt installations under the standard C:\\Qt\\ layout.
 
@@ -445,7 +445,6 @@ def _detect_qt_structured() -> list[dict]:
 
     return results
 
-
 # Directories never worth probing for Qt kits during the drive scan.
 _SKIP_DIR_NAMES = {
     "$recycle.bin", "appdata", "cygwin64", "documents and settings",
@@ -453,7 +452,6 @@ _SKIP_DIR_NAMES = {
     "program files (x86)", "programdata", "system volume information",
     "temp", "tmp", "users", "venv", ".venv", "windows",
 }
-
 
 def _scan_drive_for_qmake(drive_root: Path, max_depth: int = 4) -> list[Path]:
     """Find qmake.exe files in the Qt kit layout under ``drive_root``.
@@ -488,7 +486,6 @@ def _scan_drive_for_qmake(drive_root: Path, max_depth: int = 4) -> list[Path]:
                 stack.append((entry, depth + 1))
     return found
 
-
 def _detect_qt_drive_scan() -> list[dict]:
     """Scan fixed drives for Qt kits in the standard installer layout.
 
@@ -496,6 +493,8 @@ def _detect_qt_drive_scan() -> list[dict]:
     well-known-location methods miss.  Every candidate is validated by
     running ``qmake -query`` before being reported.
     """
+    if sys.platform != "win32":
+        return []
     results: list[dict] = []
 
     import ctypes
@@ -521,7 +520,6 @@ def _detect_qt_drive_scan() -> list[dict]:
                 results.append(info)
 
     return results
-
 
 def detect_qt_environments() -> list[dict]:
     """Return a list of detected Qt installations.
@@ -595,13 +593,11 @@ def detect_qt_environments() -> list[dict]:
 
     return results
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # MinGW toolchain detection
 # ═══════════════════════════════════════════════════════════════════════════
 
 _MINGW_RE = re.compile(r"^(?:llvm-)?mingw", re.IGNORECASE)
-
 
 def _gcc_version(gpp: Path) -> str:
     """Extract the g++ version string (e.g. '13.1.0'), or '' on failure."""
@@ -615,7 +611,6 @@ def _gcc_version(gpp: Path) -> str:
         return m.group(0) if m else ""
     except (subprocess.TimeoutExpired, OSError):
         return ""
-
 
 def detect_mingw_toolchains() -> list[dict]:
     """Locate MinGW toolchains bundled with Qt installers.

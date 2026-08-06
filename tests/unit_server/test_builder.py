@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pytest
 from qt_commander.builder import (
     BuildState,
+    INJECTOR_EXE_NAME,
+    LIBRARY_NAME,
     check_build_state,
     detect_native_src,
     _sanitize_path_input,
@@ -58,11 +60,11 @@ class TestBuildState:
     def test_not_built_when_zero_size_injector(self, tmp_path):
         build_dir = tmp_path / "injector" / "build"
         build_dir.mkdir(parents=True)
-        (build_dir / "qt-injector.exe").write_text("")  # zero size
+        (build_dir / INJECTOR_EXE_NAME).write_text("")  # zero size
 
         lib_dir = tmp_path / "library" / "build"
         lib_dir.mkdir(parents=True)
-        (lib_dir / "libqt-commander.dll").write_text("fake")
+        (lib_dir / LIBRARY_NAME).write_text("fake")
 
         state = check_build_state(tmp_path)
         assert state == BuildState.NOT_BUILT  # injector size 0 → NOT_BUILT
@@ -70,11 +72,11 @@ class TestBuildState:
     def test_not_built_when_zero_size_library(self, tmp_path):
         build_dir = tmp_path / "injector" / "build"
         build_dir.mkdir(parents=True)
-        (build_dir / "qt-injector.exe").write_text("fake")
+        (build_dir / INJECTOR_EXE_NAME).write_text("fake")
 
         lib_dir = tmp_path / "library" / "build"
         lib_dir.mkdir(parents=True)
-        (lib_dir / "libqt-commander.dll").write_text("")  # zero size
+        (lib_dir / LIBRARY_NAME).write_text("")  # zero size
 
         state = check_build_state(tmp_path)
         assert state == BuildState.NOT_BUILT
@@ -82,8 +84,8 @@ class TestBuildState:
     def test_built_when_artifacts_present(self, tmp_path):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(parents=True)
-        (bin_dir / "qt-injector.exe").write_text("fake binary content")
-        (bin_dir / "libqt-commander.dll").write_text("fake library content")
+        (bin_dir / INJECTOR_EXE_NAME).write_text("fake binary content")
+        (bin_dir / LIBRARY_NAME).write_text("fake library content")
 
         state = check_build_state(tmp_path)
         assert state == BuildState.BUILT
@@ -92,8 +94,8 @@ class TestBuildState:
         """When manifest exists but source hash differs, return NOT_BUILT."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(parents=True)
-        (bin_dir / "qt-injector.exe").write_text("fake")
-        (bin_dir / "libqt-commander.dll").write_text("fake")
+        (bin_dir / INJECTOR_EXE_NAME).write_text("fake")
+        (bin_dir / LIBRARY_NAME).write_text("fake")
 
         import json
         manifest = tmp_path / "build_manifest.json"
@@ -109,8 +111,8 @@ class TestBuildState:
         """Corrupt manifest JSON should be ignored (verified artifact existence)."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(parents=True)
-        (bin_dir / "qt-injector.exe").write_text("fake")
-        (bin_dir / "libqt-commander.dll").write_text("fake")
+        (bin_dir / INJECTOR_EXE_NAME).write_text("fake")
+        (bin_dir / LIBRARY_NAME).write_text("fake")
 
         (tmp_path / "build_manifest.json").write_text("corrupt json{{{")
 

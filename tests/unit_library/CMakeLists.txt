@@ -19,12 +19,15 @@ message(STATUS "Qt bin path: ${QT_BIN_PATH}")
 # so each test gets the Qt bin dir on its PATH explicitly.
 function(qtc_add_test NAME TARGET)
     add_test(NAME ${NAME} COMMAND ${TARGET})
-    # The compiler-runtime dir (configured with the GCC runtime DLLs next
-    # to the injector output) must precede the Qt kit's bin: MinGW tests
-    # built with a newer compiler crash on the kit's older libstdc++.
-    set_tests_properties(${NAME} PROPERTIES
-        ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}/src/injector\;${QT_BIN_PATH}\;$ENV{PATH}"
-        TIMEOUT 300)
+    if(WIN32)
+        set_tests_properties(${NAME} PROPERTIES
+            ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}/src/injector\;${QT_BIN_PATH}\;$ENV{PATH}"
+            TIMEOUT 300)
+    else()
+        set_tests_properties(${NAME} PROPERTIES
+            ENVIRONMENT "PATH=${CMAKE_BINARY_DIR}/src/injector:${QT_BIN_PATH}:$ENV{PATH};LD_LIBRARY_PATH=${QT_BIN_PATH}/../lib:$ENV{LD_LIBRARY_PATH};QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            TIMEOUT 300)
+    endif()
 endfunction()
 
 # --- ElementMap test (12 cases) ---
@@ -42,11 +45,8 @@ add_executable(test_selector
     test_selector.cpp
     ${CMAKE_SOURCE_DIR}/src/library/selector/selector.cpp
     ${CMAKE_SOURCE_DIR}/src/library/core/ui_scanner.cpp
+    ${CMAKE_SOURCE_DIR}/src/library/core/event_injector.cpp
 )
-if(WITH_QML)
-    target_sources(test_selector PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/library/core/event_injector.cpp)
-endif()
 target_include_directories(test_selector PRIVATE ${CMAKE_SOURCE_DIR}/src/library
     # QtGui private/QPA headers (QWindowSystemInterface for real click tests)
     ${Qt${QT_MAJOR_VERSION}Gui_PRIVATE_INCLUDE_DIRS}

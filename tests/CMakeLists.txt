@@ -29,6 +29,17 @@ if(BUILD_INJECTOR)
             endif()
         elseif(UNIX)
             target_link_libraries(${NAME} PRIVATE pthread dl)
+            # Tests that link injector_di.cpp need the ptrace/elf sources
+            # on Linux (PosixProcessOps depends on them).
+            foreach(_s ${SOURCES} ${ARGN})
+                if(_s MATCHES "injector_di\\.cpp")
+                    target_sources(${NAME} PRIVATE
+                        ${CMAKE_SOURCE_DIR}/src/injector/ptrace_ops.cpp
+                        ${CMAKE_SOURCE_DIR}/src/injector/elf_parser.cpp
+                    )
+                    break()
+                endif()
+            endforeach()
         endif()
         add_test(NAME ${NAME} COMMAND ${NAME})
         # Every test gets a timeout so a hang fails instead of blocking
@@ -45,13 +56,20 @@ if(BUILD_INJECTOR)
             "${CMAKE_BINARY_DIR}/tests/test-apps/qml"
             "${QT_COMMANDER_QT_BIN}")
         string(JOIN ";" _qtc_path ${_qtc_bin_dirs})
-        # Semicolons inside the PATH value must be escaped, otherwise CMake
-        # splits the ENVIRONMENT property into multiple list entries and
-        # ctest applies only the first one.
-        set(_qtc_env "PATH=${_qtc_path}\;$ENV{PATH}")
-        string(REPLACE ";" "\\;" _qtc_env "${_qtc_env}")
-        set_tests_properties(${NAME} PROPERTIES
-            ENVIRONMENT "${_qtc_env}")
+        if(WIN32)
+            # Semicolons inside the PATH value must be escaped, otherwise CMake
+            # splits the ENVIRONMENT property into multiple list entries and
+            # ctest applies only the first one.
+            set(_qtc_env "PATH=${_qtc_path}\;$ENV{PATH}")
+            string(REPLACE ";" "\\;" _qtc_env "${_qtc_env}")
+            set_tests_properties(${NAME} PROPERTIES
+                ENVIRONMENT "${_qtc_env}")
+        else()
+            # Linux: use colon-separated PATH and LD_LIBRARY_PATH.
+            string(JOIN ":" _qtc_path_colon ${_qtc_bin_dirs})
+            set_tests_properties(${NAME} PROPERTIES
+                ENVIRONMENT "PATH=${_qtc_path_colon}:$ENV{PATH};LD_LIBRARY_PATH=${_qtc_path_colon}:$ENV{LD_LIBRARY_PATH}")
+        endif()
     endfunction()
 
     # --- Unit: DI injector logic (35 tests) ---
@@ -60,32 +78,39 @@ if(BUILD_INJECTOR)
         ${CMAKE_SOURCE_DIR}/src/injector/injector_di.cpp
     )
 
-    # --- Unit: PE parser vs kernel32.dll (7 tests) ---
-    add_injector_test(test_pe_real
-        unit_injector/test_pe_real.cpp
-    )
+    # --- Unit: PE parser vs kernel32.dll (7 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_pe_real
+            unit_injector/test_pe_real.cpp
+        )
+    endif()
 
-    # --- Unit: Win32ProcessOps + CLI args (30 tests) ---
-    add_injector_test(test_cli_integration
-        unit_injector/test_cli_integration.cpp
-        ${CMAKE_SOURCE_DIR}/src/injector/injector_di.cpp
-    )
+    # --- Unit: Win32ProcessOps + CLI args (30 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_cli_integration
+            unit_injector/test_cli_integration.cpp
+            ${CMAKE_SOURCE_DIR}/src/injector/injector_di.cpp
+        )
+    endif()
 
-    # --- Unit: injector_win.cpp helpers (15 tests) ---
-    add_injector_test(test_win32_coverage
-        unit_injector/test_win32_coverage.cpp
-    )
+    # --- Unit: injector_win.cpp helpers (15 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_win32_coverage
+            unit_injector/test_win32_coverage.cpp
+        )
+    endif()
 
-    # --- Unit: Socket utils (12 tests) ---
-    # socket_utils.cpp is #include'd by the test file, not linked separately
+    # --- Unit: Socket utils (12 tests, cross-platform via #ifdef) ---
     add_injector_test(test_socket_utils
         unit_injector/test_socket_utils.cpp
     )
 
-    # --- Unit: LoadLibraryW failure paths (2 tests) ---
-    add_injector_test(test_injector_errors
-        unit_injector/test_injector_errors.cpp
-    )
+    # --- Unit: LoadLibraryW failure paths (2 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_injector_errors
+            unit_injector/test_injector_errors.cpp
+        )
+    endif()
 
     # --- Unit: Framing cross-validation (5 tests) ---
     add_injector_test(test_framing_cross
@@ -102,43 +127,51 @@ if(BUILD_INJECTOR)
         unit_injector/test_port_poll.cpp
     )
 
-    # --- Unit: PE parser synthetic (10 tests) ---
+    # --- Unit: PE parser synthetic (10 tests, cross-platform) ---
     add_injector_test(test_pe_parser
         unit_injector/test_pe_parser.cpp
     )
 
-    # --- Unit: PE import parser + dependency closure (16 tests) ---
-    add_injector_test(test_import_parser
-        unit_injector/test_import_parser.cpp
-    )
+    # --- Unit: PE import parser + dependency closure (16 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_import_parser
+            unit_injector/test_import_parser.cpp
+        )
+    endif()
 
-    # --- E2E: Full lifecycle (12 tests) ---
+    # --- E2E: Full lifecycle (12 tests, Windows only for now) ---
     # Depends on: qt-injector, libqt-commander, qt-widget-test
-    add_injector_test(test_e2e
-        unit_injector/test_e2e.cpp
-    )
-    set_tests_properties(test_e2e PROPERTIES
-        DEPENDS "qt-injector;qt-widget-test"
-        TIMEOUT 300
-    )
+    if(WIN32)
+        add_injector_test(test_e2e
+            unit_injector/test_e2e.cpp
+        )
+        set_tests_properties(test_e2e PROPERTIES
+            DEPENDS "qt-injector;qt-widget-test"
+            TIMEOUT 300
+        )
+    endif()
 
-    # --- E2E: Exit codes 3 + 6 (2 tests) ---
-    add_injector_test(test_e2e_exit_codes
-        unit_injector/test_e2e_exit_codes.cpp
-    )
-    set_tests_properties(test_e2e_exit_codes PROPERTIES
-        DEPENDS "qt-injector;qt-widget-test"
-        TIMEOUT 300
-    )
+    # --- E2E: Exit codes 3 + 6 (2 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_e2e_exit_codes
+            unit_injector/test_e2e_exit_codes.cpp
+        )
+        set_tests_properties(test_e2e_exit_codes PROPERTIES
+            DEPENDS "qt-injector;qt-widget-test"
+            TIMEOUT 300
+        )
+    endif()
 
-    # --- E2E: Exit codes 4 + 5 (2 tests) ---
-    add_injector_test(test_exit45
-        unit_injector/test_exit45.cpp
-    )
-    set_tests_properties(test_exit45 PROPERTIES
-        DEPENDS "qt-injector;qt-widget-test"
-        TIMEOUT 300
-    )
+    # --- E2E: Exit codes 4 + 5 (2 tests, Windows only) ---
+    if(WIN32)
+        add_injector_test(test_exit45
+            unit_injector/test_exit45.cpp
+        )
+        set_tests_properties(test_exit45 PROPERTIES
+            DEPENDS "qt-injector;qt-widget-test"
+            TIMEOUT 300
+        )
+    endif()
 endif()
 
 # --- Python unit tests + E2E preload verification ---------------------------
