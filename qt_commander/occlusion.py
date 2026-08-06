@@ -13,10 +13,13 @@ This is a geometric heuristic, not a pixel-exact render:
   :func:`is_occluder`); transparent containers (QQuickItem, layouts,
   mouse areas, text, custom QML components) never occlude, so a text
   label over a background does not hide the background.
-- Equal-z siblings are ordered by tree order (creation order): the
-  later-created element covers the earlier one.
-- A parent never occludes its own descendants (children paint above
-  their parent); a child's rect does occlude its parent's area.
+- Siblings are ordered by ascending z (ties by declaration order), and
+  the whole subtree is treated as one layer: a parent paints before its
+  children, so a child (any z) always covers its parent, and a subtree
+  paints above its parent's lower-z siblings.  The solve walks the
+  resulting paint sequence in reverse.
+- A parent never occludes its own descendants (they paint after it);
+  a child's rect does occlude its parent's area.
 - Removed elements are dropped from the tree; their still-visible
   descendants are reparented one level up.
 - Occlusion is computed per top-level window (topLevelId).
@@ -284,52 +287,83 @@ def prune_snapshot(snapshot: dict) -> dict:
         out["pruned"] = {"removed": 0, "kept": 0, "removed_ratio": 0.0}
         return out
 
-    # ---- collect all elements with their geometry ---------------------
-    elements = []  # (topLevelId, z_order, order, objID, rect, node, ancestors)
+    # ---- collect all elements in paint order --------------------------
+    # Qt paints depth-first: a parent renders before its children, and
+    # siblings render in ascending z (ties broken by declaration order).
+    # So the paint sequence is a preorder walk where each node's children
+    # are visited in (z, order) order.  Processing that sequence in
+    # reverse (last-painted first) reproduces the real occlusion: a node
+    # is covered by every opaque element painted after it, including its
+    # own children and higher-z sibling subtrees -- but never by its
+    # ancestors (they paint earlier; exclude below).
+    #
+    # z is only compared *between siblings*: a child (any z) always
+    # paints above its parent, and a subtree paints above its parent's
+    # lower-z siblings.  Sorting a flat (z, order) key across the whole
+    # tree would be wrong -- a z=0 background inside a z=2 button would
+    # sort before the button root and never cover it.
+    #
+    # QML exception: a child with negative z paints *under its parent's
+    # content* (still inside the parent's subtree layer).  QtWidgets has
+    # no such concept -- every child paints above its parent.  Negative-z
+    # children therefore render before the parent (so the parent's rect
+    # covers them during the reverse solve) -- handled by their exclude
+    # set dropping the direct parent.
+    elements = []  # (topLevelId, objID, rect, node, exclude)
     kept_ids: set[int] = set()  # no-geometry elements are kept as-is
-    order = 0
-    for root in nodes:
-        for node, ancestors in iter_nodes(root):
-            oid = node.get("objID")
-            if oid is None:
-                continue
-            # Hidden elements neither occlude nor are occluded; they are
-            # dropped (their still-visible descendants are reparented up
-            # by rebuild_tree).  A hidden element must never occlude the
-            # visible UI underneath it (e.g. an invisible modal dialog).
-            if node.get("visible") is False:
-                continue
-            rect = rect_from_node(node)
-            if rect is None:
-                kept_ids.add(oid)  # zero-size / missing geometry: keep
-                continue
-            z = node.get("z_order", 0)
-            try:
-                z = float(z)
-            except (TypeError, ValueError):
-                z = 0.0
-            top = node.get("topLevelId", 0)
-            elements.append((top, z, order, oid, rect, node, ancestors))
-            order += 1
 
-    # ---- per window: sort and accumulate coverage ----------------------
-    # Sort by z DESCENDING then tree order DESCENDING: Qt paints siblings
-    # in tree order (children array order) at equal z, so the later-created
-    # element covers the earlier one.  Processing each element in this
-    # order (query visibility, then register occluders) reproduces both
-    # z-level and same-z occlusion.
+    def visit(node: dict, ancestors: tuple) -> None:
+        oid = node.get("objID")
+        new_anc = ancestors if oid is None else ancestors + (oid,)
+        children = node.get("children", [])
+
+        def zkey(c: dict):
+            return (float(c.get("z_order", 0) or 0), c.get("objID", 0))
+
+        neg = [c for c in children if (float(c.get("z_order", 0) or 0)) < 0]
+        pos = [c for c in children if (float(c.get("z_order", 0) or 0)) >= 0]
+        # negative-z children paint before the parent
+        for child in sorted(neg, key=zkey):
+            visit(child, new_anc)
+        if oid is not None and node.get("visible") is not False:
+            rect = rect_from_node(node)
+            if rect is not None:
+                top = node.get("topLevelId", 0)
+                # z < 0: painted under the parent's content, so the
+                # direct parent (last ancestor) participates in covering
+                # it; every higher ancestor still paints before it.
+                exclude = frozenset(ancestors[:-1]) \
+                    if (float(node.get("z_order", 0) or 0)) < 0 and ancestors \
+                    else frozenset(ancestors)
+                elements.append((top, oid, rect, node, exclude))
+            else:
+                kept_ids.add(oid)  # zero-size / missing geometry: keep
+        # Hidden elements neither occlude nor are occluded; they are
+        # dropped (their still-visible descendants are reparented up by
+        # rebuild_tree).  A hidden element must never occlude the visible
+        # UI underneath it (e.g. an invisible modal dialog), so hidden
+        # nodes never enter `elements` -- but we still walk their
+        # children for visible descendants.
+        for child in sorted(pos, key=zkey):
+            visit(child, new_anc)
+
+    for root in nodes:
+        visit(root, ())
+
+    # ---- per window: accumulate coverage in reverse paint order -------
+    # Walk the paint sequence backwards (last-painted first): each element
+    # queries how much of it is still visible (everything painted after it
+    # that is opaque), then registers itself as an occluder if opaque.
     by_window: dict[int, list] = {}
     for e in elements:
         by_window.setdefault(e[0], []).append(e)
-    for win_elems in by_window.values():
-        win_elems.sort(key=lambda e: (e[1], e[2]), reverse=True)
 
     covered: dict[int, CoveredArea] = {}
     visible_ratio: dict[int, float] = {}
     for win, win_elems in by_window.items():
         cov = covered.setdefault(win, CoveredArea())
-        for _top, _z, _order, oid, rect, node, ancestors in win_elems:
-            visible = cov.visible_area(rect, exclude=ancestors)
+        for _top, oid, rect, node, exclude in reversed(win_elems):
+            visible = cov.visible_area(rect, exclude=exclude)
             if visible < rect.area:
                 ratio = visible / rect.area if rect.area > 0 else 0.0
                 visible_ratio[oid] = ratio
@@ -338,7 +372,7 @@ def prune_snapshot(snapshot: dict) -> dict:
 
     # ---- decide what to keep ------------------------------------------
     removed = 0
-    for _top, _z, _order, oid, rect, node, _anc in elements:
+    for _top, oid, _rect, _node, _exclude in elements:
         ratio = visible_ratio.get(oid)
         if ratio is not None and ratio <= 0.0:
             removed += 1

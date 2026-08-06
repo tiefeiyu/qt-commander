@@ -320,3 +320,77 @@ class TestPruneSnapshot:
                  node(2, "QWidget", 0, 0, 50, 100, z=1))
         out = prune_snapshot(s)
         json.dumps(out)  # must not raise
+
+    def test_sibling_subtrees_are_whole_layers(self):
+        # z is only compared between siblings.  A button root (z=2) with a
+        # z=0 background child must be covered by that child, exactly like
+        # the z=0 sibling button -- the child's z must NOT make it sort
+        # below the parent in a flat global sort (regression: one button
+        # was kept while an identical sibling was removed).
+        def btn(oid, y):
+            return node(oid, "QGCButton_QMLTYPE_8", 0, y, 40, 40, z=0, children=[
+                node(oid + 1, "QQuickRectangle", 0, y, 40, 40, z=0),
+                node(oid + 2, "QQuickRectangle", 0, y, 40, 40, z=1),
+            ])
+        s = snap(
+            node(1, "QWidget", 0, 0, 400, 400, z=0, children=[
+                btn(10, 0),      # z=0 button
+                btn(20, 50),     # z=2 button: subtree paints above z=0 sib
+            ]),
+        )
+        # give the second button's root z=2 (higher than sibling btn 10)
+        s["nodes"][0]["children"][1]["z_order"] = 2
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        # both button roots and their z=0 backgrounds are covered by their
+        # own z=1 highlight children -- identical handling for both
+        assert 10 not in kept and 20 not in kept
+        assert 11 not in kept and 21 not in kept
+        assert 12 in kept and 22 in kept
+
+    def test_child_z_never_crosses_subtree_layers(self):
+        # A subtree's layer is decided by its root's z, not by any
+        # descendant's z: A (z=0, child z=5) paints entirely below B
+        # (z=2).  B's background (z=0) still covers A's child (z=5).
+        s = snap(
+            node(1, "QQuickItem", 0, 0, 100, 100, z=0, children=[
+                node(2, "QQuickRectangle", 0, 0, 100, 100, z=5),
+            ]),
+            node(3, "QQuickItem", 0, 0, 100, 100, z=2, children=[
+                node(4, "QQuickRectangle", 0, 0, 100, 100, z=0),
+            ]),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        # B's subtree is on top: only B's background (4) survives.
+        # A's child (2) is covered by it despite z=5.
+        assert kept == [4]
+
+    def test_negative_z_child_paints_under_parent(self):
+        # QML-only: a negative-z child paints under its parent's content,
+        # so the parent's rect covers it (QtWidgets has no such concept).
+        # A fully covering opaque parent hides the negative-z child.
+        s = snap(node(1, "QQuickRectangle", 0, 0, 100, 100, z=0, children=[
+            node(2, "QQuickRectangle", 0, 0, 100, 100, z=-1),
+        ]))
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [1]
+
+    def test_negative_z_child_kept_when_partially_visible(self):
+        # A transparent parent does not hide the negative-z child, but
+        # the parent's higher-z sibling (3) paints above it: only the
+        # lower half of the negative-z child survives.
+        s = snap(
+            node(1, "QQuickItem", 0, 0, 100, 100, z=0, children=[
+                node(2, "QQuickRectangle", 0, 0, 100, 100, z=-1),
+            ]),
+            node(3, "QQuickRectangle", 0, 0, 100, 50, z=1),
+        )
+        out = prune_snapshot(s)
+        kept = ids(out["nodes"])
+        assert kept == [1, 2, 3]
+        # both the transparent parent and its negative-z child keep their
+        # lower half (3 covers the top half)
+        assert out["nodes"][0]["visible_ratio"] == pytest.approx(0.5)
+        assert out["nodes"][0]["children"][0]["visible_ratio"] == pytest.approx(0.5)
