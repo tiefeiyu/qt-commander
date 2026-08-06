@@ -248,8 +248,11 @@ async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
 
     The solver is a geometric heuristic (axis-aligned rects, per-window
     z-order with same-z tree order; widgets and QML rectangles/images
-    occlude, transparent containers, text and custom QML components do
-    not; a parent never occludes its own children).
+    occlude unless semi-transparent, transparent containers, text and
+    custom QML components do not; a parent never occludes its own
+    children).  Occlusion is per top-level window on purpose: the agent
+    must stay able to operate an app that the user has covered or
+    minimised, so windows never occlude each other.
     """
     session = _resolve_session(session_id)
     src = session.session_dir / "snapshots" / f"snapshot_{snapshot_id:08d}.json"

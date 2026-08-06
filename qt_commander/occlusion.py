@@ -5,6 +5,13 @@ elements a human eye can actually see: fully covered elements are
 removed, partially covered ones are kept and annotated with a
 ``visible_ratio`` field (how much of them remains visible).
 
+Scope decision: occlusion is solved per top-level window only.  Two
+windows overlapping on screen are NOT occluded against each other --
+the agent must be able to operate an app even when the user has it
+covered or minimised, so everything in every window stays reachable.
+Inside a single window, occluded elements are genuinely unreachable
+(a click lands on the covering element), so hiding them is correct.
+
 This is a geometric heuristic, not a pixel-exact render:
 
 - Only axis-aligned rectangles are considered (circles, rounded corners
@@ -22,7 +29,8 @@ This is a geometric heuristic, not a pixel-exact render:
   a child's rect does occlude its parent's area.
 - Removed elements are dropped from the tree; their still-visible
   descendants are reparented one level up.
-- Occlusion is computed per top-level window (topLevelId).
+- Occlusion is computed per top-level window (topLevelId); windows
+  never occlude each other (see the scope decision above).
 - Transparency: the effective opacity is the product down the ancestor
   chain (a 50% parent renders the whole subtree at 50%); only a fully
   opaque element (eff. opacity >= 1 and fill alpha 1 for QML
