@@ -242,3 +242,7 @@ qt-commander/
 ## 许可证
 
 [MIT](LICENSE) — 可自由使用、修改、分发，可集成到商业项目，保留署名即可。
+
+## 作者
+
+由 [TieFeiyu](https://github.com/tiefeiyu) 开发与维护。

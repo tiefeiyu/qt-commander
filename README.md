@@ -254,3 +254,7 @@ qt-commander/
 
 [MIT](LICENSE) — free to use, modify, distribute, and integrate into
 commercial projects, with attribution.
+
+## Author
+
+Developed and maintained by [TieFeiyu](https://github.com/tiefeiyu).
