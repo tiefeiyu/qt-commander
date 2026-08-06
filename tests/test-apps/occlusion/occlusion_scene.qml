@@ -160,4 +160,13 @@ Window {
         x: -40; y: 330; width: 100; height: 50
         color: "#FF9800"
     }
+
+    // ---- CJK text (encoding regression probe) ----
+    Text {
+        objectName: "occlCjkText"
+        text: "审计日志 通讯连接 状态图"
+        color: "#333"
+        font.pixelSize: 14
+        x: 460; y: 400
+    }
 }
