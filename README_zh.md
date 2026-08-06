@@ -8,7 +8,7 @@
 ![MSVC](https://img.shields.io/badge/MSVC-supported-blue)
 ![MinGW](https://img.shields.io/badge/MinGW-supported-blue)
 ![Platform](https://img.shields.io/badge/Windows-supported-important)
-![License](https://img.shields.io/badge/License-Apache%202.0-orange)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ## 为什么选择 qt-commander
 
@@ -241,4 +241,4 @@ qt-commander/
 
 ## 许可证
 
-MIT
+[MIT](LICENSE) — 可自由使用、修改、分发，可集成到商业项目，保留署名即可。

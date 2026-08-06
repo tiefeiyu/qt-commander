@@ -9,7 +9,7 @@ QWidget and QML interfaces.
 ![MSVC](https://img.shields.io/badge/MSVC-supported-blue)
 ![MinGW](https://img.shields.io/badge/MinGW-supported-blue)
 ![Platform](https://img.shields.io/badge/Windows-supported-important)
-![License](https://img.shields.io/badge/License-Apache%202.0-orange)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ## Why qt-commander
 
@@ -252,4 +252,5 @@ qt-commander/
 
 ## License
 
-MIT
+[MIT](LICENSE) — free to use, modify, distribute, and integrate into
+commercial projects, with attribution.
