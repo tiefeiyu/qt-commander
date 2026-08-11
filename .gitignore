@@ -17,3 +17,6 @@ build/
 *.tmp
 .vscode/
 portal.db
+
+# Portal MCP runtime state DBs
+.portal/

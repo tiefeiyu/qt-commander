@@ -729,5 +729,6 @@ async def read_screenshot_resource(session_id: str, filename: str) -> bytes:
 # ============================================================================
 
 def main():
-    """Entry point — run with: uv run python -m qt_commander."""
+    """Entry point (console script `qt-commander-mcp`; also runnable via
+    `python -m qt_commander`)."""
     mcp.run()

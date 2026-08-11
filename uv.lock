@@ -1191,7 +1191,7 @@ wheels = [
 
 [[package]]
 name = "qt-commander-mcp"
-version = "1.0.0"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

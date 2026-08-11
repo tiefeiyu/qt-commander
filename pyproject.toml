@@ -14,6 +14,9 @@ dependencies = [
     "psutil>=7.2.2",
 ]
 
+[project.scripts]
+qt-commander-mcp = "qt_commander.server:main"
+
 [tool.setuptools.packages.find]
 include = ["qt_commander*"]
 

@@ -24,15 +24,16 @@ way Playwright drives web pages:
   visibility, opacity and properties; occlusion-pruned views of what a
   human actually sees; element lookup by text / type / property;
   real input pipeline clicks, typing, keyboard shortcuts, drags.
-- **Easy to try** — `uv run python -m qt_commander`; the injector and
-  library compile on demand against any detected Qt kit.
+- **Easy to try** — `uv run --project <path/to/qt-commander> qt-commander-mcp`;
+  the injector and library compile on demand against any detected Qt kit.
 
 ## Quick Start
 
 ```bash
 # Launch MCP server via uv (no global Python install needed — uv resolves
-# pyproject.toml / uv.lock and manages an isolated environment)
-uv run python -m qt_commander
+# pyproject.toml / uv.lock and manages an isolated environment; the first
+# run auto-syncs the project venv and installs the qt-commander-mcp script)
+uv run --project /absolute/path/to/qt-commander qt-commander-mcp
 ```
 
 Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
@@ -46,12 +47,16 @@ Requires [uv](https://docs.astral.sh/uv) and Python 3.10+.
   "mcpServers": {
     "qt-commander": {
       "command": "uv",
-      "args": ["run", "python", "-m", "qt_commander"],
-      "cwd": "path/to/qt-commander"
+      "args": ["run", "--project", "/absolute/path/to/qt-commander", "qt-commander-mcp"]
     }
   }
 }
 ```
+
+The `--project` flag pins the project location, so **no `cwd` is needed** —
+the server starts from any working directory. (A `cwd`-dependent launch is a
+common cause of "MCP connection failed": if the client does not honor `cwd`,
+`uv run` falls back to the ambient Python and the module is not found.)
 
 **Cursor / other MCP clients** — same command shape; the server speaks
 stdio MCP and needs no other setup.  See [llms-install.md](llms-install.md)

@@ -22,15 +22,16 @@ Qt 应用程序**：
 - **Agent 能拿到什么** — 完整 UI 快照（几何、z 序、可见性、透明度、
   属性）；按人眼可见性做遮挡修剪的视图；按文本/类型/属性查找元素；
   真实输入管线点击、打字、快捷键、拖拽。
-- **开箱即用** — `uv run python -m qt_commander`；注入器与库按需
-  针对检测到的任意 Qt kit 编译。
+- **开箱即用** — `uv run --project <path/to/qt-commander> qt-commander-mcp`；
+  注入器与库按需针对检测到的任意 Qt kit 编译。
 
 ## 快速开始
 
 ```bash
 # 通过 uv 启动 MCP 服务器（无需全局安装 Python 包——uv 依据
-# pyproject.toml / uv.lock 自动管理隔离环境）
-uv run python -m qt_commander
+# pyproject.toml / uv.lock 自动管理隔离环境；首次运行会自动 sync
+# 项目 venv 并安装 qt-commander-mcp 脚本）
+uv run --project /absolute/path/to/qt-commander qt-commander-mcp
 ```
 
 需要 [uv](https://docs.astral.sh/uv) 与 Python 3.10+。
@@ -44,12 +45,15 @@ uv run python -m qt_commander
   "mcpServers": {
     "qt-commander": {
       "command": "uv",
-      "args": ["run", "python", "-m", "qt_commander"],
-      "cwd": "path/to/qt-commander"
+      "args": ["run", "--project", "/absolute/path/to/qt-commander", "qt-commander-mcp"]
     }
   }
 }
 ```
+
+`--project` 参数把项目位置钉死，因此**不需要 `cwd`**——服务器从任何
+工作目录都能启动。（依赖 `cwd` 的启动方式是"MCP 连接失败"的常见原因：
+客户端不遵守 `cwd` 时，`uv run` 会回退到全局 Python，找不到该模块。）
 
 **Cursor / 其他 MCP 客户端** — 命令格式相同；服务器走 stdio MCP 协议，
 无需其他配置。完整安装指南（含移除旧 pip 安装方式）见
