@@ -27,9 +27,21 @@ def user_skills_dir() -> Path:
     return Path.home() / ".claude" / "skills"
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """True for Windows junctions/symlinks (FILE_ATTRIBUTE_REPARSE_POINT).
+
+    Path.is_symlink() only reports junction targets on Python 3.12+;
+    checking the attribute directly works on every supported Python.
+    """
+    if os.name != "nt":
+        return False
+    attrs = os.lstat(path).st_file_attributes
+    return bool(attrs & 0x400)
+
+
 def remove_path(path: Path) -> None:
     """Remove a previous install: directory tree, file, or symlink/junction."""
-    if path.is_dir() and not path.is_symlink():
+    if path.is_dir() and not _is_reparse_point(path):
         shutil.rmtree(path)
     else:
         # unlink() removes the link itself (never the link target).
@@ -70,9 +82,9 @@ def main() -> int:
 
     user_skills_dir().mkdir(parents=True, exist_ok=True)
 
-    # exists() is False for a broken junction/symlink; is_symlink() still
-    # reports it, so a dangling link from a moved repo gets cleaned up too.
-    if dst.exists() or dst.is_symlink():
+    # lexists() is True even for a broken junction/symlink, so a dangling
+    # link from a moved repo gets cleaned up too.
+    if os.path.lexists(dst):
         remove_path(dst)
 
     if args.link:
