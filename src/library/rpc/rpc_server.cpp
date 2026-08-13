@@ -169,6 +169,15 @@ static QJsonValue serializeValue(const QVariant& value, int propDepth) {
     return QJsonValue();
 }
 
+// Re-entrancy guard for main-thread dispatch lambdas.  Some operations
+// (QML grabToImage in Screenshot::capture) spin a nested event loop which
+// processes *other* already-queued dispatch lambdas.  Without a guard,
+// those re-entered lambdas interleave with the outer operation and, while
+// the outer lambda holds the ElementMap read lock, deadlock when they
+// upgrade to a write lock (snapshot/find rebuild).  Re-entered requests
+// are answered 2007 (retryable) and skipped.
+static thread_local bool s_inDispatch = false;
+
 // ---------------------------------------------------------------------------
 // validatedElement — resolve an element id and reject unusable targets
 // ---------------------------------------------------------------------------
@@ -885,6 +894,22 @@ void run_rpc_server(socket_t listen_fd,
             [elementMap, state, opMethod, rpcParams, elementId,
              rpcId, isNotification]() {
                 // ---- Runs on the MAIN thread ----------------------------
+                if (s_inDispatch) {
+                    // Re-entered from a nested event loop (QML screenshot
+                    // grab).  Skip execution and report a retryable error
+                    // instead of interleaving with the outer operation.
+                    if (!isNotification) {
+                        state->response = jsonRpcError(
+                            rpcId, 2007,
+                            QStringLiteral("Main thread busy in nested event loop; retry the request"));
+                    }
+                    state->sem.release();
+                    return;
+                }
+                struct DispatchGuard {
+                    DispatchGuard() { s_inDispatch = true; }
+                    ~DispatchGuard() { s_inDispatch = false; }
+                } dispatchGuard;
                 QReadLocker locker(elementMap->rwLock());
                 const uint64_t epoch = elementMap->epoch();
 
@@ -1479,12 +1504,17 @@ void run_rpc_server(socket_t listen_fd,
                 // ---- keyPress ----
                 else if (opMethod == QStringLiteral("keyPress")) {
                     QObject* obj = validatedElement(elementMap.get(), elementId, result);
-                    if (!obj)
+                    // Only elementId == 0 (explicit "focused widget" request)
+                    // falls back to the focus widget.  A stale id (> 0) must
+                    // error out like every other operation -- silently typing
+                    // into the focused control would corrupt unrelated state.
+                    if (!obj && elementId == 0)
                         obj = QApplication::focusWidget();
                     if (!obj) {
+                        if (elementId == 0 || !result.contains(QStringLiteral("message")))
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("No target element or focused widget");
                         result[QStringLiteral("ok")] = false;
-                        result[QStringLiteral("message")] =
-                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString key =
                             rpcParams[QStringLiteral("key")].toString();
@@ -1508,12 +1538,17 @@ void run_rpc_server(socket_t listen_fd,
                 // ---- keyRelease ----
                 else if (opMethod == QStringLiteral("keyRelease")) {
                     QObject* obj = validatedElement(elementMap.get(), elementId, result);
-                    if (!obj)
+                    // Only elementId == 0 (explicit "focused widget" request)
+                    // falls back to the focus widget.  A stale id (> 0) must
+                    // error out like every other operation -- silently typing
+                    // into the focused control would corrupt unrelated state.
+                    if (!obj && elementId == 0)
                         obj = QApplication::focusWidget();
                     if (!obj) {
+                        if (elementId == 0 || !result.contains(QStringLiteral("message")))
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("No target element or focused widget");
                         result[QStringLiteral("ok")] = false;
-                        result[QStringLiteral("message")] =
-                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString key =
                             rpcParams[QStringLiteral("key")].toString();
@@ -1537,12 +1572,17 @@ void run_rpc_server(socket_t listen_fd,
                 // ---- typeText ----
                 else if (opMethod == QStringLiteral("typeText")) {
                     QObject* obj = validatedElement(elementMap.get(), elementId, result);
-                    if (!obj)
+                    // Only elementId == 0 (explicit "focused widget" request)
+                    // falls back to the focus widget.  A stale id (> 0) must
+                    // error out like every other operation -- silently typing
+                    // into the focused control would corrupt unrelated state.
+                    if (!obj && elementId == 0)
                         obj = QApplication::focusWidget();
                     if (!obj) {
+                        if (elementId == 0 || !result.contains(QStringLiteral("message")))
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("No target element or focused widget");
                         result[QStringLiteral("ok")] = false;
-                        result[QStringLiteral("message")] =
-                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString text =
                             rpcParams[QStringLiteral("text")].toString();
@@ -1566,12 +1606,17 @@ void run_rpc_server(socket_t listen_fd,
                 // ---- keyCombo ----
                 else if (opMethod == QStringLiteral("keyCombo")) {
                     QObject* obj = validatedElement(elementMap.get(), elementId, result);
-                    if (!obj)
+                    // Only elementId == 0 (explicit "focused widget" request)
+                    // falls back to the focus widget.  A stale id (> 0) must
+                    // error out like every other operation -- silently typing
+                    // into the focused control would corrupt unrelated state.
+                    if (!obj && elementId == 0)
                         obj = QApplication::focusWidget();
                     if (!obj) {
+                        if (elementId == 0 || !result.contains(QStringLiteral("message")))
+                            result[QStringLiteral("message")] =
+                                QStringLiteral("No target element or focused widget");
                         result[QStringLiteral("ok")] = false;
-                        result[QStringLiteral("message")] =
-                            QStringLiteral("No target element or focused widget");
                     } else {
                         const QString keys =
                             rpcParams[QStringLiteral("keys")].toString();
@@ -1698,8 +1743,14 @@ void run_rpc_server(socket_t listen_fd,
                             rpcParams[QStringLiteral("dir")].toString();
                         const int seq =
                             rpcParams[QStringLiteral("seq")].toInt(0);
+                        // QML grabToImage spins a nested event loop; release
+                        // the ElementMap read lock first so re-entered
+                        // dispatch lambdas (guarded at the entry above) never
+                        // block on a write upgrade while we wait.
+                        locker.unlock();
                         const QString filePath =
                             Screenshot::capture(obj, dir, seq);
+                        locker.relock();
                         if (filePath.isEmpty()) {
                             result[QStringLiteral("ok")] = false;
                             result[QStringLiteral("message")] =
@@ -1758,10 +1809,16 @@ void run_rpc_server(socket_t listen_fd,
 
         // Wait for result with 30-second timeout
         if (!state->sem.tryAcquire(1, 30000)) {
+            // The dispatched lambda is still queued and WILL execute on the
+            // main thread once it becomes free -- the timeout only means we
+            // stopped waiting.  Clients must NOT blindly retry side-effect
+            // operations (click/setProperty/typeText): they would run twice.
             rpc_io::sendJsonError(
                 client_fd,
                 rpcId < 0 ? 0 : rpcId, 2004,
-                QStringLiteral("Main thread operation timed out"));
+                QStringLiteral("Main thread operation timed out: the request is "
+                               "still queued and may execute; do not retry "
+                               "side-effect operations without verifying state"));
         } else if (!state->response.isEmpty()) {
             rpc_io::sendFrame(client_fd,
                       std::string(state->response.constData(),
