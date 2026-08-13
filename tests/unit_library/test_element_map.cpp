@@ -183,7 +183,7 @@ static void test_insert_overwrite()
 // ---------------------------------------------------------------------------
 static void test_clear_resets_counters()
 {
-    TEST("clear resets epoch and nextId");
+    TEST("clear resets nextId but preserves the epoch");
     ElementMap map;
     QObject obj;
 
@@ -192,7 +192,7 @@ static void test_clear_resets_counters()
     CHECK(map.epoch() == 1, "expected epoch 1 before clear");
 
     map.clear();
-    CHECK(map.epoch() == 0, "expected epoch 0 after clear");
+    CHECK(map.epoch() == 1, "expected epoch preserved after clear");
     CHECK(map.nextId() == 1, "expected nextId 1 after clear");
     PASS();
 }
@@ -281,6 +281,38 @@ static void test_insert_if_absent()
 }
 
 // ---------------------------------------------------------------------------
+// 14. epoch is a monotonic generation counter: clear() (snapshot rebuild)
+// must NOT reset it, so each snapshot generation is distinguishable; the
+// grow-only operations (insertIfAbsent) never bump it
+// ---------------------------------------------------------------------------
+static void test_epoch_monotonic()
+{
+    TEST("epoch is monotonic across clear/rebuild cycles");
+    ElementMap map;
+    CHECK(map.epoch() == 0, "initial epoch should be 0");
+
+    // Snapshot cycle 1: clear + incrementEpoch.
+    map.clear();
+    map.incrementEpoch();
+    CHECK(map.epoch() == 1, "epoch should be 1 after first snapshot cycle");
+
+    // Snapshot cycle 2: clear must NOT reset the epoch.
+    map.clear();
+    map.incrementEpoch();
+    CHECK(map.epoch() == 2, "epoch should be 2 after second snapshot cycle");
+
+    // clear alone preserves the generation count.
+    map.clear();
+    CHECK(map.epoch() == 2, "clear alone must not reset the epoch");
+
+    // Grow-only inserts (find/view) never bump the epoch.
+    QObject obj;
+    map.insertIfAbsent(&obj);
+    CHECK(map.epoch() == 2, "insertIfAbsent must not bump the epoch");
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main()
@@ -301,6 +333,7 @@ int main()
     test_insert_overwrite();
     test_insert_if_absent();
     test_clear_resets_counters();
+    test_epoch_monotonic();
     test_snapshot();
     test_rwlock_accessor();
 

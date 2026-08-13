@@ -944,7 +944,6 @@ void run_rpc_server(socket_t listen_fd,
                     ~DispatchGuard() { s_inDispatch = false; }
                 } dispatchGuard;
                 QReadLocker locker(elementMap->rwLock());
-                const uint64_t epoch = elementMap->epoch();
 
                 QJsonObject result;
 

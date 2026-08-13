@@ -38,7 +38,8 @@ class ElementMap : public QObject
 {
     Q_OBJECT
 public:
-    /// Clear all entries, reset next_id to 1, reset epoch to 0.
+    /// Clear all entries and reset next_id to 1.  The epoch is NOT reset:
+    /// it is a monotonic generation counter (see epoch()).
     /// Acquires a write lock internally.
     void clear();
 
@@ -61,7 +62,11 @@ public:
     ///       the read lock (via lockForRead/unlockRead).
     QObject* lookup(uint64_t id) const;
 
-    /// Return the current epoch counter.  Acquires a read lock internally.
+    /// Return the current epoch: a monotonic generation counter that
+    /// increases once per snapshot rebuild (clear + incrementEpoch).
+    /// Grow-only operations (insertIfAbsent) do not bump it, so ids stay
+    /// usable within a generation and a change of epoch marks the
+    /// renumbering event.  Acquires a read lock internally.
     uint64_t epoch() const;
 
     /// Return the next available element id (not consumed).

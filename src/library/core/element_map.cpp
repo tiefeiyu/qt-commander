@@ -11,7 +11,9 @@ void ElementMap::clear()
     map_.clear();
     revMap_.clear();
     next_id_ = 1;
-    epoch_ = 0;
+    // epoch_ is deliberately NOT reset: it is a monotonic generation
+    // counter (each snapshot rebuild calls incrementEpoch()), so callers
+    // can distinguish "which renumber generation an id belongs to".
 }
 
 uint64_t ElementMap::insertIfAbsent(QObject* obj)
@@ -79,9 +81,9 @@ void ElementMap::incrementEpoch()
 //
 // Typical snapshot sequence on the main thread:
 //   map.lockForWrite();
-//   map.clear();                       // clears + resets next/epoch
+//   map.clear();                       // clears + resets next_id (not epoch)
 //   map_ = rebuild(...);               // external rebuild
-//   map.incrementEpoch();              // not needed if clear() already set it
+//   map.incrementEpoch();              // new renumber generation
 //   map.unlock();
 //
 // Typical worker-thread sequence:
