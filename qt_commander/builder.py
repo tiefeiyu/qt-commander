@@ -34,7 +34,8 @@ def detect_native_src() -> Path:
     Priority:
     1. ``QT_COMMANDER_NATIVE_SRC`` env var — if set, treated as project root
     2. ``<package>/native/`` (pip install location)
-    3. Current working directory (must contain ``src/``)
+    3. Package's own project root (``<repo>/src/`` — source checkout run)
+    4. Current working directory (must contain ``src/``)
     """
     env_src = os.environ.get("QT_COMMANDER_NATIVE_SRC")
     if env_src:
@@ -45,6 +46,10 @@ def detect_native_src() -> Path:
     pkg_src = Path(__file__).parent / "native"
     if pkg_src.exists():
         return pkg_src
+
+    pkg_root = Path(__file__).resolve().parent.parent
+    if (pkg_root / "src").exists():
+        return pkg_root
 
     cwd = Path.cwd()
     if (cwd / "src").exists():
