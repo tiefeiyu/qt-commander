@@ -47,6 +47,13 @@ public:
     /// @param obj  Live QObject* (tracked via QPointer; nulls out on death).
     void insert(uint64_t id, QObject* obj);
 
+    /// Grow-only insert: if *obj* is already mapped, return its existing
+    /// id; otherwise allocate the next id and map it.  Never invalidates
+    /// or renumbers existing ids -- the map only grows until clear().
+    /// Returns 0 for a null object.  Acquires a write lock internally
+    /// (recursive: safe to call under an outer write lock).
+    uint64_t insertIfAbsent(QObject* obj);
+
     /// Look up an element by id.  Returns nullptr if the id is unknown or
     /// the object has been destroyed (QPointer auto-nulled).
     /// Acquires a read lock internally.

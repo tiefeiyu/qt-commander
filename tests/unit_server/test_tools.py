@@ -221,6 +221,43 @@ class TestUiTools:
         assert data["session_id"] == "snap00000001"
 
     @pytest.mark.asyncio
+    async def test_qt_get_snapshot(self, sm, monkeypatch, workspace):
+        """qt_get_snapshot: read-only view — same envelope as qt_snapshot,
+        dispatched as qt.getSnapshot, and the tree is written to a file."""
+        from qt_commander import server as srv
+        monkeypatch.setattr(srv, "sessions", sm)
+        sess = Session("view00000001", 2, Path("/tmp/a.dll"), workspace)
+        (sess.session_dir / "snapshots").mkdir(parents=True, exist_ok=True)
+        sess.connected = True
+        sess._rpc_lock = __import__('asyncio').Lock()
+
+        captured = {}
+
+        async def mock_send(m, p):
+            captured["method"] = m
+            captured["params"] = p
+            return {"nodes": [{"objID": 7, "className": "QPushButton"}]}
+        sess.send_rpc = mock_send
+        sm._sessions[sess.id] = sess
+
+        result = await srv.qt_get_snapshot(
+            "view00000001", max_depth=2, detail="core")
+        data = json.loads(result)
+
+        assert captured["method"] == "qt.getSnapshot"
+        assert captured["params"] == {
+            "include_hidden": False,
+            "detail": "core",
+            "rootId": 0,
+            "maxDepth": 2,
+            "propDepth": 1,
+        }
+        assert data["session_id"] == "view00000001"
+        assert data["uri"].endswith("snapshot_00000001.json")
+        snap_file = sess.session_dir / "snapshots" / "snapshot_00000001.json"
+        assert snap_file.exists(), "view tree must be written to a file"
+
+    @pytest.mark.asyncio
     async def test_qt_find_element(self, sm, monkeypatch, workspace):
         from qt_commander import server as srv
         monkeypatch.setattr(srv, "sessions", sm)

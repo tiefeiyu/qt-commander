@@ -255,8 +255,10 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
     root_id no longer resolves, the tool silently falls back to all
     top-level windows — pass it only when you know it is fresh.
 
-    ID LIFECYCLE: this call rebuilds the element map, so every element_id
-    and window_id from previous snapshots/finds becomes invalid.  The
+    ID LIFECYCLE: this is the ONLY operation that renumbers ids — every
+    element_id and window_id from previous snapshots/finds becomes
+    invalid.  qt_get_snapshot and qt_find_element NEVER invalidate ids
+    (they only grow the map): use them freely between snapshots.  The
     snapshot runs on the target process's GUI thread (brief UI freeze);
     if the target is busy, calls can time out after ~30s.
     """
@@ -268,6 +270,15 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
         "maxDepth": max_depth,
         "propDepth": prop_depth,
     })
+    return await _store_snapshot(session, result)
+
+
+async def _store_snapshot(session: "Session", result: dict) -> str:
+    """Write a snapshot-tree RPC result to the session's snapshot dir.
+
+    Shared by qt_snapshot (rebuild) and qt_get_snapshot (read-only view):
+    both return the same {session_id, snapshot_id, uri} envelope.
+    """
     if result.get("ok") is False:
         # e.g. a stale root_id: surface the error directly, do not write a
         # misleading empty snapshot file.
@@ -281,10 +292,69 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
     snap_path.write_text(_dumps(result, indent=2), encoding="utf-8")
 
     return _dumps({
-        "session_id": session_id,
+        "session_id": session.id,
         "snapshot_id": session.snapshot_count,
-        "uri": f"qt-commander://sessions/{session_id}/snapshots/{filename}",
+        "uri": f"qt-commander://sessions/{session.id}/snapshots/{filename}",
     })
+
+
+@mcp.tool()
+async def qt_get_snapshot(session_id: str, include_hidden: bool = False,
+                          detail: str = "extended",
+                          root_id: int = 0, max_depth: int = 1,
+                          prop_depth: int = 1) -> str:
+    """Capture a READ-ONLY view of the UI element tree without invalidating ids.
+
+    Same output format and parameters as qt_snapshot, but the tree is NOT
+    rebuilt and NO element id changes: every node keeps the id it already
+    has from the most recent qt_snapshot / qt_find_element.  Objects that
+    appeared after the last qt_snapshot (and are not yet in the element
+    map) are added with fresh ids — the map only ever grows here.
+
+    When to use: after qt_find_element returned several matches and you
+    need full-tree context to decide which one to act on.  Call this
+    instead of qt_snapshot so the ids you already hold stay valid.
+
+    Contract summary:
+      - qt_snapshot       = the ONLY operation that renumbers ids
+      - qt_get_snapshot   = never invalidates or renumbers anything
+      - qt_find_element   = never invalidates or renumbers anything
+
+    The tree is NOT in this result — it is written to the file at the
+    returned ``uri`` (resource `qt-commander://sessions/.../snapshots/
+    snapshot_N.json`); read that resource to inspect the tree.  The result
+    carries only session_id / snapshot_id / uri.  Node fields: className,
+    objID, objectName, qml_id (QML ``id`` from the QML source, omitted
+    when empty), rect (window-local logical px), global_rect (screen
+    coords), z_order, visible/enabled/opacity/color_alpha/clip, text,
+    topLevelId, windowTitle, properties (per ``detail``).
+
+    ``detail`` — property tier per node: "core" (first-class fields only,
+    no properties), "extended" (DEFAULT; common interaction-state
+    properties like text/checked/value), "full" (every Q_PROPERTY; slow on
+    large UIs).
+    ``include_hidden`` (default False) — hidden elements are pruned
+    together with their whole subtree (hidden tabs, unopened dialogs).
+    Set True to include them; note hidden elements are still rejected by
+    click/input/property tools.
+    ``max_depth`` — levels of children: 0 = roots only, 1 = roots +
+    direct children, -1 = entire tree (default 1).
+    ``prop_depth`` — levels of QObject property expansion (0 = none,
+    -1 = unlimited).
+    ``root_id`` — 0 = all top-level windows; >0 = subtree of an element
+    from the MOST RECENT snapshot/find (ids stay valid across this call).
+    If root_id no longer resolves, the tool reports the error instead of
+    silently falling back to all top-level windows.
+    """
+    session = _resolve_session(session_id)
+    result = await session.send_rpc("qt.getSnapshot", {
+        "include_hidden": include_hidden,
+        "detail": detail,
+        "rootId": root_id,
+        "maxDepth": max_depth,
+        "propDepth": prop_depth,
+    })
+    return await _store_snapshot(session, result)
 
 
 @mcp.tool()
@@ -358,14 +428,15 @@ async def qt_find_element(session_id: str, query: dict) -> str:
     Result: {"ok": true, "count": N, "elements": [{id, className,
     objectName, ...}]}; when nothing matches: {"ok": false, "message":
     "No matching element found"} — adjust the query or set
-    include_hidden: true.  No prior snapshot is needed; this call rebuilds
-    the element map itself.
+    include_hidden: true.
 
-    ID LIFECYCLE: the rebuild invalidates EVERY element_id/window_id from
-    previous snapshots/finds.  Use the returned ids immediately — if an
-    operation reports "Element not found: id=N", the id is stale or the
-    element was destroyed: re-run qt_find_element (or a snapshot) and
-    retry with the fresh id; never reuse old ids.
+    ID LIFECYCLE: find NEVER invalidates ids — returned ids resolve
+    against the current element map, and matched objects not yet mapped
+    are added with fresh ids (the map only grows).  Only qt_snapshot
+    renumbers.  So ids from a find stay usable across further finds and
+    qt_get_snapshot views until the next explicit qt_snapshot; if an
+    operation reports "Element not found: id=N", the element was
+    destroyed or a snapshot renumbered — re-find to recover.
     """
     session = _resolve_session(session_id)
     result = await session.send_rpc("qt.findElement", {"query": query})

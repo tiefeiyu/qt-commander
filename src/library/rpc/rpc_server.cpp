@@ -423,12 +423,23 @@ static QJsonObject collectProperties(QObject* obj, int propDepth,
     return props;
 }
 
+// ---------------------------------------------------------------------------
+// Node id handling for tree serialization:
+//   Allocate      -- assign fresh ids while walking (snapshot rebuild;
+//                    ids are renumbered)
+//   InsertIfAbsent -- resolve existing ids, adding unmapped objects with
+//                    fresh ids WITHOUT renumbering anything (getSnapshot
+//                    view; the map only grows)
+// ---------------------------------------------------------------------------
+enum class NodeIdMode { Allocate, InsertIfAbsent };
+
 /// Recursively collect children into a JSON array, limited by depth.
 /// Negative depth values mean "unlimited".  topLevel/topLevelId name the
 /// containing top-level window, focusW the once-computed focus widget
 /// (passed down the recursion).
 static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
                                   ElementMap* elementMap, uint64_t& nextId,
+                                  NodeIdMode idMode,
                                   bool includeHidden,
                                   QObject* topLevel, uint64_t topLevelId,
                                   QWidget* focusW, const QString& detail);
@@ -446,6 +457,7 @@ static QJsonObject makeNode(QObject* obj, uint64_t id,
                             QWidget* focusW,
                             int maxDepth, int propDepth,
                             ElementMap* elementMap, uint64_t& nextId,
+                            NodeIdMode idMode,
                             bool includeHidden, const QString& detail) {
     QJsonObject node;
     node["className"] = QString::fromLatin1(obj->metaObject()->className());
@@ -529,13 +541,15 @@ static QJsonObject makeNode(QObject* obj, uint64_t id,
     }
     node["properties"] = collectProperties(obj, propDepth, detail);
     node["children"] = collectChildren(obj, maxDepth, propDepth,
-                                       elementMap, nextId, includeHidden,
+                                       elementMap, nextId, idMode,
+                                       includeHidden,
                                        topLevel, topLevelId, focusW, detail);
     return node;
 }
 
 static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
                                   ElementMap* elementMap, uint64_t& nextId,
+                                  NodeIdMode idMode,
                                   bool includeHidden,
                                   QObject* topLevel, uint64_t topLevelId,
                                   QWidget* focusW, const QString& detail) {
@@ -587,12 +601,21 @@ static QJsonArray collectChildren(QObject* parent, int maxDepth, int propDepth,
 #endif
         }
 
-        const uint64_t id = nextId++;
-        elementMap->insert(id, child);
+        uint64_t id = 0;
+        if (idMode == NodeIdMode::Allocate) {
+            id = nextId++;
+            elementMap->insert(id, child);
+        } else {
+            // Grow-only: existing ids are preserved, unmapped objects get
+            // the next id.  Never renumbers -- this is the getSnapshot
+            // view contract.
+            id = elementMap->insertIfAbsent(child);
+        }
 
         arr.append(makeNode(child, id, topLevel, topLevelId, focusW,
                             childDepth, propDepth,
-                            elementMap, nextId, includeHidden, detail));
+                            elementMap, nextId, idMode, includeHidden,
+                            detail));
     }
     return arr;
 }
@@ -982,7 +1005,8 @@ void run_rpc_server(socket_t listen_fd,
                                 nodes.append(makeNode(
                                     obj, id, obj, id, focusW,
                                     maxDepth, propDepth,
-                                    elementMap.get(), nextId, includeHidden,
+                                    elementMap.get(), nextId,
+                                    NodeIdMode::Allocate, includeHidden,
                                     detail));
                             };
 
@@ -1013,6 +1037,92 @@ void run_rpc_server(socket_t listen_fd,
                     result["nodes"] = nodes;
                     result["epoch"] = static_cast<qint64>(elementMap->epoch());
                 }
+                // ---- getSnapshot (read-only tree view) ----
+                // Same tree serialization as snapshot, but ids RESOLVE
+                // from the current map instead of being renumbered: the
+                // view never invalidates any id the caller holds.
+                // Unmapped objects (created after the last snapshot) are
+                // added with fresh ids -- the map only grows.  The
+                // explicit snapshot above remains the single renumbering
+                // operation.
+                else if (opMethod == QStringLiteral("getSnapshot")) {
+                    const uint64_t rootId =
+                        static_cast<uint64_t>(rpcParams[QStringLiteral("rootId")].toDouble(0));
+                    const int maxDepth =
+                        rpcParams[QStringLiteral("maxDepth")].toInt(1);
+                    const int propDepth =
+                        rpcParams[QStringLiteral("propDepth")].toInt(1);
+                    const QString detail =
+                        rpcParams[QStringLiteral("detail")].toString(
+                            QStringLiteral("core"));
+                    const bool includeHidden =
+                        rpcParams[QStringLiteral("include_hidden")].toBool(true);
+
+                    QObject* rootObj = nullptr;
+                    bool rootError = false;
+                    if (rootId > 0) {
+                        rootObj = elementMap->get(rootId);
+                        if (!rootObj) {
+                            result[QStringLiteral("ok")] = false;
+                            result[QStringLiteral("message")] =
+                                QStringLiteral(
+                                    "Element not found: id=%1 (ids expire on "
+                                    "every snapshot refresh; take a new "
+                                    "snapshot to get fresh ids)")
+                                    .arg(rootId);
+                            rootError = true;
+                        }
+                    }
+
+                    QJsonArray nodes;
+                    if (!rootError) {
+                        locker.unlock();
+                        {
+                            QWriteLocker wlock(elementMap->rwLock());
+                            QWidget* focusW = qApp ? qApp->focusWidget()
+                                                   : nullptr;
+                            // Unused in InsertIfAbsent mode (ids come from
+                            // insertIfAbsent).  Do NOT call nextId() here:
+                            // it takes a read lock and the write-holder
+                            // requesting a read lock on a recursive
+                            // QReadWriteLock self-deadlocks.
+                            uint64_t nextId = 0;
+                            auto addRoot = [&](QObject* obj) {
+                                const uint64_t id =
+                                    elementMap->insertIfAbsent(obj);
+                                nodes.append(makeNode(
+                                    obj, id, obj, id, focusW,
+                                    maxDepth, propDepth,
+                                    elementMap.get(), nextId,
+                                    NodeIdMode::InsertIfAbsent, includeHidden,
+                                    detail));
+                            };
+
+                            if (rootObj) {
+                                addRoot(rootObj);
+                            } else {
+                                if (auto* app = qobject_cast<QApplication*>(
+                                        QCoreApplication::instance())) {
+                                    for (QWidget* w : app->topLevelWidgets())
+                                        addRoot(w);
+                                }
+#ifdef QT_COMMANDER_WITH_QML
+                                for (QWindow* win :
+                                     QGuiApplication::topLevelWindows()) {
+                                    if (qobject_cast<QQuickWindow*>(win))
+                                        addRoot(win);
+                                }
+#endif
+                            }
+                        }
+                        locker.relock();
+                    }
+                    result["rootId"] = static_cast<qint64>(rootId);
+                    result["maxDepth"] = maxDepth;
+                    result["propDepth"] = propDepth;
+                    result["nodes"] = nodes;
+                    result["epoch"] = static_cast<qint64>(elementMap->epoch());
+                }
                 // ---- findElement ----
                 else if (opMethod == QStringLiteral("findElement")) {
                     const QJsonObject query =
@@ -1020,107 +1130,33 @@ void run_rpc_server(socket_t listen_fd,
                     QJsonArray matches;
                     // ElementSelector walks the whole widget tree (not just
                     // top-level windows) and matches the documented query
-                    // fields (type, text, object_name, window_title, ...).
+                    // fields (type, text, object_name, qml_id,
+                    // window_title, ...).
                     //
-                    // Rebuild the element map first (same id allocation as
-                    // a snapshot) so every returned id is usable with the
-                    // other operations even if the caller's previous
-                    // snapshot did not cover the matched element.
+                    // NO map rebuild: find resolves ids against the current
+                    // map, so every id the caller already holds stays
+                    // valid.  Matched objects not yet in the map are added
+                    // via insertIfAbsent (grow-only) and get fresh ids --
+                    // the explicit snapshot remains the only operation that
+                    // renumbers.
                     //
-                    // Prune the rebuild with the query's own constraints:
-                    // depth narrows the traversal, ancestor_id/window_id
-                    // restrict it to that subtree (the match set of such a
-                    // query is a subset of that subtree, so no result is
-                    // lost).  Unconstrained queries keep the old full-tree
-                    // rebuild.
-                    const QString depthStr =
-                        query.value(QStringLiteral("depth")).toString();
-                    int rebuildDepth = -1;  // unlimited
-                    if (depthStr == QLatin1String("exact"))
-                        rebuildDepth = 1;
-                    else if (depthStr == QLatin1String("shallow"))
-                        rebuildDepth = 2;
-                    else if (!depthStr.isEmpty()) {
-                        rebuildDepth = depthStr.toInt();  // 0 on failure
-                        if (rebuildDepth <= 0)
-                            rebuildDepth = -1;  // invalid -> unlimited
-                    }
-                    const uint64_t ancestorId =
-                        static_cast<uint64_t>(
-                            query.value(QStringLiteral("ancestor_id"))
-                                .toDouble(0));
-                    const uint64_t windowId =
-                        static_cast<uint64_t>(
-                            query.value(QStringLiteral("window_id"))
-                                .toDouble(0));
-                    // Resolve the constrained roots before clearing the map.
-                    QObject* ancestorObj =
-                        ancestorId > 0 ? elementMap->get(ancestorId) : nullptr;
-                    QObject* windowObj =
-                        windowId > 0 ? elementMap->get(windowId) : nullptr;
+                    // ancestor_id/window_id in the query refer to the
+                    // CURRENT map (same epoch as previous snapshot/find
+                    // results), so no id re-mapping is needed.
+                    auto results = ElementSelector::find(
+                        query, elementMap->snapshot());
 
-                    // The dispatch holds the read lock; release it before
-                    // taking the write lock (read->write upgrade deadlocks).
+                    // Grow-only id assignment for matches outside the map.
                     locker.unlock();
                     {
                         QWriteLocker wlock(elementMap->rwLock());
-                        elementMap->clear();
-                        uint64_t nextId = 1;
-                        QWidget* focusW = qApp ? qApp->focusWidget() : nullptr;
-                        auto addRoot = [&](QObject* obj) {
-                            const uint64_t id = nextId++;
-                            elementMap->insert(id, obj);
-                            collectChildren(obj, rebuildDepth, 0,
-                                            elementMap.get(), nextId, true,
-                                            obj, id, focusW,
-                                            QStringLiteral("core"));
-                        };
-                        if (ancestorObj || windowObj) {
-                            addRoot(ancestorObj ? ancestorObj : windowObj);
-                        } else {
-                            if (auto* app = qobject_cast<QApplication*>(
-                                    QCoreApplication::instance())) {
-                                for (QWidget* w : app->topLevelWidgets())
-                                    addRoot(w);
-                            }
-#ifdef QT_COMMANDER_WITH_QML
-                            for (QWindow* win :
-                                 QGuiApplication::topLevelWindows()) {
-                                if (qobject_cast<QQuickWindow*>(win))
-                                    addRoot(win);
-                            }
-#endif
+                        for (SelectorResult& r : results) {
+                            if (r.id == 0)
+                                r.id = elementMap->insertIfAbsent(r.object);
                         }
-                        elementMap->incrementEpoch();
                     }
                     locker.relock();
-                    // The rebuild re-allocated ids, so ancestor_id/window_id
-                    // from the caller's (pre-rebuild) map no longer resolve.
-                    // Re-map them to the new ids; if the object vanished,
-                    // drop the constraint (the match set is empty anyway).
-                    QJsonObject effectiveQuery = query;
-                    if (ancestorObj) {
-                        const uint64_t newAnc =
-                            elementMap->idFor(ancestorObj);
-                        if (newAnc != 0)
-                            effectiveQuery[QStringLiteral("ancestor_id")] =
-                                static_cast<double>(newAnc);
-                        else
-                            effectiveQuery.remove(
-                                QStringLiteral("ancestor_id"));
-                    }
-                    if (windowObj) {
-                        const uint64_t newWin =
-                            elementMap->idFor(windowObj);
-                        if (newWin != 0)
-                            effectiveQuery[QStringLiteral("window_id")] =
-                                static_cast<double>(newWin);
-                        else
-                            effectiveQuery.remove(
-                                QStringLiteral("window_id"));
-                    }
-                    const auto results = ElementSelector::find(
-                        effectiveQuery, elementMap->snapshot());
+
                     for (const SelectorResult& r : results) {
                         QJsonObject m;
                         m[QStringLiteral("id")] = static_cast<qint64>(r.id);

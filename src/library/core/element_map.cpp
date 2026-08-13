@@ -14,6 +14,21 @@ void ElementMap::clear()
     epoch_ = 0;
 }
 
+uint64_t ElementMap::insertIfAbsent(QObject* obj)
+{
+    if (!obj)
+        return 0;
+    QWriteLocker locker(&lock_);
+    const QPointer<QObject> ptr(obj);
+    const auto it = revMap_.constFind(ptr);
+    if (it != revMap_.constEnd())
+        return it.value();
+    const uint64_t id = next_id_++;
+    map_.insert(id, ptr);
+    revMap_.insert(ptr, id);
+    return id;
+}
+
 void ElementMap::insert(uint64_t id, QObject* obj)
 {
     QWriteLocker locker(&lock_);

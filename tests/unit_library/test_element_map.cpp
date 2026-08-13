@@ -242,6 +242,45 @@ static void test_rwlock_accessor()
 }
 
 // ---------------------------------------------------------------------------
+// 13. insertIfAbsent: existing object returns its current id; a new object
+// gets the next id; ids are never invalidated by inserts
+// ---------------------------------------------------------------------------
+static void test_insert_if_absent()
+{
+    TEST("insertIfAbsent returns existing id or allocates next");
+    ElementMap map;
+    QObject obj1, obj2;
+
+    const uint64_t id1 = map.insertIfAbsent(&obj1);
+    CHECK(id1 == 1, "first insertIfAbsent should allocate id 1");
+    CHECK(map.lookup(id1) == &obj1, "lookup id1 should return obj1");
+
+    const uint64_t id1Again = map.insertIfAbsent(&obj1);
+    CHECK(id1Again == id1, "re-insert of obj1 must return the SAME id");
+
+    const uint64_t id2 = map.insertIfAbsent(&obj2);
+    CHECK(id2 == 2, "second object should get the next id");
+    CHECK(id2 != id1, "ids must be distinct");
+
+    // Existing insert(id, obj) entries must be honored too.
+    ElementMap map2;
+    QObject obj3;
+    map2.insert(42, &obj3);
+    CHECK(map2.insertIfAbsent(&obj3) == 42,
+          "insertIfAbsent must return the id from a prior insert()");
+
+    // Null object is rejected.
+    ElementMap map3;
+    CHECK(map3.insertIfAbsent(nullptr) == 0, "null object must return 0");
+
+    // After clear, ids are allocated fresh.
+    map.clear();
+    const uint64_t idAfterClear = map.insertIfAbsent(&obj1);
+    CHECK(idAfterClear == 1, "after clear, nextId restarts at 1");
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main()
@@ -260,6 +299,7 @@ int main()
     test_write_lock();
     test_multiple_inserts();
     test_insert_overwrite();
+    test_insert_if_absent();
     test_clear_resets_counters();
     test_snapshot();
     test_rwlock_accessor();

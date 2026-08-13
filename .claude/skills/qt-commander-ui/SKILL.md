@@ -25,8 +25,8 @@ Drive a running Qt application's UI to complete verification loops. All operatio
 
 1. `qt_snapshot(max_depth=1, detail=extended)` → read the snapshot resource (`qt-commander://sessions/...`) to inspect the UI tree
 2. `qt_find_element` to locate the target (custom QML components: prefer `qml_id` — the QML `id` from source, shown on snapshot nodes — then object_name/properties; type_inherits does NOT match QML type names)
-3. **Use the returned id immediately** — every snapshot/find refresh invalidates old ids
-4. Re-find before each operation (ids are short-lived)
+3. **Ids are stable until the next `qt_snapshot`** — `qt_find_element` and `qt_get_snapshot` never invalidate them; hold onto ids across steps
+4. **Need full-tree context after a find?** Call `qt_get_snapshot` (read-only view) — it never renumbers ids, so the ids you already hold stay valid. Only an explicit `qt_snapshot` renumbers.
 5. Capture a `qt_screenshot` after operations as evidence
 
 ## Operating Discipline (mandatory)

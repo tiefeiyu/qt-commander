@@ -33,7 +33,7 @@ Still times out → the app may be stuck → check the app process, consider res
 
 ## stale element id errors
 
-Every find/snapshot invalidates all ids → re-find to get a fresh id; never reuse old ids
+Only `qt_snapshot` renumbers ids; find/get_snapshot never do → if an id is stale, the element was destroyed or a snapshot ran since → re-find (or re-view) to recover the fresh id
 
 ## state looks wrong after a 2004 timeout
 
