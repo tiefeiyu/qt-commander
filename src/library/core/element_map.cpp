@@ -5,10 +5,9 @@
 void ElementMap::clear()
 {
     QWriteLocker locker(&lock_);
-    // Disconnect destruction tracking for the objects we still own (they
-    // are about to be re-inserted by the next rebuild).
-    for (QObject* obj : map_)
-        QObject::disconnect(obj, nullptr, this, nullptr);
+    // No per-object disconnect is needed: Qt breaks all connections of a
+    // QObject when it is destroyed, and there are no tracking connections
+    // to tear down for live objects (QPointer handles dead ones).
     map_.clear();
     revMap_.clear();
     next_id_ = 1;
@@ -18,40 +17,26 @@ void ElementMap::clear()
 void ElementMap::insert(uint64_t id, QObject* obj)
 {
     QWriteLocker locker(&lock_);
-    map_.insert(id, obj);
-    revMap_.insert(obj, id);
-    // Track destruction so stale ids never dangle: when the target widget
-    // is destroyed (dialog closed, deleteLater, ...) we drop it from the
-    // map and bump the epoch so in-flight operations fail cleanly instead
-    // of dereferencing a freed object.  destroyed() fires on the GUI
-    // thread, so this is safe with the map's locking.
-    if (!destroyTracked_.contains(obj)) {
-        destroyTracked_.insert(obj);
-        QObject::connect(obj, &QObject::destroyed, this,
-                         &ElementMap::onObjectDestroyed);
-    }
-}
-
-void ElementMap::onObjectDestroyed(QObject* obj)
-{
-    QWriteLocker locker(&lock_);
-    const uint64_t id = revMap_.take(obj);
-    if (id != 0)
-        map_.remove(id);
-    destroyTracked_.remove(obj);
-    ++epoch_;  // invalidate ids that pointed at the destroyed object
+    // Track via QPointer: it auto-nulls when the object dies (Qt's weak-ref
+    // machinery, no callback), so stale ids resolve to nullptr instead of
+    // dangling.  No destroyed() connection is used -- the old tracking
+    // either never delivered (cross-thread queued connection) or re-entered
+    // the map lock from ~QObject (direct-connection deadlock).
+    const QPointer<QObject> ptr(obj);
+    map_.insert(id, ptr);
+    revMap_.insert(ptr, id);
 }
 
 QObject* ElementMap::lookup(uint64_t id) const
 {
     QReadLocker locker(&lock_);
-    return map_.value(id, nullptr);
+    return map_.value(id).data();
 }
 
 uint64_t ElementMap::idFor(QObject* obj) const
 {
     QReadLocker locker(&lock_);
-    return revMap_.value(obj, 0);
+    return revMap_.value(QPointer<QObject>(obj), 0);
 }
 
 uint64_t ElementMap::epoch() const

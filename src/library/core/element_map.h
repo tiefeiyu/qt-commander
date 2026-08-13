@@ -1,32 +1,39 @@
 #pragma once
 #include <QObject>
 #include <QHash>
-#include <QSet>
+#include <QPointer>
 #include <QReadWriteLock>
 #include <QReadLocker>
 #include <cstdint>
 
-/// Thread-safe mapping from element_id (uint64_t) to QObject* raw pointer.
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+// Qt 5 ships no qHash for QPointer, which QHash<QPointer<T>, ...> keys need.
+// Defined in the global namespace so ADL from QtPrivate's qHash call sites
+// finds it; Qt 6 provides its own overload, hence the version guard.
+template <typename T>
+inline uint qHash(const QPointer<T> &p, uint seed = 0) noexcept
+{
+    return qHash(p.data(), seed);
+}
+#endif
+
+/// Thread-safe mapping from element_id (uint64_t) to QPointer<QObject>.
 ///
-/// Protected by a QReadWriteLock:
-///   - Main thread  takes a WRITE lock during snapshot clear/rebuild.
-///   - Worker thread takes a READ  lock during element lookups.
+/// Dead-object safety comes from QPointer auto-nulling instead of
+/// destroyed()-signal tracking.  The old tracking connected destroyed() to
+/// this map, but the map lives on the RPC thread (no event loop there): a
+/// queued connection was never delivered (leaving dangling pointers that
+/// crashed QObject::disconnect in clear()), while forcing
+/// Qt::DirectConnection deadlocked -- clear()/rebuild hold the map write
+/// lock on the GUI thread and the slot re-enters it from ~QObject (the
+/// QReadWriteLock is not recursive).  QPointer is nulled by Qt's internal
+/// weak-ref machinery inside ~QObject with no callback, so no lock is
+/// re-entered and stale entries simply read nullptr.
 ///
-/// An epoch counter is incremented on every snapshot.  The worker thread
-/// captures the epoch before dispatching to the main thread and re-validates
-/// it after acquiring the read lock on the main thread.  A mismatch means
-/// the element_map was rebuilt out from under the operation and the ID is
-/// stale (error code 1002).
-///
-/// QPointer is deliberately NOT used:  QPointer is not thread-safe (it can
-/// auto-null from any thread, corrupting concurrent reads).  Raw QObject*
-/// with explicit lock protection is the correct pattern here.
-///
-/// Destruction is tracked via QObject::destroyed (fires on the GUI thread):
-/// when a mapped object dies it is removed from the map and the epoch is
-/// bumped, so stale ids fail cleanly instead of dangling.  ElementMap is a
-/// QObject so it can be the receiver of those connections (it outlives all
-/// mapped objects).
+/// Threading: every map access runs on the GUI thread (the RPC dispatch
+/// lambdas); QObject destruction that nulls QPointers also happens on the
+/// GUI thread, so the QReadWriteLock guards the (now same-thread) accesses
+/// and the QPointer read/write operations are race-free.
 class ElementMap : public QObject
 {
     Q_OBJECT
@@ -37,10 +44,11 @@ public:
 
     /// Insert or overwrite a mapping.  Acquires a write lock internally.
     /// @param id   Numeric element identifier.
-    /// @param obj  Raw QObject pointer (never dereferenced without the lock).
+    /// @param obj  Live QObject* (tracked via QPointer; nulls out on death).
     void insert(uint64_t id, QObject* obj);
 
-    /// Look up an element by id.  Returns nullptr if not found.
+    /// Look up an element by id.  Returns nullptr if the id is unknown or
+    /// the object has been destroyed (QPointer auto-nulled).
     /// Acquires a read lock internally.
     /// @note The returned pointer is only valid while the caller holds
     ///       the read lock (via lockForRead/unlockRead).
@@ -72,25 +80,28 @@ public:
     /// Alias for lookup() -- convenience for code that expects a `get` naming.
     QObject* get(uint64_t id) const { return lookup(id); }
 
-    /// Reverse lookup: id of a QObject*, 0 if not mapped.
-    /// Acquires a read lock internally.
+    /// Reverse lookup: id of a live QObject*, 0 if not mapped.
+    /// Acquires a read lock internally.  The QPointer key tracks object
+    /// identity (not the raw address), so a destroyed object whose memory
+    /// was reused by a new allocation never matches.
     uint64_t idFor(QObject* obj) const;
 
-    /// Return a copy of the full map (thread-safe snapshot). Caller owns the copy.
+    /// Copy of the live mappings (dead objects omitted). Caller owns the copy.
     QHash<uint64_t, QObject*> snapshot() const {
         QReadLocker l(&lock_);
-        return map_;
+        QHash<uint64_t, QObject*> out;
+        out.reserve(map_.size());
+        for (auto it = map_.constBegin(); it != map_.constEnd(); ++it) {
+            if (QObject* o = it.value().data())
+                out.insert(it.key(), o);
+        }
+        return out;
     }
-
-private slots:
-    /// Remove a destroyed object and invalidate ids that pointed at it.
-    void onObjectDestroyed(QObject* obj);
 
 private:
     mutable QReadWriteLock lock_{QReadWriteLock::Recursive};
-    QHash<uint64_t, QObject*> map_;
-    QHash<QObject*, uint64_t> revMap_;   // obj -> id (maintained by insert/clear)
-    QSet<QObject*> destroyTracked_;      // objects with an active destroyed() hook
+    QHash<uint64_t, QPointer<QObject>> map_;
+    QHash<QPointer<QObject>, uint64_t> revMap_;   // QPointer -> id
     uint64_t next_id_ = 1;
     uint64_t epoch_ = 0;
 };
