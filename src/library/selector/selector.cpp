@@ -10,6 +10,8 @@
 #ifdef QT_COMMANDER_WITH_QML
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QQmlEngine>
+#include <QQmlContext>
 #endif
 #include <QQueue>
 #include <QSet>
@@ -409,6 +411,20 @@ bool ElementSelector::matchesQuery(
             return false;
         }
     }
+
+    // ---- qml_id: QML id match (QQmlContext::nameForObject) ----------------
+    // The QML `id` is what QML developers reference in source; it is
+    // distinct from objectName.  An empty expected value is ignored
+    // (every unnamed object would otherwise match).
+#ifdef QT_COMMANDER_WITH_QML
+    const QJsonValue qmlIdVal = query.value(QStringLiteral("qml_id"));
+    if (!qmlIdVal.isUndefined()) {
+        const QString expectedId = qmlIdVal.toString();
+        if (!expectedId.isEmpty() && UiScanner::qmlId(obj) != expectedId) {
+            return false;
+        }
+    }
+#endif
 
     // ---- window_title: containing window title exact match ---------------
     const QJsonValue winTitleVal = query.value(QStringLiteral("window_title"));

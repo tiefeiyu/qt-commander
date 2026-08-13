@@ -233,7 +233,8 @@ async def qt_snapshot(session_id: str, include_hidden: bool = False,
     the returned ``uri`` (resource `qt-commander://sessions/.../snapshots/
     snapshot_N.json`); read that resource to inspect the tree.  The result
     carries only session_id / snapshot_id / uri.  Node fields: className,
-    objID, objectName, rect (window-local logical px), global_rect (screen
+    objID, objectName, qml_id (QML ``id`` from the QML source, omitted
+    when empty), rect (window-local logical px), global_rect (screen
     coords), z_order, visible/enabled/opacity/color_alpha/clip, text,
     topLevelId, windowTitle, properties (per ``detail``).
 
@@ -341,7 +342,9 @@ async def qt_find_element(session_id: str, query: dict) -> str:
     ``type_inherits`` (superclass chain — C++ classes only; custom QML
     components are generated classes like ``X_QMLTYPE_8`` and do NOT match
     a QML type name), ``text`` / ``text_contains`` (display text, CJK
-    supported), ``object_name``, ``window_title`` /
+    supported), ``object_name``, ``qml_id`` (the QML ``id`` from the QML
+    source, as shown in snapshot nodes; empty value is ignored),
+    ``window_title`` /
     ``window_title_contains``, ``properties`` (all key-value pairs must
     match), ``ancestor_id`` / ``window_id`` (scope limits), ``depth``
     ("exact" = direct children, "shallow" = 2 levels, integer = that many,

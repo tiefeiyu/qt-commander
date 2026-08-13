@@ -16,6 +16,8 @@
 #ifdef QT_COMMANDER_WITH_QML
 #include <QQuickWindow>
 #include <QQuickItem>
+#include <QQmlEngine>
+#include <QQmlContext>
 #endif
 #include <QDateTime>
 #include <QPixmap>
@@ -29,6 +31,25 @@
 #include <QUrl>
 #include <QBuffer>
 #include <cstring>
+
+#ifdef QT_COMMANDER_WITH_QML
+// ----------------------------------------------------------------------------
+// qmlId  —  QML id via QQmlContext::nameForObject
+// ----------------------------------------------------------------------------
+// The QML `id` is a compile-time scope symbol in the QML engine; it never
+// appears in the QObject property system.  Qt keeps it in QQmlData, and
+// nameForObject returns it only when called on the context where the
+// object was created -- QQmlEngine::contextForObject supplies that
+// context, so no manual context walking is needed.  Objects created by
+// setContextProperty() also carry a name via the same mechanism.
+QString UiScanner::qmlId(QObject* obj)
+{
+    if (!obj)
+        return {};
+    QQmlContext* ctx = QQmlEngine::contextForObject(obj);
+    return ctx ? ctx->nameForObject(obj) : QString();
+}
+#endif
 
 // ============================================================================
 // rectToJson  —  element-local coordinates

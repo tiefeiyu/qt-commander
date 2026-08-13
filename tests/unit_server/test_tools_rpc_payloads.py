@@ -162,6 +162,7 @@ class TestFindElementPayload:
             "text": "Search",
             "text_contains": "ear",
             "object_name": "searchBox",
+            "qml_id": "myField",
             "window_title": "Main Window",
             "window_title_contains": "Main",
             "properties": {"enabled": True},

@@ -24,7 +24,7 @@ Drive a running Qt application's UI to complete verification loops. All operatio
 ## Standard Workflow
 
 1. `qt_snapshot(max_depth=1, detail=extended)` → read the snapshot resource (`qt-commander://sessions/...`) to inspect the UI tree
-2. `qt_find_element` to locate the target (custom QML components: match on object_name/properties; type_inherits does NOT match QML type names)
+2. `qt_find_element` to locate the target (custom QML components: prefer `qml_id` — the QML `id` from source, shown on snapshot nodes — then object_name/properties; type_inherits does NOT match QML type names)
 3. **Use the returned id immediately** — every snapshot/find refresh invalidates old ids
 4. Re-find before each operation (ids are short-lived)
 5. Capture a `qt_screenshot` after operations as evidence

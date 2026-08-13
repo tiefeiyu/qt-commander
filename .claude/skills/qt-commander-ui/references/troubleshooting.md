@@ -18,7 +18,7 @@ Still times out → the app may be stuck → check the app process, consider res
 - `include_hidden` not set? → hidden elements don't match by default; enable when needed
 - objectName typo? → compare against the actual objectName in the snapshot
 - Page not loaded? → wait for the page to finish loading before finding
-- Custom QML component? → match on object_name/properties; type_inherits does NOT match QML type names
+- Custom QML component? → prefer `qml_id` (the QML `id` from source, shown on snapshot nodes); object_name/properties also work; type_inherits does NOT match QML type names
 
 ## click has no effect
 

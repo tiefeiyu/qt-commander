@@ -17,6 +17,8 @@
 #ifdef QT_COMMANDER_WITH_QML
 #include <QQuickWindow>
 #include <QQuickItem>
+#include <QQmlEngine>
+#include <QQmlContext>
 #endif
 #include "../common/socket_utils.h"
 #include "../common/framing.h"
@@ -451,6 +453,14 @@ static QJsonObject makeNode(QObject* obj, uint64_t id,
     // Stable identification (QML objectName must be set explicitly; `id` is
     // QML-internal and never visible from C++).
     node["objectName"] = obj->objectName();
+#ifdef QT_COMMANDER_WITH_QML
+    // QML id (QQmlContext::nameForObject): the name QML developers
+    // reference in source.  Omitted when empty to keep core snapshots
+    // lean; findElement matches it via the "qml_id" query field.
+    const QString qmlId = UiScanner::qmlId(obj);
+    if (!qmlId.isEmpty())
+        node["qml_id"] = qmlId;
+#endif
     // Geometry: window-local logical rect + virtual-desktop global rect.
     node["rect"] = UiScanner::rectToJson(obj);
     node["global_rect"] = UiScanner::globalRectToJson(obj);

@@ -14,6 +14,7 @@
 
 #include "selector/selector.h"
 #include "core/event_injector.h"
+#include "core/ui_scanner.h"
 #include <QApplication>
 #include <QMainWindow>
 #include <QPushButton>
@@ -691,6 +692,122 @@ static void test_qml_window_root_reachable()
 }
 
 // ---------------------------------------------------------------------------
+// QML id lookup: QQmlContext::nameForObject returns the QML `id` of an
+// object when called on its creation context (QQmlEngine::contextForObject).
+// Non-QML objects have no QML id and must yield an empty string.
+// ---------------------------------------------------------------------------
+static void test_qml_id_lookup()
+{
+    TEST("QML id via QQmlContext::nameForObject");
+
+    QTemporaryFile qml(QDir::tempPath() + QStringLiteral("/qtc_XXXXXX.qml"));
+    CHECK(qml.open(), "temp qml file");
+    if (!qml.isOpen()) {
+        PASS();
+        return;
+    }
+    qml.write("import QtQuick 2.0\n"
+              "import QtQuick.Window 2.0\n"
+              "Window {\n"
+              "    id: winId\n"
+              "    objectName: \"sceneRoot\"\n"
+              "    width: 400; height: 300; visible: true\n"
+              "    Rectangle { id: rectId; objectName: \"childRect\"\n"
+              "                width: 50; height: 50 }\n"
+              "}\n");
+    qml.flush();
+
+    QQmlApplicationEngine engine;
+    engine.load(QUrl::fromLocalFile(qml.fileName()));
+    QApplication::processEvents();
+
+    QQuickWindow* sceneWin = nullptr;
+    for (QWindow* w : QGuiApplication::topLevelWindows()) {
+        if (auto* qw = qobject_cast<QQuickWindow*>(w)) {
+            sceneWin = qw;
+            break;
+        }
+    }
+    CHECK(sceneWin != nullptr, "no top-level QQuickWindow for Window root");
+    CHECK(UiScanner::qmlId(sceneWin) == QStringLiteral("winId"),
+          "window QML id must be winId");
+
+    QQuickItem* childRect = nullptr;
+    for (QQuickItem* ci : sceneWin->contentItem()->childItems()) {
+        if (ci->objectName() == QStringLiteral("childRect"))
+            childRect = ci;
+    }
+    CHECK(childRect != nullptr, "childRect not found under contentItem");
+    CHECK(UiScanner::qmlId(childRect) == QStringLiteral("rectId"),
+          "child QML id must be rectId");
+
+    // Non-QML objects have no QML id.
+    QWidget plainWidget;
+    CHECK(UiScanner::qmlId(&plainWidget).isEmpty(),
+          "plain QWidget must have empty QML id");
+
+    engine.deleteLater();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// find by qml_id: the query matches the QML `id` (what QML developers see
+// in source), distinct from objectName -- set both to different values to
+// prove the two match fields are independent.
+// ---------------------------------------------------------------------------
+static void test_find_by_qml_id()
+{
+    TEST("find by qml_id");
+
+    QTemporaryFile qml(QDir::tempPath() + QStringLiteral("/qtc_XXXXXX.qml"));
+    CHECK(qml.open(), "temp qml file");
+    if (!qml.isOpen()) {
+        PASS();
+        return;
+    }
+    qml.write("import QtQuick 2.0\n"
+              "import QtQuick.Window 2.0\n"
+              "Window {\n"
+              "    id: winId\n"
+              "    objectName: \"sceneRoot\"\n"
+              "    width: 400; height: 300; visible: true\n"
+              "    Rectangle { id: rectId; objectName: \"childRect\"\n"
+              "                width: 50; height: 50 }\n"
+              "}\n");
+    qml.flush();
+
+    QQmlApplicationEngine engine;
+    engine.load(QUrl::fromLocalFile(qml.fileName()));
+    QApplication::processEvents();
+
+    QHash<uint64_t, QObject*> emptyMap;
+
+    auto byRect = ElementSelector::find(
+        QJsonObject{{QStringLiteral("qml_id"), QStringLiteral("rectId")}},
+        emptyMap);
+    CHECK_SZ(byRect, 1, "qml_id rectId");
+    CHECK(byRect[0].object->objectName() == QStringLiteral("childRect"),
+          "rectId match must be the childRect object");
+
+    // QML window nodes are not traversed by find (collectRoots walks the
+    // window's contentItem instead), so a window-level qml_id matches
+    // nothing -- the id is still available on the snapshot node, and item
+    // ids work below.
+    auto byWin = ElementSelector::find(
+        QJsonObject{{QStringLiteral("qml_id"), QStringLiteral("winId")}},
+        emptyMap);
+    CHECK_SZ(byWin, 0, "qml_id winId (window nodes not traversed)");
+
+    auto none = ElementSelector::find(
+        QJsonObject{{QStringLiteral("qml_id"), QStringLiteral("noSuchId")}},
+        emptyMap);
+    CHECK_SZ(none, 0, "qml_id noSuchId");
+
+    engine.deleteLater();
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Real coordinate click: QWindowSystemInterface routes the click through the
 // QPA input pipeline with the real scene-graph hit test -- clicking the
 // center of a plain Rectangle must reach the QQuickMouseArea inside it,
@@ -1039,6 +1156,8 @@ int main(int argc, char* argv[])
     test_key_combo_ctrl_a_selects_all();
 #ifdef QT_COMMANDER_WITH_QML
     test_qml_window_root_reachable();
+    test_qml_id_lookup();
+    test_find_by_qml_id();
     test_click_at_qml_hit_test();
     test_click_region_qml();
 #endif
