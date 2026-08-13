@@ -559,7 +559,7 @@ class TestServerBranchCoverage:
     async def test_qt_attach_exception_handler(self, sm, monkeypatch, workspace):
         from qt_commander import server as srv
         from qt_commander.builder import BuildState
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
         import os
         monkeypatch.setattr(srv, "sessions", sm)
         monkeypatch.setattr(srv, "check_build_state", lambda: BuildState.BUILT)
@@ -569,7 +569,14 @@ class TestServerBranchCoverage:
         (bin_dir / lib_name).write_text("fake")
         inj_name = "qt-injector.exe" if os.name == "nt" else "qt-injector"
         (bin_dir / inj_name).write_text("fake")
-        with patch.object(srv, "BUILD_DIR", sm.workspace):
+        # qt_attach's error path calls sessions.destroy(purge=True), which
+        # runs the (fake) injector with --eject.  On Windows the loader pops
+        # a modal "not a valid application" dialog for an invalid PE before
+        # CreateProcess fails, blocking the test run on a human click --
+        # mock the subprocess so the eject call is recorded, not executed.
+        with patch("qt_commander.session.asyncio.create_subprocess_exec",
+                   AsyncMock()), \
+             patch.object(srv, "BUILD_DIR", sm.workspace):
             from qt_commander.errors import InjectionError
             async def fail(*a, **kw): raise InjectionError("test fail")
             monkeypatch.setattr(srv, "inject_and_connect", fail)
