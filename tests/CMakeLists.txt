@@ -172,6 +172,27 @@ if(BUILD_INJECTOR)
             TIMEOUT 300
         )
     endif()
+
+    # --- Full-stack integration: launch app -> inject -> RPC round-trips ---
+    # (Windows only: uses CreateRemoteThread injection + psapi directly;
+    # WITH_QML needed for the qt-qml-test target)
+    if(WIN32 AND WITH_QML)
+        add_injector_test(test_integration
+            integration/test_integration.cpp
+            ${CMAKE_SOURCE_DIR}/src/common/socket_utils.cpp
+        )
+        # The file includes "common/socket_utils.h" (src-root relative).
+        target_include_directories(test_integration PRIVATE
+            ${CMAKE_SOURCE_DIR}/src)
+        target_compile_definitions(test_integration PRIVATE
+            QT_WIDGET_TEST_APP="$<TARGET_FILE:qt-widget-test>"
+            QT_QML_TEST_APP="$<TARGET_FILE:qt-qml-test>"
+            QT_COMMANDER_DLL="$<TARGET_FILE:qt-commander-lib>")
+        add_dependencies(test_integration
+            qt-widget-test qt-qml-test qt-commander-lib)
+        set_tests_properties(test_integration PROPERTIES
+            TIMEOUT 900)
+    endif()
 endif()
 
 # --- Python unit tests + E2E preload verification ---------------------------

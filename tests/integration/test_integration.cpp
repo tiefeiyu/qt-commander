@@ -66,7 +66,9 @@ static bool sendFrame(socket_t fd, const std::string& d) {
 static std::string recvFrame(socket_t fd, int to=10000) {
     tcp_set_recv_timeout(fd,to); FrameDecoder dec; uint8_t b;
     for(int i=0;i<100000;i++){if(!tcp_recv_all(fd,&b,1))return{};std::vector<uint8_t> o;
-    auto r=dec.feed(&b,1,o);if(r==FrameResult::Error)return{};if(r==FrameResult::Complete)return std::string(o.begin(),o.end());}
+    auto r=dec.feed(&b,1,o);
+    if(r==FrameDecoder::Result::Error)return{};
+    if(r==FrameDecoder::Result::Complete)return std::string(o.begin(),o.end());}
     return{};
 }
 
@@ -158,6 +160,30 @@ static int callInit(int pid, uint64_t addr, const InitParams& p) {
     WaitForSingleObject(ht,10000);DWORD ec=99;GetExitCodeThread(ht,&ec);
     CloseHandle(ht);VirtualFreeEx(hp,rp,0,MEM_RELEASE);CloseHandle(hp);
     return (int)ec;
+}
+
+// ----- Minimal JSON field extraction (stringly-typed, like the rest of
+// this file): find the LAST "<key>": before "<name>" and parse the number.
+static int64_t extractIdForName(const std::string& resp,
+                                const std::string& name,
+                                const std::string& key) {
+    auto pos = resp.find("\"objectName\":\"" + name + "\"");
+    if (pos == std::string::npos) return -1;
+    auto idPos = resp.rfind("\"" + key + "\":", pos);
+    if (idPos == std::string::npos) return -1;
+    std::string num = resp.substr(idPos + key.size() + 3);
+    size_t end = num.find_first_of(",}]");
+    if (end == std::string::npos) return -1;
+    try { return std::stoll(num.substr(0, end)); } catch (...) { return -1; }
+}
+
+static int64_t extractIntField(const std::string& resp, const std::string& key) {
+    auto pos = resp.find("\"" + key + "\":");
+    if (pos == std::string::npos) return -1;
+    std::string num = resp.substr(pos + key.size() + 3);
+    size_t end = num.find_first_of(",}]");
+    if (end == std::string::npos) return -1;
+    try { return std::stoll(num.substr(0, end)); } catch (...) { return -1; }
 }
 
 // ======================================================================
@@ -434,11 +460,55 @@ auto cp = launchApp(qmlExe);
     std::string ar = recvFrame(sock, 5000);
     CHECK(!ar.empty() && ar.find("\"result\"") != std::string::npos, "auth failed");
 
-    // Snapshot — must contain QQuickView
-    CHECK(sendFrame(sock, buildRpc("qt.snapshot", "{}", 1)), "snap send");
+    // Snapshot — must contain the QQuickWindow (maxDepth 2 so the QML
+    // scene items are reachable for the three-operation checks below)
+    CHECK(sendFrame(sock, buildRpc("qt.snapshot", "{\"detail\":\"core\",\"maxDepth\":2}", 1)), "snap send");
     std::string sr = recvFrame(sock, 5000);
     CHECK(!sr.empty(), "no snapshot response");
-    CHECK(sr.find("QQuickView") != std::string::npos, "QQuickView not in snapshot: " + sr.substr(0, 200));
+    CHECK(sr.find("QQuickWindow") != std::string::npos, "QQuickWindow not in snapshot: " + sr.substr(0, 200));
+
+    // ---- Three-operation contract: snapshot -> find -> getSnapshot ----
+    // findElement and getSnapshot must resolve the SAME ids the snapshot
+    // allocated; only a fresh snapshot may renumber.
+    const int64_t snapBtn = extractIdForName(sr, "btnOK", "objID");
+    CHECK(snapBtn > 0, "btnOK not found in snapshot (maxDepth=2)");
+
+    CHECK(sendFrame(sock, buildRpc("qt.findElement", "{\"query\":{\"qml_id\":\"btnOK\"}}", 25)), "find btnOK send");
+    std::string fbr = recvFrame(sock, 5000);
+    CHECK(!fbr.empty(), "no find btnOK response");
+    const int64_t findBtn = extractIdForName(fbr, "btnOK", "id");
+    CHECK(findBtn == snapBtn, "findElement must return the snapshot's id");
+
+    CHECK(sendFrame(sock, buildRpc("qt.getSnapshot", "{\"detail\":\"core\",\"maxDepth\":2}", 26)), "getSnapshot send");
+    std::string gsr = recvFrame(sock, 5000);
+    CHECK(!gsr.empty(), "no getSnapshot response");
+    const int64_t viewBtn = extractIdForName(gsr, "btnOK", "objID");
+    CHECK(viewBtn == snapBtn, "getSnapshot must keep the snapshot's id");
+
+    CHECK(sendFrame(sock, buildRpc("qt.findElement", "{\"query\":{\"qml_id\":\"btnOK\"}}", 27)), "find btnOK #2 send");
+    std::string fbr2 = recvFrame(sock, 5000);
+    const int64_t findBtn2 = extractIdForName(fbr2, "btnOK", "id");
+    CHECK(findBtn2 == snapBtn, "second findElement must keep the id");
+
+    // The held id stays operable: real-pipeline click must trigger the
+    // QML MouseArea and update statusText.
+    CHECK(sendFrame(sock, buildRpc("qt.clickRegion", "{\"element_id\":" + std::to_string(snapBtn) + "}", 28)), "clickRegion send");
+    std::string clr3 = recvFrame(sock, 5000);
+    CHECK(clr3.find("\"ok\":true") != std::string::npos, "clickRegion must succeed");
+
+    CHECK(sendFrame(sock, buildRpc("qt.findElement", "{\"query\":{\"qml_id\":\"statusText\"}}", 29)), "find statusText send");
+    std::string fst = recvFrame(sock, 5000);
+    const int64_t stId = extractIdForName(fst, "statusText", "id");
+    CHECK(stId > 0, "statusText not found");
+    CHECK(sendFrame(sock, buildRpc("qt.getProperty", "{\"element_id\":" + std::to_string(stId) + ",\"name\":\"text\"}", 30)), "getProperty send");
+    std::string stp = recvFrame(sock, 5000);
+    CHECK(stp.find("OK clicked!") != std::string::npos, "statusText must show OK clicked");
+
+    // Only a fresh snapshot bumps the epoch (monotonic generation counter).
+    CHECK(sendFrame(sock, buildRpc("qt.snapshot", "{\"detail\":\"core\",\"maxDepth\":2}", 31)), "snap2 send");
+    std::string sr2 = recvFrame(sock, 5000);
+    CHECK(extractIntField(sr2, "epoch") > extractIntField(gsr, "epoch"),
+          "second snapshot must bump the epoch");
 
     // Test getProperty (element_id=0 means "use first element from last snapshot")
     CHECK(sendFrame(sock, buildRpc("qt.getProperty", "{\"element_id\":0,\"name\":\"objectName\"}", 3)), "getProp send");
@@ -539,7 +609,7 @@ auto cp = launchApp(qmlExe);
     // Test snapshot with include_hidden=true
     CHECK(sendFrame(sock, buildRpc("qt.snapshot", "{\"include_hidden\":true}", 23)), "snapHidden send");
     std::string shr = recvFrame(sock, 5000);
-    CHECK(!shr.empty() && shr.find("\"count\"") != std::string::npos, "snapHidden failed");
+    CHECK(!shr.empty() && shr.find("\"nodes\"") != std::string::npos, "snapHidden failed");
 
     // Error path: bad auth token
     // Verify snapshot still works (proves auth is already done)
@@ -618,16 +688,14 @@ auto cp = launchApp(g_exe);
     std::string sr2 = recvFrame(sock, 5000);
     CHECK(!sr2.empty(), "snap2 failed");
 
-    // Verify multiple windows: count should be >= 1 (main window at minimum)
-    size_t countPos = sr2.find("\"count\":");
-    int winCount = 0;
-    if (countPos != std::string::npos) {
-        std::string countStr = sr2.substr(countPos + 8);
-        size_t endPos = countStr.find_first_of(",}]");
-        if (endPos != std::string::npos) countStr = countStr.substr(0, endPos);
-        winCount = std::stoi(countStr);
-    }
-    CHECK(winCount >= 1, "snapshot has no windows");
+    // Verify the snapshot has nodes: every node carries exactly one
+    // "objID", so count its occurrences (the snapshot result has no
+    // "count" field -- that is findElement's).
+    size_t nodeCount = 0;
+    for (size_t p = sr2.find("\"objID\":"); p != std::string::npos;
+         p = sr2.find("\"objID\":", p + 1))
+        nodeCount++;
+    CHECK(nodeCount >= 1, "snapshot has no windows");
 
     sendFrame(sock, buildRpc("qt.shutdown", "{}", 0));
     std::this_thread::sleep_for(500ms);
