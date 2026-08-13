@@ -1,25 +1,25 @@
-# qt-commander 错误码对照表
+# qt-commander Error Code Reference
 
-qt-commander MCP 工具失败时返回 `data.code` 子码。本表列出全部错误码及处置方式。
+qt-commander MCP tools report failures with a `data.code` sub-code. This table lists every code and how to handle it.
 
-| 码 | 含义 | 处置 |
+| Code | Meaning | Handling |
 |---|---|---|
-| 1001-1005 | 元素不存在/过期/不可见/禁用/零尺寸 | 重新 find/snapshot 获取新 id |
-| 2001 | 构建缺失或失败 | 执行 qt_build；若 MCP 进程内逻辑过期，重启 MCP 服务器 |
-| 2002 | 注入失败 | 查构建参数与目标进程匹配（qt_major/toolchain/build_type/位数），见 build-params.md |
-| 2003 | 目标进程无响应 | 应用可能卡死；等 5s 重试一次或排查应用 |
-| 2004 | 主线程操作超时 | **操作仍可能执行（at-least-once）——勿盲目重试副作用操作**；先 snapshot 验证状态 |
-| 2006 | 重复 attach | 先 qt_detach 再 attach |
-| 2007 | 主线程重入繁忙（嵌套事件循环） | **明确未执行，可安全重试** |
-| 2008 | 帧过大（>16MB） | 减小请求（如快照 max_depth/detail） |
-| 2009 | 认证失败 | 重新 attach |
-| 2010 | 快照截断 | 减小 max_depth/detail 重试 |
-| 2011 | 会话丢失（进程退出/连接断开） | 重新 attach |
+| 1001-1005 | Element missing/stale/not visible/disabled/zero-size | Re-find/snapshot to get a fresh id |
+| 2001 | Build missing or failed | Run qt_build; if the MCP process runs stale logic, restart the MCP server |
+| 2002 | Injection failed | Check build parameters against the target process (qt_major/toolchain/build_type/bitness), see build-params.md |
+| 2003 | Target process unresponsive | The app may be stuck; wait 5s and retry once, or investigate the app |
+| 2004 | Main-thread operation timed out | **The operation may still execute (at-least-once) — do not blindly retry side-effect operations**; snapshot first to verify state |
+| 2006 | Already attached | qt_detach first, then attach |
+| 2007 | Main thread busy in a nested event loop | **Definitively not executed — safe to retry** |
+| 2008 | Frame too large (>16MB) | Shrink the request (e.g. snapshot max_depth/detail) |
+| 2009 | Authentication failed | Re-attach |
+| 2010 | Snapshot truncated | Retry with smaller max_depth/detail |
+| 2011 | Session lost (process exited / connection dropped) | Re-attach |
 
-## 2007 vs 2004（重点）
+## 2007 vs 2004 (important)
 
 | | 2004 | 2007 |
 |---|---|---|
-| 含义 | 等待超时，请求**可能已执行** | **明确未执行**（重入守卫拒绝） |
-| 重试策略 | 先 snapshot 验证状态，勿盲目重试副作用操作 | 可安全重试 |
-| 典型场景 | 主线程繁忙（启动/页面加载）超过 30s | 截图等嵌套事件循环期间发来的并发请求 |
+| Meaning | Wait timed out; the request **may have executed** | **Definitively not executed** (rejected by the reentrancy guard) |
+| Retry | Snapshot first to verify state; do not blindly retry side-effect ops | Safe to retry |
+| Typical cause | Main thread busy (startup/page load) longer than 30s | Concurrent request during a nested event loop (e.g. screenshot grab) |

@@ -1,44 +1,44 @@
-# 故障排查决策树
+# Troubleshooting Decision Tree
 
-按症状定位问题，从最可能的原因开始。
+Locate the problem by symptom, starting from the most likely cause.
 
-## attach 失败（2002）
+## attach fails (2002)
 
-构建参数与目标进程匹配？→ `qt_list_processes` 核对 qt_major/toolchain/build_type/位数（见 build-params.md）
-→ 构建产物存在？→ `.qt-commander/bin/` 下 libqt-commander.dll 与 qt-injector.exe
-→ MCP 进程逻辑过期？→ 重启 MCP 服务器（源码变更后必须重启）
+Do the build parameters match the target process? → verify qt_major/toolchain/build_type/bitness with `qt_list_processes` (see build-params.md)
+→ Do the artifacts exist? → `libqt-commander.dll` and `qt-injector.exe` under `.qt-commander/bin/`
+→ MCP process running stale logic? → restart the MCP server (mandatory after source changes)
 
-## snapshot 超时
+## snapshot times out
 
-应用繁忙 → 等 5s 重试一次
-仍超时 → 应用可能卡死 → 检查应用进程状态，考虑重启应用
+App busy → wait 5s and retry once
+Still times out → the app may be stuck → check the app process, consider restarting it
 
-## find 不到元素
+## find returns nothing
 
-- `include_hidden` 未开？→ 隐藏元素默认不匹配，按需开启
-- objectName 拼写错误？→ 对照快照中的实际 objectName
-- 页面未加载？→ 等待页面加载完成再 find
-- 自定义 QML 组件？→ 用 object_name/properties 匹配，type_inherits 不匹配 QML 类型名
+- `include_hidden` not set? → hidden elements don't match by default; enable when needed
+- objectName typo? → compare against the actual objectName in the snapshot
+- Page not loaded? → wait for the page to finish loading before finding
+- Custom QML component? → match on object_name/properties; type_inherits does NOT match QML type names
 
-## 点击无效
+## click has no effect
 
-- 元素可见且未被遮挡？→ 遮挡时坐标点击会命中遮挡物（跨窗口遮挡是设计行为）
-- 坐标是否命中元素？→ click_region 用元素中心；被遮挡/命中不准时用 click_at 精确定位重试
-- 仍无效 → 确认元素是真实交互组件（如 QML 组件需其自身有 MouseArea 处理点击）
+- Is the element visible and unobstructed? → with occlusion, the click hits whatever covers it (cross-window occlusion is by design)
+- Does the coordinate hit the element? → click_region uses the element center; when occluded/mis-aimed, retry with click_at for exact coordinates
+- Still no effect → confirm the element is a real interactive component (a QML component needs its own MouseArea to handle clicks)
 
-## 键盘输入未落
+## keyboard input does not land
 
-- 目标未聚焦 → 先 click_region 点击目标使其获得焦点，再输入
-- 输入进了错误控件 → 元素 id 过期？重新 find；QML 应用无 focus widget，`element_id=0` 回退不可用
+- Target not focused → click_region the target first to give it focus, then type
+- Text landed in the wrong control → stale element id? re-find; QML apps have no focus widget, so the `element_id=0` fallback is unavailable
 
-## 元素 id 过期报错
+## stale element id errors
 
-每次 find/snapshot 后 id 全部失效 → 重新 find 获取新 id，绝不复用旧 id
+Every find/snapshot invalidates all ids → re-find to get a fresh id; never reuse old ids
 
-## 2004 超时后状态异常
+## state looks wrong after a 2004 timeout
 
-先 snapshot 断言当前状态（请求可能已执行）→ 按需补操作，不盲目重试
+Snapshot first to assert the current state (the request may have executed) → apply corrective operations as needed; do not blindly retry
 
-## 目标进程崩溃
+## target process crashed
 
-用 cdb 附加复现：`cdb.exe -p <pid>`（符号路径指向目标应用的 Qt bin 目录）
+Attach a debugger to reproduce: `cdb.exe -p <pid>` (symbol path pointing at the target app's Qt bin directory)
