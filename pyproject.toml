@@ -17,6 +17,18 @@ dependencies = [
 [project.scripts]
 qt-commander-mcp = "qt_commander.server:main"
 
+# PEP 735 dev group. `uv sync` and `uv run` include it by default, so the
+# documented test command works in a fresh checkout. Without it, `uv run
+# pytest` finds no pytest in the project environment and silently falls
+# back to whatever pytest happens to be on PATH, running the tests against
+# an unrelated interpreter. pytest-asyncio backs the @pytest.mark.asyncio
+# markers used throughout tests/unit_server/.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
 [tool.setuptools.packages.find]
 include = ["qt_commander*"]
 
