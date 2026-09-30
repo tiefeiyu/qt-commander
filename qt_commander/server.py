@@ -1,4 +1,5 @@
 """qt-commander MCP server — entry point."""
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -28,8 +29,32 @@ from .session import SessionManager
 
 mcp = FastMCP("qt-commander")
 
+
+def _ensure_workspace_gitignored(directory: Path) -> None:
+    """Keep the generated scratch directory out of the surrounding git repo.
+
+    The workspace holds build outputs and per-session files, all generated
+    on the fly; when the server runs from inside a user's repository they
+    would otherwise show up as untracked clutter in `git status`.  A
+    `.gitignore` containing just `*` inside the directory hides its
+    contents without touching the user's own files.  An existing
+    `.gitignore` is left byte-for-byte untouched — the user may have put
+    their own rules there.  Failures are swallowed on purpose: an
+    unwritable location (read-only filesystem, permission denied, ...)
+    must never stop the server from starting.
+    """
+    gitignore = directory / ".gitignore"
+    if gitignore.exists():
+        return
+    with contextlib.suppress(OSError):
+        # Bytes, not text: text mode would translate the newline to CRLF on
+        # Windows, making the file's content platform-dependent.
+        gitignore.write_bytes(b"*\n")
+
+
 _workspace = Path(os.environ.get("QT_COMMANDER_WORKSPACE", ".qt-commander")).resolve()
 _workspace.mkdir(parents=True, exist_ok=True)
+_ensure_workspace_gitignored(_workspace)
 
 sessions = SessionManager(_workspace)
 
