@@ -9,6 +9,8 @@
 ![MinGW](https://img.shields.io/badge/MinGW-supported-blue)
 ![Platform](https://img.shields.io/badge/Windows-supported-important)
 ![License](https://img.shields.io/badge/License-MIT-green)
+[![LICENSE](https://img.shields.io/badge/license-Anti%20996-blue.svg)](https://github.com/996icu/996.ICU/blob/master/LICENSE)
+[![996.icu](https://img.shields.io/badge/link-996.icu-red.svg)](https://996.icu)
 
 ## 为什么选择 qt-commander
 
@@ -245,7 +247,9 @@ qt-commander/
 
 ## 许可证
 
-[MIT](LICENSE) — 可自由使用、修改、分发，可集成到商业项目，保留署名即可。
+双重许可：[MIT](LICENSE.MIT) **AND** [Anti 996 许可证](LICENSE.996ICU)
+—— 可自由使用、修改、分发，可集成到商业项目，保留署名即可，但须同
+时满足两个许可证。详见 [LICENSE](LICENSE)。
 
 ## 作者
 

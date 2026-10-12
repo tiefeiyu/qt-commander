@@ -10,6 +10,8 @@ QWidget and QML interfaces.
 ![MinGW](https://img.shields.io/badge/MinGW-supported-blue)
 ![Platform](https://img.shields.io/badge/Windows-supported-important)
 ![License](https://img.shields.io/badge/License-MIT-green)
+[![LICENSE](https://img.shields.io/badge/license-Anti%20996-blue.svg)](https://github.com/996icu/996.ICU/blob/master/LICENSE)
+[![996.icu](https://img.shields.io/badge/link-996.icu-red.svg)](https://996.icu)
 
 ## Why qt-commander
 
@@ -257,8 +259,10 @@ qt-commander/
 
 ## License
 
-[MIT](LICENSE) — free to use, modify, distribute, and integrate into
-commercial projects, with attribution.
+Dual-licensed: [MIT](LICENSE.MIT) **AND** the
+[Anti 996 License](LICENSE.996ICU) — free to use, modify, distribute,
+and integrate into commercial projects, with attribution, provided both
+licenses are satisfied. See [LICENSE](LICENSE) for the summary.
 
 ## Author
 
