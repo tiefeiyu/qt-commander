@@ -1029,6 +1029,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         painter.drawLine(originalWidth, 0, originalWidth, canvas.height());
 
         int number = 0;
+        QList<QRect> badgeRects;
         for (const Candidate& candidate : candidates) {
             ++number;
             const QColor color = QColor::fromHsv((number * 47) % 360, 175, 190);
@@ -1048,9 +1049,33 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
 
             const int badgeW = qMin(drawRect.width(), qRound(24 * dpr));
             const int badgeH = qMin(drawRect.height(), qRound(15 * dpr));
-            const QRect badge(drawRect.topLeft() + QPoint(qRound(2 * dpr),
-                                                          qRound(2 * dpr)),
-                              QSize(badgeW, badgeH));
+            QRect badge;
+            for (const QPoint& offset : {
+                     QPoint(qRound(2 * dpr), qRound(2 * dpr)),
+                     QPoint(qRound(28 * dpr), qRound(2 * dpr)),
+                     QPoint(qRound(2 * dpr), qRound(18 * dpr))}) {
+                QRect candidateBadge(
+                    drawRect.topLeft() + offset, QSize(badgeW, badgeH));
+                candidateBadge =
+                    candidateBadge.intersected(drawRect);
+                if (candidateBadge.isEmpty())
+                    continue;
+                bool overlaps = false;
+                for (const QRect& used : badgeRects) {
+                    if (candidateBadge.intersects(used)) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+                if (!overlaps) {
+                    badge = candidateBadge;
+                    break;
+                }
+            }
+            if (badge.isEmpty())
+                badge = QRect(drawRect.topLeft(),
+                              QSize(badgeW, badgeH)).intersected(drawRect);
+            badgeRects.append(badge);
             painter.fillRect(badge, QColor(255, 255, 255, 235));
             painter.setPen(QPen(color, 1));
             painter.drawRect(badge);
