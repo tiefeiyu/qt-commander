@@ -106,8 +106,59 @@ async def run_mode(mode: str) -> None:
                 print(mode, "default screenshot rejected:", type(exc).__name__)
             else:
                 raise AssertionError("default screenshot should be ambiguous")
+            minimized = await session.call("call", {
+                "target": {"id": second["id"]},
+                "method": "showMinimized",
+            })
+            assert minimized["ok"] is True
+            await asyncio.sleep(0.2)
+            minimized_windows = await session.call("windows", {})
+            minimized_second = next(
+                w for w in minimized_windows["windows"]
+                if w["objectName"] == "windowB"
+            )
+            assert minimized_second["minimized"] is True
+            try:
+                await session.call_frame("screenshot", {
+                    "target": {"id": second["id"]},
+                })
+            except Exception as exc:
+                print(mode, "minimized screenshot rejected:",
+                      type(exc).__name__)
+            else:
+                raise AssertionError("minimized screenshot should fail")
+            try:
+                await session.call("act", {
+                    "target": {"id": button["id"]},
+                    "action": "click",
+                })
+            except Exception as exc:
+                print(mode, "minimized act rejected:", type(exc).__name__)
+            else:
+                raise AssertionError("minimized act should fail")
+            restored = await session.call("call", {
+                "target": {"id": second["id"]},
+                "method": "showNormal",
+            })
+            assert restored["ok"] is True
             print(mode, "second window screenshot/act:", frame.result["width"],
                   frame.result["height"])
+        elif mode == "occlusion":
+            frame = await session.call_frame("screenshot", {
+                "target": {"id": windows["windows"][0]["id"]},
+                "annotate": "all",
+            })
+            assert len(frame.result["legend"]) >= 2
+            covered = await session.call("query", {
+                "where": {"object_name": "btnCovered"},
+            })
+            button = find(covered["tree"][0], "btnCovered")
+            acted = await session.call("act", {
+                "target": {"id": button["id"]},
+                "action": "click",
+            })
+            assert acted["ok"] is True
+            print(mode, "covered act:", button["id"])
         elif mode == "modal":
             await asyncio.sleep(0.5)
             windows = await session.call("windows", {})
@@ -168,7 +219,7 @@ async def run_mode(mode: str) -> None:
 
 
 async def main() -> None:
-    for mode in ("multi-window", "multi-mainwindow", "modal", "popup"):
+    for mode in ("multi-window", "multi-mainwindow", "occlusion", "modal", "popup"):
         await run_mode(mode)
 
 

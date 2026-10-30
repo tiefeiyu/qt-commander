@@ -472,6 +472,7 @@ QJsonObject Server::windows(const QJsonObject& params)
         window.insert(QStringLiteral("rect"), size);
         window.insert(QStringLiteral("screen_pos"), screenPos);
         window.insert(QStringLiteral("visible"), root->isVisible());
+        window.insert(QStringLiteral("minimized"), root->isMinimized());
         window.insert(QStringLiteral("active"),
                       QApplication::activeWindow() == root);
         window.insert(QStringLiteral("modal"),
@@ -658,6 +659,13 @@ QJsonObject Server::act(const QJsonObject& params)
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
         result.insert(QStringLiteral("message"), error);
+        return result;
+    }
+    if (QWidget* top = widget->window(); top && top->isMinimized()) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("target window is minimized"));
         return result;
     }
 
@@ -999,6 +1007,13 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
         result.insert(QStringLiteral("message"), QStringLiteral("no visible window"));
+        return result;
+    }
+    if (QWidget* top = widget->window(); top && top->isMinimized()) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("target window is minimized"));
         return result;
     }
 
@@ -2614,6 +2629,8 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
     rect.insert(QStringLiteral("h"), widget->height());
     node.insert(QStringLiteral("rect"), rect);
     node.insert(QStringLiteral("window"), window);
+    if (window)
+        node.insert(QStringLiteral("minimized"), widget->isMinimized());
 
     if (isRoot || window) {
         const QPoint screen = widget->mapToGlobal(QPoint(0, 0));
