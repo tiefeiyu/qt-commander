@@ -75,8 +75,12 @@ process; owner-only permissions on POSIX).
 
 ```bash
 uv sync
-uv run --project . qt-commander-mcp
+uv run --project . --no-sync python -m qt_commander.server
 ```
+
+`--no-sync` avoids replacing the `qt-commander-mcp.exe` launcher while an
+existing MCP process is running; run `uv sync` when no MCP client is active
+after changing dependencies.
 
 Point the MCP client at the descriptor with `qt_attach(descriptor=...)`, or
 set `QT_COMMANDER_RENDEZVOUS` before starting the server. For an already-running
