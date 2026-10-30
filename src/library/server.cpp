@@ -64,6 +64,10 @@ namespace qt_commander {
 
 namespace {
 
+QString qmlTypeName(const QQuickItem* item);
+QString qmlIdName(const QQuickItem* item);
+QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner);
+
 constexpr const char* kLibraryVersion = "2.0.0";
 
 QJsonObject helloResult(const QString& tag)
@@ -1090,6 +1094,9 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             QRect rect;
             QString className;
             QString text;
+            QString objectName;
+            QString qmlId;
+            bool qml = false;
             bool enabled = true;
         };
         QList<VirtualAnnotation> virtualAnnotations;
@@ -1112,7 +1119,8 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                     QPersistentModelIndex(), action);
                 virtualAnnotations.append(
                     {id, rect, QStringLiteral("QAction"),
-                     action->text(), action->isEnabled()});
+                     action->text(), QString(), QString(), false,
+                     action->isEnabled()});
             }
         };
         if (annotate != QStringLiteral("matched")) {
@@ -1124,6 +1132,33 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                 addVirtualActions(bar->actions(), [bar](QAction* action) {
                     return bar->actionGeometry(action);
                 });
+            } else if (auto* quick = qobject_cast<QQuickWidget*>(widget)) {
+                if (QQuickItem* root = quick->rootObject()) {
+                    int serial = 0;
+                    std::function<void(QQuickItem*)> addQml =
+                        [&](QQuickItem* item) {
+                            if (!item || !item->isVisible())
+                                return;
+                            const QRect rect = qmlItemRect(item, quick);
+                            if (!rect.isEmpty()) {
+                                QJsonObject props;
+                                props.insert(QStringLiteral("text"),
+                                             item->property("text").toString());
+                                props.insert(QStringLiteral("qml_type"),
+                                             qmlTypeName(item));
+                                const QString id = registerQml(
+                                    widget, item, serial++, rect, props);
+                                virtualAnnotations.append(
+                                    {id, rect, qmlTypeName(item),
+                                     item->property("text").toString(),
+                                     item->objectName(), qmlIdName(item),
+                                     true, true});
+                            }
+                            for (QQuickItem* child : item->childItems())
+                                addQml(child);
+                        };
+                    addQml(root);
+                }
             }
         }
         QList<Candidate> candidates;
@@ -1288,11 +1323,13 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             QJsonObject entry;
             entry.insert(QStringLiteral("n"), number);
             entry.insert(QStringLiteral("id"), annotation.id);
-            entry.insert(QStringLiteral("objectName"), QString());
+            entry.insert(QStringLiteral("objectName"), annotation.objectName);
+            entry.insert(QStringLiteral("qml_id"), annotation.qmlId);
             entry.insert(QStringLiteral("class"), annotation.className);
             entry.insert(QStringLiteral("text"), annotation.text);
             entry.insert(QStringLiteral("enabled"), annotation.enabled);
             entry.insert(QStringLiteral("focusable"), false);
+            entry.insert(QStringLiteral("qml"), annotation.qml);
             entry.insert(QStringLiteral("depth"), 0);
             entry.insert(QStringLiteral("parent_id"), idFor(widget));
             entry.insert(QStringLiteral("virtual"), true);
