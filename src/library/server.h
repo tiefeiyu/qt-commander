@@ -15,6 +15,8 @@
 
 class QTcpSocket;
 class QWidget;
+class QQuickItem;
+class QQuickWidget;
 
 namespace qt_commander {
 
@@ -56,6 +58,7 @@ private:
         QPersistentModelIndex persistent;
         QPointer<QAction> action;
         QPointer<QWidget> page;
+        QPointer<QObject> qmlObject;
         int logicalIndex = -1;
     };
 
@@ -78,6 +81,11 @@ private:
     QJsonObject items(const QJsonObject& params);
     QJsonObject source(const QJsonObject& params);
     QJsonObject actVirtual(const QJsonObject& params, const QString& id);
+    QJsonObject buildQmlNode(QWidget* owner, QQuickItem* item,
+                             QueryContext& context, int depth, int* serial,
+                             bool* anyMatch);
+    QString registerQml(QWidget* owner, QQuickItem* item, int index,
+                        const QRect& rect, const QJsonObject& props);
     QString registerVirtual(QWidget* owner, const QString& kind,
                             const QString& className, int index,
                             const QRect& rect, const QJsonObject& props,

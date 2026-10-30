@@ -26,8 +26,11 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   `source` 先按 objectName 搜索 `.ui`/`.qml`，未命中才返回身份信息和
   `E_NO_DEBUGINFO`。
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
-  `QTableView`、`QTreeView`、`QListView`、`QComboBox`、`QScrollBar`、`QSlider`；
-  更复杂的 custom-model provider 尚未覆盖。
+  `QTableView`、`QTreeView`、`QListView`、`QComboBox`、`QScrollBar`、`QSlider`、
+  `QSpinBox`、可勾选的 `QGroupBox`；更复杂的 custom-model provider 尚未覆盖。
+- `QQuickWidget` 下的 QML 深层对象会出现在 `query` 树中，带
+  `qml_type`/`objectName`/局部 rect；其 `vqml` ID 可用于 `qt_get` 和
+  `qt_screenshot` 裁剪。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；虚拟 item 支持 click/dblclick。
 

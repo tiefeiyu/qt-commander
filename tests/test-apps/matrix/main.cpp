@@ -2,9 +2,11 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSpinBox>
 #include <QMainWindow>
 #include <QMenu>
 #include <QPainter>
@@ -107,6 +109,18 @@ int main(int argc, char** argv)
         slider->setRange(0, 100);
         slider->setValue(50);
         layout->addWidget(slider);
+        auto* spin = new QSpinBox(central);
+        spin->setObjectName(QStringLiteral("spin"));
+        spin->setRange(0, 100);
+        spin->setValue(10);
+        layout->addWidget(spin);
+        auto* group = new QGroupBox(QStringLiteral("Options"), central);
+        group->setObjectName(QStringLiteral("options"));
+        group->setCheckable(true);
+        group->setChecked(true);
+        auto* groupLayout = new QVBoxLayout(group);
+        groupLayout->addWidget(new QLabel(QStringLiteral("group content"), group));
+        layout->addWidget(group);
     } else if (mode == QStringLiteral("custom-painted")) {
         layout->addWidget(new PaintedWidget(central));
         auto* button = new QPushButton(QStringLiteral("Custom"), central);

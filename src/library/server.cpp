@@ -10,6 +10,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QHoverEvent>
 #include <QImageWriter>
@@ -33,8 +34,11 @@
 #include <QScreen>
 #include <QScrollBar>
 #include <QSlider>
+#include <QSpinBox>
 #include <QStyle>
+#include <QStyleOptionGroupBox>
 #include <QStyleOptionSlider>
+#include <QStyleOptionSpinBox>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
@@ -44,6 +48,7 @@
 #include <QWheelEvent>
 #include <QQuickItem>
 #include <QQuickWidget>
+#include <QRegularExpression>
 #include <QUrl>
 #include <QVariant>
 #include <QXmlStreamReader>
@@ -1973,6 +1978,59 @@ QJsonObject Server::items(const QJsonObject& params)
         props.insert(QStringLiteral("maximum"), slider->maximum());
         consider(QStringLiteral("slider_handle"),
                  QStringLiteral("QSlider::handle"), 0, rect, props);
+    } else if (auto* spin = qobject_cast<QSpinBox*>(owner)) {
+        total = 2;
+        QStyleOptionSpinBox option;
+        option.initFrom(spin);
+        option.frame = spin->hasFrame();
+        option.buttonSymbols = spin->buttonSymbols();
+        option.stepEnabled = QAbstractSpinBox::StepUpEnabled |
+                             QAbstractSpinBox::StepDownEnabled;
+        for (int i = 0; i < 2; ++i) {
+            const QStyle::SubControl sub =
+                i == 0 ? QStyle::SC_SpinBoxUp : QStyle::SC_SpinBoxDown;
+            const QRect rect = spin->style()->subControlRect(
+                QStyle::CC_SpinBox, &option, sub, spin);
+            if (rect.isEmpty())
+                continue;
+            QJsonObject props;
+            props.insert(QStringLiteral("value"), spin->value());
+            props.insert(QStringLiteral("minimum"), spin->minimum());
+            props.insert(QStringLiteral("maximum"), spin->maximum());
+            props.insert(QStringLiteral("enabled"), spin->isEnabled());
+            consider(QStringLiteral("spin_button"),
+                     i == 0 ? QStringLiteral("QSpinBox::up")
+                            : QStringLiteral("QSpinBox::down"),
+                     i, rect, props);
+        }
+    } else if (auto* group = qobject_cast<QGroupBox*>(owner)) {
+        if (!group->isCheckable()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_NO_ITEMS"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("group box is not checkable"));
+            return result;
+        }
+        total = 1;
+        QStyleOptionGroupBox option;
+        option.initFrom(group);
+        option.text = group->title();
+        option.textAlignment = group->alignment();
+        const QRect rect = group->style()->subControlRect(
+            QStyle::CC_GroupBox, &option, QStyle::SC_GroupBoxCheckBox, group);
+        if (rect.isEmpty()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_NO_ITEMS"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("style has no group box check box"));
+            return result;
+        }
+        QJsonObject props;
+        props.insert(QStringLiteral("checked"), group->isChecked());
+        props.insert(QStringLiteral("text"), group->title());
+        props.insert(QStringLiteral("enabled"), group->isEnabled());
+        consider(QStringLiteral("groupbox_check"),
+                 QStringLiteral("QGroupBox::check"), 0, rect, props);
     } else {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NO_ITEMS"));
@@ -2062,6 +2120,12 @@ bool Server::virtualRect(const VirtualRef& ref, QRect* rect) const
             }
         }
     }
+    if (ref.kind == QStringLiteral("qml_item")) {
+        if (ref.qmlObject.isNull())
+            return false;
+        *rect = ref.rect;
+        return !rect->isEmpty();
+    }
     if (ref.kind == QStringLiteral("tab")) {
         if (auto* tabs = qobject_cast<QTabWidget*>(owner)) {
             const int index = ref.page ? tabs->indexOf(ref.page) : ref.index;
@@ -2141,7 +2205,13 @@ QJsonObject Server::virtualItem(const QString& id)
     }
 
     QJsonObject props = ref.props;
-    if (ref.kind == QStringLiteral("tab") && !ref.page.isNull()) {
+    if (ref.kind == QStringLiteral("qml_item")) {
+        props.insert(QStringLiteral("qml_type"), ref.className);
+        if (auto* qml = qobject_cast<QQuickItem*>(ref.qmlObject.data())) {
+            props.insert(QStringLiteral("objectName"), qml->objectName());
+            props.insert(QStringLiteral("visible"), qml->isVisible());
+        }
+    } else if (ref.kind == QStringLiteral("tab") && !ref.page.isNull()) {
         if (auto* tabs = qobject_cast<QTabWidget*>(ref.owner.data())) {
             const int index = tabs->indexOf(ref.page.data());
             if (index >= 0) {
@@ -2150,6 +2220,18 @@ QJsonObject Server::virtualItem(const QString& id)
                 props.insert(QStringLiteral("selected"),
                              tabs->currentIndex() == index);
             }
+        }
+    } else if (ref.kind == QStringLiteral("spin_button")) {
+        if (auto* spin = qobject_cast<QSpinBox*>(ref.owner.data())) {
+            props.insert(QStringLiteral("value"), spin->value());
+            props.insert(QStringLiteral("minimum"), spin->minimum());
+            props.insert(QStringLiteral("maximum"), spin->maximum());
+            props.insert(QStringLiteral("enabled"), spin->isEnabled());
+        }
+    } else if (ref.kind == QStringLiteral("groupbox_check")) {
+        if (auto* group = qobject_cast<QGroupBox*>(ref.owner.data())) {
+            props.insert(QStringLiteral("checked"), group->isChecked());
+            props.insert(QStringLiteral("enabled"), group->isEnabled());
         }
     } else if (ref.kind == QStringLiteral("menu_item") &&
                !ref.action.isNull()) {
@@ -2183,6 +2265,12 @@ QJsonObject Server::virtualItem(const QString& id)
     item.insert(QStringLiteral("kind"), ref.kind);
     item.insert(QStringLiteral("class"), ref.className);
     item.insert(QStringLiteral("parent"), idFor(ref.owner.data()));
+    if (ref.kind == QStringLiteral("qml_item")) {
+        item.insert(QStringLiteral("qml_type"), ref.className);
+        item.insert(QStringLiteral("qml_id"), QString());
+        item.insert(QStringLiteral("objectName"),
+                    ref.qmlObject ? ref.qmlObject->objectName() : QString());
+    }
     QJsonObject r;
     r.insert(QStringLiteral("x"), rect.x());
     r.insert(QStringLiteral("y"), rect.y());
@@ -2257,6 +2345,40 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         return result;
     }
 
+    if (ref.kind == QStringLiteral("spin_button")) {
+        if (auto* spin = qobject_cast<QSpinBox*>(ref.owner.data())) {
+            if (ref.index == 0)
+                spin->stepUp();
+            else
+                spin->stepDown();
+        }
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
+    if (ref.kind == QStringLiteral("groupbox_check")) {
+        if (auto* group = qobject_cast<QGroupBox*>(ref.owner.data()))
+            group->setChecked(!group->isChecked());
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
     if (ref.kind == QStringLiteral("combo_item")) {
         if (auto* combo = qobject_cast<QComboBox*>(ref.owner.data())) {
             if (ref.index >= 0 && ref.index < combo->count())
@@ -2576,6 +2698,169 @@ QWidget* Server::findIn(QWidget* root, const QJsonObject& where) const
     return nullptr;
 }
 
+namespace {
+
+QString qmlTypeName(const QQuickItem* item)
+{
+    QString name = QString::fromLatin1(item->metaObject()->className());
+    name.replace(QRegularExpression(QStringLiteral("_QMLTYPE_\\d+")),
+                 QString());
+    name.replace(QRegularExpression(QStringLiteral("_QML_\\d+")), QString());
+    return name;
+}
+
+QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner)
+{
+    if (!item || !owner)
+        return {};
+    const QQuickItem* root = owner->rootObject();
+    const QRectF rect =
+        root ? item->mapRectToItem(root, item->boundingRect())
+             : item->boundingRect();
+    return rect.toAlignedRect();
+}
+
+bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
+{
+    static const QSet<QString> allowed{
+        QStringLiteral("class"), QStringLiteral("object_name"),
+        QStringLiteral("text"), QStringLiteral("props")};
+    for (auto it = where.begin(); it != where.end(); ++it) {
+        if (!allowed.contains(it.key()))
+            return false;
+    }
+    const QString className =
+        QString::fromLatin1(item->metaObject()->className());
+    if (where.contains(QStringLiteral("class")) &&
+        where.value(QStringLiteral("class")).toString() != className)
+        return false;
+    if (where.contains(QStringLiteral("object_name")) &&
+        where.value(QStringLiteral("object_name")).toString() !=
+            item->objectName())
+        return false;
+    if (where.contains(QStringLiteral("text")) &&
+        where.value(QStringLiteral("text")).toString() !=
+            item->property("text").toString())
+        return false;
+    if (where.contains(QStringLiteral("props"))) {
+        const QJsonObject props = where.value(QStringLiteral("props")).toObject();
+        for (auto it = props.begin(); it != props.end(); ++it) {
+            const QVariant value =
+                item->property(it.key().toUtf8().constData());
+            if (!value.isValid() ||
+                QJsonValue::fromVariant(value) != it.value())
+                return false;
+        }
+    }
+    return true;
+}
+
+QJsonObject qmlProps(const QQuickItem* item, const QJsonValue& requested)
+{
+    QJsonObject props;
+    if (requested.isString() && requested.toString() == QStringLiteral("*")) {
+        const QMetaObject* meta = item->metaObject();
+        for (int i = 0; i < meta->propertyCount() && props.size() < 64; ++i) {
+            const QMetaProperty property = meta->property(i);
+            if (!property.isReadable())
+                continue;
+            props.insert(QString::fromLatin1(property.name()),
+                         QJsonValue::fromVariant(property.read(item)));
+        }
+    } else if (requested.isArray()) {
+        for (const QJsonValue& value : requested.toArray()) {
+            const QString name = value.toString();
+            const QVariant valueData = item->property(name.toUtf8().constData());
+            if (valueData.isValid())
+                props.insert(name, QJsonValue::fromVariant(valueData));
+        }
+    }
+    return props;
+}
+
+} // namespace
+
+QString Server::registerQml(QWidget* owner, QQuickItem* item, int index,
+                            const QRect& rect, const QJsonObject& props)
+{
+    const QString id = tag_ + QStringLiteral(".vqml.") + idFor(owner) +
+                       QStringLiteral(".") + QString::number(index);
+    VirtualRef ref;
+    ref.owner = owner;
+    ref.kind = QStringLiteral("qml_item");
+    ref.className = qmlTypeName(item);
+    ref.index = index;
+    ref.rect = rect;
+    ref.props = props;
+    ref.qmlObject = item;
+    virtuals_.insert(id, ref);
+    return id;
+}
+
+QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
+                                 QueryContext& context, int depth, int* serial,
+                                 bool* anyMatch)
+{
+    *anyMatch = false;
+    if (!item)
+        return {};
+    const bool selfMatch =
+        context.hasWhere && qmlMatches(item, context.where);
+    ++context.total;
+    if (selfMatch)
+        ++context.matched;
+
+    const QRect rect = qmlItemRect(item, qobject_cast<QQuickWidget*>(owner));
+    const QJsonObject props = qmlProps(item, context.props);
+    int childCount = 0;
+    QJsonArray children;
+    bool childAny = false;
+    for (QQuickItem* child : item->childItems()) {
+        if (!child || !child->isVisible())
+            continue;
+        ++childCount;
+        if (context.maxDepth >= 0 && depth >= context.maxDepth)
+            continue;
+        bool any = false;
+        const QJsonObject childNode =
+            buildQmlNode(owner, child, context, depth + 1, serial, &any);
+        if (any) {
+            children.append(childNode);
+            childAny = true;
+        }
+    }
+    *anyMatch = context.hasWhere ? (selfMatch || childAny) : true;
+    if (context.hasWhere && !*anyMatch)
+        return {};
+    if (context.emitted >= QueryContext::kMaxEmitted) {
+        context.tooLarge = true;
+        return {};
+    }
+    ++context.emitted;
+
+    QJsonObject node;
+    node.insert(QStringLiteral("id"),
+                registerQml(owner, item, (*serial)++, rect, props));
+    node.insert(QStringLiteral("class"), qmlTypeName(item));
+    node.insert(QStringLiteral("qml_type"), qmlTypeName(item));
+    node.insert(QStringLiteral("qml_id"), QString());
+    node.insert(QStringLiteral("objectName"), item->objectName());
+    node.insert(QStringLiteral("qml"), true);
+    node.insert(QStringLiteral("window"), false);
+    QJsonObject rectObject;
+    rectObject.insert(QStringLiteral("x"), rect.x());
+    rectObject.insert(QStringLiteral("y"), rect.y());
+    rectObject.insert(QStringLiteral("w"), rect.width());
+    rectObject.insert(QStringLiteral("h"), rect.height());
+    node.insert(QStringLiteral("rect"), rectObject);
+    node.insert(QStringLiteral("child_count"), childCount);
+    node.insert(QStringLiteral("children"), children);
+    node.insert(QStringLiteral("props"), props);
+    if (context.hasWhere)
+        node.insert(QStringLiteral("matched"), selfMatch);
+    return node;
+}
+
 QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
                                 int depth, bool isRoot, bool* anyMatch)
 {
@@ -2606,6 +2891,20 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
         if (any) {
             childNodes.append(childNode);
             childAny = true;
+        }
+    }
+
+    if (auto* quick = qobject_cast<QQuickWidget*>(widget)) {
+        if (QQuickItem* qmlRoot = quick->rootObject()) {
+            int serial = 0;
+            bool any = false;
+            const QJsonObject qmlNode =
+                buildQmlNode(widget, qmlRoot, context, depth + 1, &serial, &any);
+            if (any) {
+                childNodes.append(qmlNode);
+                ++childCount;
+                childAny = true;
+            }
         }
     }
 
@@ -2674,6 +2973,21 @@ void Server::countNode(QWidget* widget, QueryContext& context, int depth)
         if (!child || !isCandidate(child, context.includeHidden))
             continue;
         countNode(child, context, depth + 1);
+    }
+    if (auto* quick = qobject_cast<QQuickWidget*>(widget)) {
+        std::function<void(QQuickItem*, int)> countQml =
+            [&](QQuickItem* item, int qmlDepth) {
+                if (!item || !item->isVisible())
+                    return;
+                ++context.total;
+                if (context.hasWhere && qmlMatches(item, context.where))
+                    ++context.matched;
+                if (context.maxDepth >= 0 && qmlDepth >= context.maxDepth)
+                    return;
+                for (QQuickItem* child : item->childItems())
+                    countQml(child, qmlDepth + 1);
+            };
+        countQml(quick->rootObject(), depth + 1);
     }
 }
 
