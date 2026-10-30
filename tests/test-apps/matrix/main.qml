@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Controls 2.15
 
 Rectangle {
     id: qmlRoot
@@ -29,5 +30,15 @@ Rectangle {
         objectName: "qmlMouse"
         anchors.fill: parent
         onClicked: qmlStatus.text = "clicked"
+    }
+
+    Button {
+        id: qmlButton
+        objectName: "qmlButton"
+        z: 2
+        text: "QML button"
+        anchors.left: parent.left
+        anchors.top: parent.top
+        onClicked: qmlStatus.text = "button"
     }
 }
