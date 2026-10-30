@@ -799,6 +799,7 @@ QJsonObject Server::act(const QJsonObject& params)
         return result;
     }
 
+    QString typeTextAfter;
     QJsonObject resolved;
     resolved.insert(QStringLiteral("id"), idFor(widget));
     resolved.insert(QStringLiteral("class"),
@@ -894,6 +895,18 @@ QJsonObject Server::act(const QJsonObject& params)
             QApplication::sendEvent(current, &press);
             QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
             QApplication::sendEvent(current, &release);
+        }
+        if (!guard.isNull()) {
+            if (auto* line = qobject_cast<QLineEdit*>(current))
+                typeTextAfter = line->text();
+            else if (auto* textEdit = qobject_cast<QTextEdit*>(current))
+                typeTextAfter = textEdit->toPlainText();
+            else if (auto* plain = qobject_cast<QPlainTextEdit*>(current))
+                typeTextAfter = plain->toPlainText();
+            resolved.insert(QStringLiteral("id"), idFor(current));
+            resolved.insert(QStringLiteral("class"),
+                            QString::fromLatin1(current->metaObject()->className()));
+            resolved.insert(QStringLiteral("objectName"), current->objectName());
         }
     } else if (action == QStringLiteral("focus")) {
         const QPointer<QWidget> guard(widget);
@@ -1001,6 +1014,8 @@ QJsonObject Server::act(const QJsonObject& params)
     result.insert(QStringLiteral("action"), action);
     result.insert(QStringLiteral("dispatched"), true);
     result.insert(QStringLiteral("settled_ms"), settleMs);
+    if (action == QStringLiteral("type"))
+        result.insert(QStringLiteral("text_after"), typeTextAfter);
     result.insert(QStringLiteral("resolved"), resolved);
     const QPointer<QWidget> observedGuard(widget);
     if (params.value(QStringLiteral("observe")).toBool(true) &&
