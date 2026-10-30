@@ -46,6 +46,8 @@
 #include <QTreeView>
 #include <QThread>
 #include <QWheelEvent>
+#include <QQmlContext>
+#include <QQmlEngine>
 #include <QQuickItem>
 #include <QQuickWidget>
 #include <QRegularExpression>
@@ -509,8 +511,8 @@ QJsonObject Server::query(const QJsonObject& params)
     context.hasWhere = !context.where.isEmpty();
     static const QSet<QString> allowedWhere{
         QStringLiteral("id"), QStringLiteral("class"),
-        QStringLiteral("object_name"), QStringLiteral("text"),
-        QStringLiteral("props")};
+        QStringLiteral("object_name"), QStringLiteral("qml_id"),
+        QStringLiteral("text"), QStringLiteral("props")};
     for (auto it = context.where.begin(); it != context.where.end(); ++it) {
         if (!allowedWhere.contains(it.key())) {
             QJsonObject error;
@@ -2267,7 +2269,12 @@ QJsonObject Server::virtualItem(const QString& id)
     item.insert(QStringLiteral("parent"), idFor(ref.owner.data()));
     if (ref.kind == QStringLiteral("qml_item")) {
         item.insert(QStringLiteral("qml_type"), ref.className);
-        item.insert(QStringLiteral("qml_id"), QString());
+        QString qmlId;
+        if (auto* qml = qobject_cast<QQuickItem*>(ref.qmlObject.data())) {
+            if (QQmlContext* context = QQmlEngine::contextForObject(qml))
+                qmlId = context->nameForObject(qml);
+        }
+        item.insert(QStringLiteral("qml_id"), qmlId);
         item.insert(QStringLiteral("objectName"),
                     ref.qmlObject ? ref.qmlObject->objectName() : QString());
     }
@@ -2700,6 +2707,13 @@ QWidget* Server::findIn(QWidget* root, const QJsonObject& where) const
 
 namespace {
 
+QString qmlIdName(const QQuickItem* item)
+{
+    QQmlContext* context = QQmlEngine::contextForObject(item);
+    return context ? context->nameForObject(const_cast<QQuickItem*>(item))
+                   : QString();
+}
+
 QString qmlTypeName(const QQuickItem* item)
 {
     QString name = QString::fromLatin1(item->metaObject()->className());
@@ -2724,7 +2738,8 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
 {
     static const QSet<QString> allowed{
         QStringLiteral("class"), QStringLiteral("object_name"),
-        QStringLiteral("text"), QStringLiteral("props")};
+        QStringLiteral("qml_id"), QStringLiteral("text"),
+        QStringLiteral("props")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key()))
             return false;
@@ -2737,6 +2752,9 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
     if (where.contains(QStringLiteral("object_name")) &&
         where.value(QStringLiteral("object_name")).toString() !=
             item->objectName())
+        return false;
+    if (where.contains(QStringLiteral("qml_id")) &&
+        where.value(QStringLiteral("qml_id")).toString() != qmlIdName(item))
         return false;
     if (where.contains(QStringLiteral("text")) &&
         where.value(QStringLiteral("text")).toString() !=
@@ -2843,7 +2861,7 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
                 registerQml(owner, item, (*serial)++, rect, props));
     node.insert(QStringLiteral("class"), qmlTypeName(item));
     node.insert(QStringLiteral("qml_type"), qmlTypeName(item));
-    node.insert(QStringLiteral("qml_id"), QString());
+    node.insert(QStringLiteral("qml_id"), qmlIdName(item));
     node.insert(QStringLiteral("objectName"), item->objectName());
     node.insert(QStringLiteral("qml"), true);
     node.insert(QStringLiteral("window"), false);
