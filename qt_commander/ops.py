@@ -18,7 +18,7 @@ ACTIONS = frozenset(
     {"click", "dblclick", "hover", "type", "key", "focus", "scroll", "drag"}
 )
 COORDS = frozenset({"parent", "screen"})
-ANNOTATE = frozenset({"none", "interactive", "matched", "all"})
+ANNOTATE = frozenset({"none", "interactive", "matched", "all", "layers"})
 IMAGE_FORMATS = frozenset({"png"})
 INPUT_MODES = frozenset({"auto", "pointer", "api"})
 # The RPC deadline must outlive the action's own expect/settle budget;

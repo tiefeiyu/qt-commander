@@ -897,7 +897,8 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     if (annotate != QStringLiteral("none") &&
         annotate != QStringLiteral("interactive") &&
         annotate != QStringLiteral("matched") &&
-        annotate != QStringLiteral("all")) {
+        annotate != QStringLiteral("all") &&
+        annotate != QStringLiteral("layers")) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
@@ -1186,7 +1187,16 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         QList<BadgeTarget> badgeTargets;
         for (const Candidate& candidate : candidates) {
             ++number;
-            painter.setPen(boxPen);
+            int depth = 0;
+            for (QWidget* parent = candidate.node->parentWidget();
+                 parent && parent != widget; parent = parent->parentWidget())
+                ++depth;
+            QPen candidatePen = boxPen;
+            if (annotate == QStringLiteral("layers") && depth > 0) {
+                candidatePen.setStyle(Qt::DashLine);
+                candidatePen.setWidth(qMax(1, qRound(1 * dpr)));
+            }
+            painter.setPen(candidatePen);
             QRect drawRect(
                 qRound(candidate.rect.x() * deviceScale),
                 qRound(candidate.rect.y() * deviceScale),
@@ -1196,6 +1206,10 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                 QRect(0, 0, originalWidth, canvas.height()));
             if (drawRect.isEmpty())
                 continue;
+            if (annotate == QStringLiteral("layers"))
+                drawRect = drawRect.adjusted(
+                    qRound(depth * dpr), qRound(depth * dpr),
+                    -qRound(depth * dpr), -qRound(depth * dpr));
             painter.drawRect(drawRect);
             badgeTargets.append({drawRect, number});
 
@@ -1209,10 +1223,6 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             imageRect.insert(QStringLiteral("y"), qRound(candidate.rect.y() * logicalScale));
             imageRect.insert(QStringLiteral("w"), qRound(candidate.rect.width() * logicalScale));
             imageRect.insert(QStringLiteral("h"), qRound(candidate.rect.height() * logicalScale));
-            int depth = 0;
-            for (QWidget* parent = candidate.node->parentWidget();
-                 parent && parent != widget; parent = parent->parentWidget())
-                ++depth;
             QJsonObject entry;
             entry.insert(QStringLiteral("n"), number);
             entry.insert(QStringLiteral("id"), idFor(candidate.node));
