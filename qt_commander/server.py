@@ -812,6 +812,7 @@ async def qt_wait(
 async def qt_screenshot(
     session_id: str,
     target: str | dict[str, Any] | None = None,
+    nth: int = 0,
     max_width: int = 1024,
     annotate: str = "none",
     where: dict[str, Any] | None = None,
@@ -831,6 +832,7 @@ async def qt_screenshot(
         frame = await ops.screenshot(
             session,
             target=target,
+            nth=nth,
             max_width=max_width,
             annotate=annotate,
             where=where,

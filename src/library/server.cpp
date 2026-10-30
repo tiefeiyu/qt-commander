@@ -499,7 +499,25 @@ QJsonObject Server::query(const QJsonObject& params)
         return error;
     }
 
-    const auto roots = QApplication::topLevelWidgets();
+    QList<QWidget*> roots;
+    {
+        const QList<QWidget*> topLevels = QApplication::topLevelWidgets();
+        QSet<QWidget*> topLevelSet;
+        for (QWidget* root : topLevels)
+            topLevelSet.insert(root);
+        for (QWidget* root : topLevels) {
+            bool nested = false;
+            for (QWidget* parent = root->parentWidget(); parent;
+                 parent = parent->parentWidget()) {
+                if (topLevelSet.contains(parent)) {
+                    nested = true;
+                    break;
+                }
+            }
+            if (!nested)
+                roots.append(root);
+        }
+    }
     if (countOnly) {
         for (QWidget* root : roots) {
             if (isCandidate(root, context.includeHidden))
@@ -828,6 +846,13 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         return result;
     }
 
+    const int nth = params.value(QStringLiteral("nth")).toInt(0);
+    if (nth < 0) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
+        result.insert(QStringLiteral("message"), QStringLiteral("nth must be >= 0"));
+        return result;
+    }
     const bool explicitTarget = params.contains(QStringLiteral("target"));
     QWidget* widget = nullptr;
     QRect virtualCrop;
@@ -863,7 +888,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         virtualTarget = true;
     } else if (explicitTarget) {
         QString error;
-        widget = resolveTarget(targetValue, &error);
+        widget = resolveTarget(targetValue, &error, nth);
         if (!widget) {
             QJsonObject result;
             result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -2288,9 +2313,11 @@ QList<QWidget*> Server::collectMatches(const QJsonObject& where) const
         return left->winId() < right->winId();
     });
     QList<QWidget*> found;
+    QSet<QWidget*> visited;
     std::function<void(QWidget*)> walk = [&](QWidget* widget) {
-        if (!widget || !widget->isVisible())
+        if (!widget || !widget->isVisible() || visited.contains(widget))
             return;
+        visited.insert(widget);
         if (matches(widget, where))
             found.append(widget);
         const QObjectList children = widget->children();

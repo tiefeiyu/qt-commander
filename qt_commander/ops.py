@@ -322,6 +322,7 @@ async def screenshot(
     session: Session,
     *,
     target: str | Mapping[str, Any] | None = None,
+    nth: int = 0,
     max_width: int = 1024,
     annotate: str = "none",
     where: Mapping[str, Any] | None = None,
@@ -330,6 +331,8 @@ async def screenshot(
 ) -> FrameResponse:
     _choice("annotate", annotate, ANNOTATE)
     _choice("format", format, IMAGE_FORMATS)
+    if nth < 0:
+        raise ValueError("nth must be >= 0")
     if max_width < 0:
         raise ValueError("max_width must be >= 0 (0 = native)")
     if max_labels < 0:
@@ -339,6 +342,7 @@ async def screenshot(
         _clean(
             {
                 "target": target,
+                "nth": nth,
                 "max_width": max_width,
                 "annotate": annotate,
                 "where": where,
