@@ -30,7 +30,7 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   `QSpinBox`、可勾选的 `QGroupBox`；更复杂的 custom-model provider 尚未覆盖。
 - `QQuickWidget` 下的 QML 深层对象会出现在 `query` 树中，带
   `qml_type`/`qml_id`/`objectName`/局部 rect；其 `vqml` ID 可用于
-  `qt_get`、`qt_act` 和 `qt_screenshot` 裁剪。
+  `qt_get`、`qt_act`、`qt_screenshot` 裁剪和 `qt_source`。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；虚拟 item 支持 click/dblclick。
 

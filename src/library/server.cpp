@@ -193,10 +193,13 @@ bool findQmlLocation(const QString& objectName, UiHit* hit)
             while (!file.atEnd()) {
                 const QString text = QString::fromUtf8(file.readLine());
                 ++line;
-                if (!text.contains(QStringLiteral("objectName")))
+                if (!text.contains(QStringLiteral("objectName")) &&
+                    !text.contains(QStringLiteral("id:")))
                     continue;
                 if (text.contains(QStringLiteral("\"%1\"").arg(objectName)) ||
-                    text.contains(QStringLiteral("'%1'").arg(objectName))) {
+                    text.contains(QStringLiteral("'%1'").arg(objectName)) ||
+                    text.contains(QStringLiteral("id: %1").arg(objectName)) ||
+                    text.contains(QStringLiteral("id:%1").arg(objectName))) {
                     hit->file = canonical;
                     hit->line = line;
                     return true;
@@ -2465,9 +2468,13 @@ QJsonObject Server::source(const QJsonObject& params)
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
         if (ref.kind == QStringLiteral("qml_item") && item) {
             UiHit hit;
-            const QString queryName = item->objectName().isEmpty()
-                                          ? QString()
-                                          : item->objectName();
+            const QString queryName =
+                !item->objectName().isEmpty()
+                    ? item->objectName()
+                    : (QQmlEngine::contextForObject(item)
+                           ? QQmlEngine::contextForObject(item)
+                                 ->nameForObject(item)
+                           : QString());
             const bool located =
                 !queryName.isEmpty() && findQmlLocation(queryName, &hit);
             QJsonObject target;

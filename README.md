@@ -33,7 +33,7 @@ are no snapshot files and no stale index of the UI.
   providers are not covered yet.
 - QML deep objects under `QQuickWidget` are returned by `query` with
   `qml_type`/`qml_id`/`objectName`/local rect; use their `vqml` IDs with
-  `qt_get`, `qt_act` and `qt_screenshot`.
+  `qt_get`, `qt_act`, `qt_screenshot` and `qt_source`.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). Virtual items support click/dblclick.
 
