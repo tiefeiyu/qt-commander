@@ -4,25 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qt-commander-mcp"
-version = "0.1.0"
-description = "MCP server for Qt application introspection and automation"
+version = "2.0.0"
+description = "MCP server for live Qt UI introspection and automation"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "TieFeiyu"}]
 dependencies = [
     "fastmcp>=4.1.4",
-    "psutil>=7.2.2",
+    "psutil>=7.0",
 ]
 
 [project.scripts]
 qt-commander-mcp = "qt_commander.server:main"
 
-# PEP 735 dev group. `uv sync` and `uv run` include it by default, so the
-# documented test command works in a fresh checkout. Without it, `uv run
-# pytest` finds no pytest in the project environment and silently falls
-# back to whatever pytest happens to be on PATH, running the tests against
-# an unrelated interpreter. pytest-asyncio backs the @pytest.mark.asyncio
-# markers used throughout tests/unit_server/.
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -31,6 +25,3 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["qt_commander*"]
-
-[tool.setuptools.package-data]
-qt_commander = ["native/**/*"]

@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 *.egg-info/
 build/
+.venv/
+.pytest_cache/
+.test-workspace/
+.codegraph/
+.portal/
 *.o
 *.obj
 *.exe
@@ -9,7 +14,6 @@ build/
 *.so
 *.dylib
 .superpowers/
-.qt-commander/
 *.gcov
 *.gcda
 *.gcno
@@ -17,6 +21,3 @@ build/
 *.tmp
 .vscode/
 portal.db
-
-# Portal MCP runtime state DBs
-.portal/

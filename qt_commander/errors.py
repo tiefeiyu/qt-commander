@@ -1,142 +1,89 @@
-"""Custom error types mapped to MCP error codes (-32000 + data.code sub-codes)."""
+"""Stable string error codes for protocol 2.
 
-import json
+Single source of truth: protocol/client/ops import from here instead of
+hard-coding ``E_*`` strings.  Values are part of the wire contract.
+"""
+from __future__ import annotations
 
-
-class QtCommanderError(Exception):
-    """Base exception. data.code 1001-2010 maps to MCP JSON-RPC -32000."""
-
-    def __init__(self, code: int, message: str):
-        self.code = code
-        self.message = message
-        super().__init__(message)
+from enum import Enum
 
 
-class RpcError(QtCommanderError):
-    """A JSON-RPC error response from the injected library.
+class ErrorCode(str, Enum):
+    # Protocol / transport
+    PROTOCOL = "E_PROTOCOL"
+    FRAME_TOO_LARGE = "E_FRAME_TOO_LARGE"
+    AUTH_FAILED = "E_AUTH_FAILED"
+    BUSY = "E_BUSY"
+    EXPIRED = "E_EXPIRED"
+    CANCELLED = "E_CANCELLED"
+    TARGET_BUSY = "E_TARGET_BUSY"
+    TARGET_TIMEOUT = "E_TARGET_TIMEOUT"
 
-    Carries the library's own code + message (e.g. -32601 method not
-    found, 2009 auth failed, 2004 main-thread timeout) so callers can
-    distinguish failure modes instead of everything collapsing into a
-    timeout.
-    """
+    # Session / lifecycle
+    PROCESS_GONE = "E_PROCESS_GONE"
+    SESSION_EXISTS = "E_SESSION_EXISTS"
+    SESSION_EXPIRED = "E_SESSION_EXPIRED"
+    AMBIGUOUS_SESSION = "E_AMBIGUOUS_SESSION"
+    MODE_CONFLICT = "E_MODE_CONFLICT"
 
-    def __init__(self, code: int, message: str):
-        super().__init__(code, message)
+    # Linked mode
+    LINKED_NOT_FOUND = "E_LINKED_NOT_FOUND"
+    LINKED_UNREACHABLE = "E_LINKED_UNREACHABLE"
+    LINKED_STALE = "E_LINKED_STALE"
+    LINKED_INVALID = "E_LINKED_INVALID"
+    LINKED_IDENTITY = "E_LINKED_IDENTITY"
+    LINKED_BUSY = "E_LINKED_BUSY"
+    LINKED_NOT_LOADED = "E_LINKED_NOT_LOADED"
 
+    # Injection / policy
+    INJECTION_BLOCKED = "E_INJECTION_BLOCKED"
+    INJECTION_FAILED = "E_INJECTION_FAILED"
+    PERMISSION = "E_PERMISSION"
+    TARGET_NOT_QT = "E_TARGET_NOT_QT"
+    POLICY_BLOCKED = "E_POLICY_BLOCKED"
 
-# Element errors (1001-1005)
-class ElementDestroyedError(QtCommanderError):
-    def __init__(self, element_id: int):
-        super().__init__(1001, f"element #{element_id} no longer exists")
+    # Query
+    NOT_FOUND = "E_NOT_FOUND"
+    AMBIGUOUS = "E_AMBIGUOUS"
+    HIDDEN = "E_HIDDEN"
+    DISABLED = "E_DISABLED"
+    STALE_ID = "E_STALE_ID"
+    INVALID_ARGUMENT = "E_INVALID_ARGUMENT"
+    INVALID_FILTER = "E_INVALID_FILTER"
+    RESULT_TOO_LARGE = "E_RESULT_TOO_LARGE"
+    IMAGE_TOO_LARGE = "E_IMAGE_TOO_LARGE"
+    COORDS_UNAVAILABLE = "E_COORDS_UNAVAILABLE"
 
+    # Items
+    NO_ITEMS = "E_NO_ITEMS"
+    ITEMS_TRUNCATED = "E_ITEMS_TRUNCATED"
 
-class ElementStaleError(QtCommanderError):
-    def __init__(self, element_id: int):
-        super().__init__(1002, f"element #{element_id} is stale — call qt_snapshot first")
+    # Expect / JS
+    EXPECT_TIMEOUT = "E_EXPECT_TIMEOUT"
+    JS_SYNTAX = "E_JS_SYNTAX"
+    JS_RUNTIME = "E_JS_RUNTIME"
+    JS_TIMEOUT = "E_JS_TIMEOUT"
+    JS_NOT_BOOLEAN = "E_JS_NOT_BOOLEAN"
+    JS_RISK = "E_JS_RISK"
+    INVALID_EXPECT = "E_INVALID_EXPECT"
 
-
-class ElementNotVisibleError(QtCommanderError):
-    def __init__(self, element_id: int):
-        super().__init__(1003, f"element #{element_id} is not visible")
-
-
-class ElementDisabledError(QtCommanderError):
-    def __init__(self, element_id: int):
-        super().__init__(1004, f"element #{element_id} is disabled")
-
-
-class ElementZeroSizeError(QtCommanderError):
-    def __init__(self, element_id: int):
-        super().__init__(1005, f"element #{element_id} has zero size")
-
-
-# System errors (2001-2010)
-class BuildRequiredError(QtCommanderError):
-    def __init__(self):
-        super().__init__(
-            2001,
-            "Build required — compile the injector and library first using qt_build. "
-            "Required params: vcvars_path, qt_env. "
-            "Optional: vcvars_args, build_type, qt_major, generator.",
-        )
-
-
-class InjectionError(QtCommanderError):
-    def __init__(self, detail: str):
-        super().__init__(2002, f"Injection failed: {detail}")
-
-
-class RpcTimeoutError(QtCommanderError):
-    def __init__(self, detail: str = ""):
-        super().__init__(2003, f"Target process did not respond{': ' + detail if detail else ''}")
-
-
-class MainThreadUnresponsiveError(QtCommanderError):
-    def __init__(self):
-        super().__init__(2004, "Main thread unresponsive after 30s")
-
-
-class DiskFullError(QtCommanderError):
-    def __init__(self, available_mb: int, needed_mb: int):
-        super().__init__(
-            2005,
-            f"Disk full: {available_mb} MB available, need {needed_mb} MB",
-        )
-
-
-class SessionExistsError(QtCommanderError):
-    def __init__(self, pid: int, session_id: str):
-        super().__init__(
-            2006, f"Process {pid} already attached in session {session_id}"
-        )
+    # Source / misc
+    NO_LOCATION = "E_NO_LOCATION"
+    SOURCE_UNAVAILABLE = "E_SOURCE_UNAVAILABLE"
+    SOURCE_DISCARDED = "E_SOURCE_DISCARDED"
+    SOURCE_STALE = "E_SOURCE_STALE"
+    NO_DEBUGINFO = "E_NO_DEBUGINFO"
+    MAPPING_AMBIGUOUS = "E_MAPPING_AMBIGUOUS"
+    HANDLER_NOT_FOUND = "E_HANDLER_NOT_FOUND"
+    UNSUPPORTED_QT = "E_UNSUPPORTED_QT"
+    RENDEZVOUS_UNSAFE = "E_RENDEZVOUS_UNSAFE"
+    NAMESPACE = "E_NAMESPACE"
+    BUILD_REQUIRED = "E_BUILD_REQUIRED"
+    BUILD_FAILED = "E_BUILD_FAILED"
+    NOT_IMPLEMENTED = "E_NOT_IMPLEMENTED"
 
 
-class OperationInProgressError(QtCommanderError):
-    def __init__(self):
-        super().__init__(2007, "operation in progress — retry")
+def as_code(value: str | ErrorCode) -> str:
+    """Return the wire string for an enum member or a raw code."""
+    return value.value if isinstance(value, ErrorCode) else value
 
-
-class FrameTooLargeError(QtCommanderError):
-    def __init__(self, size: int):
-        super().__init__(2008, f"frame too large: {size} bytes (max 16 MB)")
-
-
-class AuthFailedError(QtCommanderError):
-    def __init__(self):
-        super().__init__(2009, "authentication failed")
-
-
-class SnapshotTruncatedError(QtCommanderError):
-    def __init__(self, reason: str):
-        super().__init__(2010, f"snapshot truncated: {reason}")
-
-
-class SessionLostError(QtCommanderError):
-    """The target process died or the RPC connection dropped.
-
-    The session is marked disconnected (qt_list_sessions shows
-    connected:false); re-attach with qt_attach to recover.
-    """
-
-    def __init__(self, detail: str = ""):
-        super().__init__(2011, f"Session lost — target process exited or "
-                              f"connection dropped{': ' + detail if detail else ''}")
-
-
-class SessionNotFoundError(QtCommanderError):
-    """Special: maps to JSON-RPC -32602 Invalid Params."""
-    def __init__(self, session_id: str):
-        super().__init__(-32602, f"Invalid params: unknown session_id '{session_id}'")
-
-
-def tool_error(code: int, message: str) -> str:
-    """Fallback error formatting when fastmcp custom_error_handler is unavailable.
-
-    Returns a JSON-RPC error string that the MCP client interprets correctly.
-    """
-    return json.dumps(
-        {
-            "error": {"code": -32000, "message": message, "data": {"code": code}},
-        }
-    )

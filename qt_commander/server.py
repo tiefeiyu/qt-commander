@@ -1,836 +1,926 @@
-"""qt-commander MCP server — entry point."""
-import contextlib
+"""qt-commander MCP server (linked mode vertical slice)."""
+from __future__ import annotations
+
+import asyncio
 import json
 import os
+import shutil
+import subprocess
+import tempfile
+import time
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
-
-def _dumps(obj, **kwargs):
-    """Serialize with UTF-8 text (no \\uXXXX escapes).
-
-    Qt UI text is overwhelmingly UTF-8; escaping every non-ASCII code
-    point makes snapshots and property reads unreadable.
-    """
-    return json.dumps(obj, ensure_ascii=False, **kwargs)
-
+import psutil
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 
-from .builder import BUILD_DIR, check_build_state, run_build, BuildState
-from .environment_detector import (
-    detect_vs_environments,
-    detect_qt_environments,
-    detect_mingw_toolchains,
-)
-from .errors import BuildRequiredError, SessionNotFoundError, tool_error
-from .occlusion import prune_snapshot
-from .process_detector import list_qt_processes
-from .rpc_client import inject_and_connect
-from .session import SessionManager
+from . import inject, ops
+from .client import ClientClosed, ClientTimeout, RpcClient, RpcError
+from .environment import detect_qt_environments, detect_toolchains
+from .errors import ErrorCode
+from .session import Session, SessionExists, SessionManager, SessionNotFound
 
 mcp = FastMCP("qt-commander")
+sessions = SessionManager()
 
 
-def _ensure_workspace_gitignored(directory: Path) -> None:
-    """Keep the generated scratch directory out of the surrounding git repo.
-
-    The workspace holds build outputs and per-session files, all generated
-    on the fly; when the server runs from inside a user's repository they
-    would otherwise show up as untracked clutter in `git status`.  A
-    `.gitignore` containing just `*` inside the directory hides its
-    contents without touching the user's own files.  An existing
-    `.gitignore` is left byte-for-byte untouched — the user may have put
-    their own rules there.  Failures are swallowed on purpose: an
-    unwritable location (read-only filesystem, permission denied, ...)
-    must never stop the server from starting.
-    """
-    gitignore = directory / ".gitignore"
-    if gitignore.exists():
-        return
-    with contextlib.suppress(OSError):
-        # Bytes, not text: text mode would translate the newline to CRLF on
-        # Windows, making the file's content platform-dependent.
-        gitignore.write_bytes(b"*\n")
+def _rendezvous_dir() -> Path:
+    return Path(os.environ.get(
+        "QT_COMMANDER_RENDEZVOUS",
+        str(Path(tempfile.gettempdir()) / "qt-commander"),
+    ))
 
 
-_workspace = Path(os.environ.get("QT_COMMANDER_WORKSPACE", ".qt-commander")).resolve()
-_workspace.mkdir(parents=True, exist_ok=True)
-_ensure_workspace_gitignored(_workspace)
-
-sessions = SessionManager(_workspace)
-
-
-def _resolve_session(session_id: str):
-    sess = sessions.get(session_id)
-    if sess is None or not sess.connected:
-        raise SessionNotFoundError(session_id)
-    return sess
-
-
-# ============================================================================
-# Session Management Tools
-# ============================================================================
-
-@mcp.tool()
-async def qt_list_processes() -> str:
-    """List running Qt processes that may be attachable."""
-    procs = list_qt_processes()
-    return _dumps({"processes": procs}, indent=2)
+def _descriptor_candidates() -> list[Path]:
+    roots = [_rendezvous_dir(), Path(tempfile.gettempdir()) / "qt-commander"]
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        for path in sorted(root.glob("descriptor-*.json")):
+            resolved = path.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                candidates.append(path)
+        legacy = root / "descriptor.json"
+        if legacy.exists() and legacy.resolve() not in seen:
+            seen.add(legacy.resolve())
+            candidates.append(legacy)
+    return candidates
 
 
-@mcp.tool()
-async def qt_attach(pid: int) -> str:
-    """Inject the helper library into a running Qt process and open a session.
+def _default_descriptor() -> Path | None:
+    candidates = _descriptor_candidates()
+    return candidates[0] if len(candidates) == 1 else None
 
-    Find the target pid with qt_list_processes first (only Qt processes are
-    listed, each with its qt_version/arch/bitness).  The build artifacts in
-    .qt-commander/bin must match the target process: same Qt major
-    (qt_major used in qt_build), same toolchain (msvc/mingw), same
-    Debug/Release build type, same 64/32-bit — a mismatch makes injection
-    fail with code 2002.  A process that is already attached fails with
-    2006; detach first.
 
-    If the build has not been completed, this returns error code 2001 with
-    the steps to follow (qt_detect_msvc_and_qt → AskUserQuestion →
-    qt_build → qt_attach again); it does not build automatically.
-
-    Injection modifies the target process (loads a DLL, starts a local
-    RPC thread/listener).  If the target process exits, the session goes
-    dead: operations then fail with connection/timeout errors — check
-    qt_list_sessions and re-attach.
-    """
-    if check_build_state() != BuildState.BUILT:
-        return tool_error(2001, (
-            "Build required. First, run qt_detect_msvc_and_qt to discover MSVC and Qt "
-            "installations. Then ask the user which VS and Qt to use — do NOT auto-pick "
-            "paths. Finally, call qt_build with the user-chosen vcvars_path and qt_env."
-        ))
-
-    lib_path = (BUILD_DIR / "bin" / (
-        "libqt-commander.dll" if os.name == "nt" else "libqt-commander.so"
-    )).resolve()
-    injector_exe = (BUILD_DIR / "bin" / (
-        "qt-injector.exe" if os.name == "nt" else "qt-injector"
-    )).resolve()
-
-    if not lib_path.exists() or not injector_exe.exists():
-        return tool_error(2001, "Built artifacts not found. Re-run qt_build.")
-
-    session = await sessions.create(pid, lib_path)
-    port_file = session.session_dir / "port.txt"
-
+def _descriptor_pid(path: Path) -> int | None:
     try:
-        await inject_and_connect(pid, lib_path, port_file, injector_exe, session)
-    except Exception as e:
-        await sessions.destroy(session.id, purge=True)
-        return tool_error(2002, str(e))
-
-    return _dumps({
-        "session_id": session.id,
-        "pid": pid,
-        "connected": session.connected,
-    })
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return int(data["pid"]) if isinstance(data, dict) else None
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
-@mcp.tool()
-async def qt_detach(session_id: str, purge: bool = False) -> str:
-    """Disconnect from a Qt process session.
-
-    ``purge=True`` (default False) also **ejects the injected DLL from the
-    target process** and **deletes the session's saved files** (snapshots,
-    screenshots, session metadata) — irreversible.  Use purge=True before
-    rebuilding the library: otherwise the DLL file stays locked by the
-    target process and qt_build fails.  With purge=False the DLL stays
-    loaded in the target until that process exits."""
-    ok = await sessions.destroy(session_id, purge=purge)
-    if not ok:
-        return tool_error(-32602, f"Session not found: {session_id}")
-    return _dumps({"status": "detached", "session_id": session_id, "purged": purge})
-
-
-@mcp.tool()
-async def qt_list_sessions() -> str:
-    """List all active sessions."""
-    return _dumps({"sessions": sessions.list_sessions()}, indent=2)
-
-
-# ============================================================================
-# Build Tools
-# ============================================================================
-
-@mcp.tool()
-async def qt_detect_msvc_and_qt() -> str:
-    """Detect MSVC (Visual Studio), MinGW toolchains, and Qt installations
-    available for building.
-
-    IMPORTANT — this tool only *discovers* and *displays* what is found on
-    this machine.  It does NOT select an environment automatically.
-
-    After calling this tool, the AI MUST use ``AskUserQuestion`` to present
-    the found installations to the user and let them choose which compiler
-    and Qt to use with ``qt_build``.  For an MSVC Qt kit
-    (``kit == "msvc"``) pass the VS ``vcvars_path`` + the kit's
-    ``qtenv_path`` with ``toolchain="msvc"``; for a MinGW kit
-    (``kit == "mingw"``) pass a MinGW toolchain's bin dir (from
-    ``mingw_toolchains``) + the kit's ``qtenv_path`` (MinGW kits ship
-    qtenv2.bat too) with ``toolchain="mingw"``.
-    If detection finds nothing (or misses an installation the user knows
-    about), the user can type the paths manually.
-
-    Returns three lists: ``vs_installations``, ``mingw_toolchains``, and
-    ``qt_installations``.
-    """
-    vs_list = detect_vs_environments()
-    mingw_list = detect_mingw_toolchains()
-    qt_list = detect_qt_environments()
-    return _dumps({
-        "vs_installations": vs_list,
-        "mingw_toolchains": mingw_list,
-        "qt_installations": qt_list,
-    }, indent=2)
-
-
-@mcp.tool()
-async def qt_build(
-    vcvars_path: str = "",
-    qt_env: str = "",
-    vcvars_args: str = "",
-    build_type: str = "Release",
-    qt_major: int = 5,
-    generator: str = "",
-    with_qml: bool = True,
-    toolchain: str = "msvc",
-) -> str:
-    """Build the Qt injection library and injector for the specified environment.
-
-    ``toolchain`` selects the compiler: ``"msvc"`` (default; ``vcvars_path``
-    is a vcvars bat, ``qt_env`` a qtenv2.bat) or ``"mingw"``
-    (``vcvars_path`` is the MinGW bin dir; ``qt_env`` the kit's qtenv2.bat
-    — MinGW Qt kits ship one too; the Qt-bundled Ninja is used
-    automatically).
-
-    Before calling this tool, the AI MUST present available build
-    environments (from ``qt_detect_msvc_and_qt``) to the user and let them
-    choose.  Do NOT guess or auto-pick paths — the user decides which VS
-    or MinGW toolchain and which Qt installation to use.
-
-    The AI MUST also ask the user whether to enable QML/QQuick support
-    (``with_qml``).  QML support is required for inspecting QML/Qt Quick
-    applications but adds build dependencies.
-
-    The AI MUST also ask the user to choose the ``build_type`` (Debug or
-    Release).  The build type must match the target process — a Debug
-    process requires a Debug build, a Release process requires Release.
-
-    ``qt_major`` (default 5) must match the target application's Qt major
-    version — read it from qt_list_processes' ``qt_version`` field or from
-    the qt_detect_msvc_and_qt result; a Qt6 target built with qt_major=5
-    fails to inject.  ``vcvars_args`` — extra args for the VS vcvars batch
-    (e.g. "-arch x64").  ``generator`` — CMake generator override; omit to
-    auto-select.  Before rebuilding, detach any session that still holds
-    the old DLL (qt_detach with purge=True) or the build fails on a locked
-    file.
-    """
-    result = await run_build(
-        vcvars_path=vcvars_path,
-        qt_env=qt_env,
-        vcvars_args=vcvars_args,
-        build_type=build_type,
-        qt_major=qt_major,
-        generator=generator,
-        with_qml=with_qml,
-        toolchain=toolchain,
-    )
-    return _dumps(result, indent=2)
-
-
-# ============================================================================
-# UI Inspection Tools
-# ============================================================================
-
-@mcp.tool()
-async def qt_snapshot(session_id: str, include_hidden: bool = False,
-                       detail: str = "extended",
-                       root_id: int = 0, max_depth: int = 1,
-                       prop_depth: int = 1) -> str:
-    """Capture the UI element tree of the session's windows.
-
-    The tree is NOT in this result — it is written to the file exposed at
-    the returned ``uri``, an absolute ``file://`` path to the written
-    snapshot file (e.g. ``file:///path/.qt-commander/sessions/<sid>/
-    snapshots/snapshot_N.json``); read that file to inspect the tree.  The
-    result carries only session_id / snapshot_id / uri.  Node fields:
-    className, objID, objectName, qml_id (QML ``id`` from the QML source,
-    omitted when empty), rect (window-local logical px), global_rect
-    (screen coords), z_order, visible/enabled/opacity/color_alpha/clip,
-    text, topLevelId, windowTitle, properties (per ``detail``).
-
-    ``detail`` — property tier per node: "core" (first-class fields only,
-    no properties), "extended" (DEFAULT; common interaction-state
-    properties like text/checked/value), "full" (every Q_PROPERTY; slow on
-    large UIs).
-    ``include_hidden`` (default False) — hidden elements are pruned
-    together with their whole subtree (hidden tabs, unopened dialogs).
-    Set True to include them; note hidden elements are still rejected by
-    click/input/property tools.
-    ``max_depth`` — levels of children: 0 = roots only, 1 = roots +
-    direct children, -1 = entire tree (default 1).
-    ``prop_depth`` — levels of QObject property expansion (0 = none,
-    -1 = unlimited).
-    ``root_id`` — 0 = all top-level windows; >0 = subtree of an element
-    from the MOST RECENT snapshot/find.  Ids expire on every refresh: if
-    root_id no longer resolves, the tool silently falls back to all
-    top-level windows — pass it only when you know it is fresh.
-
-    ID LIFECYCLE: this is the ONLY operation that renumbers ids — every
-    element_id and window_id from previous snapshots/finds becomes
-    invalid.  qt_get_snapshot and qt_find_element NEVER invalidate ids
-    (they only grow the map): use them freely between snapshots.  The
-    snapshot runs on the target process's GUI thread (brief UI freeze);
-    if the target is busy, calls can time out after ~30s.
-    """
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.snapshot", {
-        "include_hidden": include_hidden,
-        "detail": detail,
-        "rootId": root_id,
-        "maxDepth": max_depth,
-        "propDepth": prop_depth,
-    })
-    return await _store_snapshot(session, result)
-
-
-async def _store_snapshot(session: "Session", result: dict) -> str:
-    """Write a snapshot-tree RPC result to the session's snapshot dir.
-
-    Shared by qt_snapshot (rebuild) and qt_get_snapshot (read-only view):
-    both return the same {session_id, snapshot_id, uri} envelope.
-    """
-    if result.get("ok") is False:
-        # e.g. a stale root_id: surface the error directly, do not write a
-        # misleading empty snapshot file.
-        return _dumps(result, indent=2)
-    session.snapshot_count += 1
-
-    filename = f"snapshot_{session.snapshot_count:08d}.json"
-    snap_path = session.session_dir / "snapshots" / filename
-    # _dumps() emits UTF-8 text; write_text defaults to the locale encoding
-    # (e.g. cp936 on a Chinese Windows), which would corrupt the file.
-    snap_path.write_text(_dumps(result, indent=2), encoding="utf-8")
-
-    return _dumps({
-        "session_id": session.id,
-        "snapshot_id": session.snapshot_count,
-        "uri": snap_path.resolve().as_uri(),
-    })
-
-
-@mcp.tool()
-async def qt_get_snapshot(session_id: str, include_hidden: bool = False,
-                          detail: str = "extended",
-                          root_id: int = 0, max_depth: int = 1,
-                          prop_depth: int = 1) -> str:
-    """Capture a READ-ONLY view of the UI element tree without invalidating ids.
-
-    Same output format and parameters as qt_snapshot, but the tree is NOT
-    rebuilt and NO element id changes: every node keeps the id it already
-    has from the most recent qt_snapshot / qt_find_element.  Objects that
-    appeared after the last qt_snapshot (and are not yet in the element
-    map) are added with fresh ids — the map only ever grows here.
-
-    When to use: after qt_find_element returned several matches and you
-    need full-tree context to decide which one to act on.  Call this
-    instead of qt_snapshot so the ids you already hold stay valid.
-
-    Contract summary:
-      - qt_snapshot       = the ONLY operation that renumbers ids
-      - qt_get_snapshot   = never invalidates or renumbers anything
-      - qt_find_element   = never invalidates or renumbers anything
-
-    The tree is NOT in this result — it is written to the file at the
-    returned ``uri``, an absolute ``file://`` path to the written snapshot
-    file (e.g. ``file:///path/.qt-commander/sessions/<sid>/snapshots/
-    snapshot_N.json``); read that file to inspect the tree.  The result
-    carries only session_id / snapshot_id / uri.  Node fields: className,
-    objID, objectName, qml_id (QML ``id`` from the QML source, omitted
-    when empty), rect (window-local logical px), global_rect (screen
-    coords), z_order, visible/enabled/opacity/color_alpha/clip, text,
-    topLevelId, windowTitle, properties (per ``detail``).
-
-    ``detail`` — property tier per node: "core" (first-class fields only,
-    no properties), "extended" (DEFAULT; common interaction-state
-    properties like text/checked/value), "full" (every Q_PROPERTY; slow on
-    large UIs).
-    ``include_hidden`` (default False) — hidden elements are pruned
-    together with their whole subtree (hidden tabs, unopened dialogs).
-    Set True to include them; note hidden elements are still rejected by
-    click/input/property tools.
-    ``max_depth`` — levels of children: 0 = roots only, 1 = roots +
-    direct children, -1 = entire tree (default 1).
-    ``prop_depth`` — levels of QObject property expansion (0 = none,
-    -1 = unlimited).
-    ``root_id`` — 0 = all top-level windows; >0 = subtree of an element
-    from the MOST RECENT snapshot/find (ids stay valid across this call).
-    If root_id no longer resolves, the tool reports the error instead of
-    silently falling back to all top-level windows.
-    """
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.getSnapshot", {
-        "include_hidden": include_hidden,
-        "detail": detail,
-        "rootId": root_id,
-        "maxDepth": max_depth,
-        "propDepth": prop_depth,
-    })
-    return await _store_snapshot(session, result)
-
-
-@mcp.tool()
-async def qt_prune_snapshot(session_id: str, snapshot_id: int) -> str:
-    """Occlusion-prune a saved snapshot.
-
-    ``snapshot_id`` is the value returned by the last qt_snapshot call of
-    this session.  When to use: after a snapshot, when elements overlap
-    inside the same window and you need to know which one is really on
-    top / how much of a target is visible — e.g. before deciding which
-    element to click or whether a covered element matters.
-
-    Reads the saved snapshot JSON and computes what is actually visible:
-    elements fully covered by higher-z opaque elements are removed (their
-    still-visible descendants are reparented up), partially covered ones
-    get a ``visible_ratio`` field, fully hidden (opacity 0) elements are
-    dropped.  Writes ``snapshot_<id>_pruned.json`` next to the original —
-    read the tree at the returned ``uri``, an absolute ``file://`` path to
-    the written pruned file (same objIDs as the source snapshot plus
-    ``visible_ratio`` annotations).  Result field ``pruned`` =
-    {"removed", "kept", "removed_ratio"}; window roots are never removed.
-
-    The solver is a geometric heuristic (axis-aligned rects, per-window
-    z-order with same-z tree order; widgets and QML rectangles/images
-    occlude unless semi-transparent, transparent containers, text and
-    custom QML components do not; a parent never occludes its own
-    children).  Occlusion is per top-level window on purpose: the agent
-    must stay able to operate an app that the user has covered or
-    minimised, so windows never occlude each other.  The objIDs in the
-    pruned file expire with the next snapshot/find refresh like any other
-    id.
-    """
-    session = _resolve_session(session_id)
-    src = session.session_dir / "snapshots" / f"snapshot_{snapshot_id:08d}.json"
-    if not src.exists():
-        return _dumps({"error": f"snapshot {snapshot_id} not found in session"})
-    snapshot = json.loads(src.read_text(encoding="utf-8"))
-    pruned = prune_snapshot(snapshot)
-    dst = session.session_dir / "snapshots" / \
-        f"snapshot_{snapshot_id:08d}_pruned.json"
-    dst.write_text(_dumps(pruned, indent=2), encoding="utf-8")
-    return _dumps({
-        "session_id": session_id,
-        "source": f"snapshot_{snapshot_id:08d}.json",
-        "uri": dst.resolve().as_uri(),
-        "pruned": pruned["pruned"],
-    })
-
-
-@mcp.tool()
-async def qt_find_element(session_id: str, query: dict) -> str:
-    """Find UI elements matching a query in a session.
-
-    Query fields (all AND-ed): ``type`` (exact C++ class name),
-    ``type_inherits`` (superclass chain — C++ classes only; custom QML
-    components are generated classes like ``X_QMLTYPE_8`` and do NOT match
-    a QML type name), ``text`` / ``text_contains`` (display text, CJK
-    supported), ``object_name``, ``qml_id`` (the QML ``id`` from the QML
-    source, as shown in snapshot nodes; empty value is ignored),
-    ``window_title`` /
-    ``window_title_contains``, ``properties`` (all key-value pairs must
-    match), ``ancestor_id`` / ``window_id`` (scope limits), ``depth``
-    ("exact" = direct children, "shallow" = 2 levels, integer = that many,
-    "deep"/omitted = whole tree), ``limit`` (max matches).  ``include_hidden``
-    is a field INSIDE the query dict (default false) — hidden elements
-    are only matched when it is true.
-
-    Example: {"text_contains": "OK", "type_inherits": "QPushButton",
-    "depth": "shallow"} or {"object_name": "searchBox", "limit": 5}.
-
-    Result: {"ok": true, "count": N, "elements": [{id, className,
-    objectName, ...}]}; when nothing matches: {"ok": false, "message":
-    "No matching element found"} — adjust the query or set
-    include_hidden: true.
-
-    ID LIFECYCLE: find NEVER invalidates ids — returned ids resolve
-    against the current element map, and matched objects not yet mapped
-    are added with fresh ids (the map only grows).  Only qt_snapshot
-    renumbers.  So ids from a find stay usable across further finds and
-    qt_get_snapshot views until the next explicit qt_snapshot; if an
-    operation reports "Element not found: id=N", the element was
-    destroyed or a snapshot renumbered — re-find to recover.
-    """
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.findElement", {"query": query})
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_get_property(session_id: str, element_id: int, name: str) -> str:
-    """Read a property from a UI element.
-
-    Read-only, no side effects on the target.  Note: hidden, disabled and
-    zero-size elements are rejected even for reads ("Element is not
-    visible") — pass an id from a recent find/snapshot of a visible
-    element."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.getProperty", {
-        "element_id": element_id, "name": name,
-    })
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_set_property(session_id: str, element_id: int, name: str, value: str) -> str:
-    """Write a property value on a UI element.
-
-    DESTRUCTIVE: directly modifies the target application's state (may
-    trigger property-notify signals, change geometry/visibility/business
-    state) with no undo.  Prefer real user input (clicks/typing) to
-    simulate user actions; use this only when a direct API write is
-    intended.
-
-    ``value`` is first parsed as JSON: "true" -> bool, "123" -> int,
-    "\\"hello\\"" -> string.  Unparseable text is sent as a plain string —
-    pass quoted strings explicitly when a string is intended."""
-    session = _resolve_session(session_id)
+def _descriptor_session_id(path: Path) -> str | None:
     try:
-        parsed_value = json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        parsed_value = value
-    result = await session.send_rpc("qt.setProperty", {
-        "element_id": element_id, "name": name, "value": parsed_value,
+        data = json.loads(path.read_text(encoding="utf-8"))
+        value = data.get("session_id") if isinstance(data, dict) else None
+        return value if isinstance(value, str) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _live_descriptors(pid: int | None = None) -> list[Path]:
+    result: list[Path] = []
+    for path in _descriptor_candidates():
+        if pid is not None and _descriptor_pid(path) != pid:
+            continue
+        if _descriptor_summary(path).get("pid_alive") is True:
+            result.append(path)
+    return result
+
+
+def _descriptor_summary(path: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {"path": str(path)}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        summary["error"] = str(exc)
+        return summary
+    if not isinstance(data, dict):
+        summary["error"] = "descriptor root must be an object"
+        return summary
+    pid = data.get("pid")
+    summary.update({
+        "pid": pid if isinstance(pid, int) else None,
+        "session_id": data.get("session_id"),
+        "started_at": data.get("started_at"),
+        "build_id": data.get("library_build_id") or data.get("library_version"),
+        "process_start_time": data.get("process_start_time"),
     })
-    return _dumps(result, indent=2)
+    if isinstance(pid, int):
+        summary["pid_alive"] = psutil.pid_exists(pid)
+    return summary
 
 
-@mcp.tool()
-async def qt_call_method(session_id: str, element_id: int, method: str, args: list | None = None) -> str:
-    """Invoke a QMetaObject-invokable method on a UI element.
-
-    DESTRUCTIVE: directly changes the target application's state with no
-    undo.  Methods like ``close()``, ``deleteLater()`` (destroys the
-    element and invalidates its id) or any app slot execute for real.
-    Prefer simulating user input (clicks/keys); call methods only when a
-    direct API invocation is intended.  Argument types are coerced
-    silently (up to 10 args)."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.callMethod", {
-        "element_id": element_id, "method": method, "args": args or [],
-    })
-    return _dumps(result, indent=2)
+def _error(code: str, message: str, *, retryable: bool = False,
+           hint: str | None = None) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "retryable": retryable,
+    }
+    if hint:
+        error["hint"] = hint
+    return {"ok": False, "error": error}
 
 
-@mcp.tool()
-async def qt_screenshot(session_id: str, element_id: int = 0) -> str:
-    """Capture a screenshot of a UI element or the entire window.
+def _map_error(exc: BaseException) -> dict[str, Any]:
+    if isinstance(exc, RpcError):
+        return _error(exc.code, exc.message, retryable=exc.retryable,
+                      hint=exc.hint)
+    if isinstance(exc, ClientTimeout):
+        return _error(
+            ErrorCode.TARGET_TIMEOUT.value,
+            str(exc),
+            retryable=False,
+            hint="request deadline exceeded; execution state is unknown",
+        )
+    if isinstance(exc, ClientClosed):
+        return _error(ErrorCode.LINKED_UNREACHABLE.value, str(exc))
+    if isinstance(exc, (ValueError, TypeError)):
+        return _error(ErrorCode.INVALID_ARGUMENT.value, str(exc))
+    return _error(ErrorCode.PROTOCOL.value, str(exc))
 
-    ``element_id`` 0 captures the active (or first visible) top-level
-    window.  The PNG is written to the file at the returned ``uri``, an
-    absolute ``file://`` path to the written PNG (e.g.
-    ``file:///path/.qt-commander/sessions/<sid>/screenshots/N.png``);
-    read that file to obtain the image bytes.  On failure the result
-    reports the error and no image is written."""
-    session = _resolve_session(session_id)
-    ss_dir = session.session_dir / "screenshots"
-    ss_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sequence based on existing files so screenshots stay unique without
-    # depending on the snapshot counter.
-    seq = len(list(ss_dir.glob("screenshot_*.png"))) + 1
+def _session(session_id: str) -> Session | dict[str, Any]:
+    try:
+        return sessions.get(session_id)
+    except SessionNotFound:
+        return _error(
+            ErrorCode.SESSION_EXPIRED.value,
+            f"unknown session: {session_id}",
+        )
 
-    # The injected library writes the PNG into `dir` itself and returns the
-    # file path; pass the session's screenshot dir so it lands here.
-    params = {"dir": str(ss_dir), "seq": seq}
-    if element_id > 0:
-        params["element_id"] = element_id
-    result = await session.send_rpc("qt.screenshot", params)
 
-    filename = f"screenshot_{seq:08d}.png"
-    ss_path = ss_dir / filename
-
-    if result.get("ok"):
-        src = Path(result.get("path", ""))
+async def _await_descriptor_for_pid(pid: int, timeout_s: float = 20.0) -> Path | None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
         try:
-            png_bytes = src.read_bytes()
-        except OSError as exc:
-            return _dumps({"error": f"failed to read screenshot file {src}: {exc}"})
-        ss_path.write_bytes(png_bytes)
-        # The library names its file {seq:06d}_{uuid}.png; drop it to keep
-        # the session dir tidy (we keep the canonical name above).
+            candidates = [p for p in _descriptor_candidates()
+                          if _descriptor_pid(p) == pid]
+        except OSError:
+            candidates = []
+        if candidates:
+            try:
+                return max(candidates, key=lambda p: p.stat().st_mtime)
+            except OSError:
+                pass
+        await asyncio.sleep(0.1)
+    return None
+
+
+async def _inject_target(pid: int) -> Path | dict[str, Any]:
+    dll = inject.default_dll_path()
+    if dll is None:
+        return _error(
+            ErrorCode.INJECTION_FAILED.value,
+            "injection DLL not found",
+            hint="build qt_commander_inject or set QT_COMMANDER_INJECT_DLL",
+        )
+    status_path = Path(tempfile.gettempdir()) / f"qtc-inject-status-{pid}.txt"
+    try:
+        status_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        await asyncio.to_thread(inject.inject_library, pid, dll)
+    except inject.InjectionError as exc:
+        return _error(exc.code, str(exc))
+    path = await _await_descriptor_for_pid(pid)
+    if path is None:
+        message = ""
         try:
-            src.unlink()
+            message = status_path.read_text(encoding="utf-8").strip()
         except OSError:
             pass
-    if not result.get("ok"):
-        # Report the failure instead of writing error text into a .png.
-        return _dumps({"error": "screenshot failed", "detail": result},
-                      indent=2)
+        if message and message != "ok":
+            return _error(ErrorCode.INJECTION_FAILED.value, message)
+        return _error(
+            ErrorCode.TARGET_NOT_QT.value,
+            "DLL loaded but no descriptor appeared; target may not be a Qt app",
+        )
+    return path
 
-    return _dumps({
+
+@mcp.tool
+async def qt_status(session_id: str | None = None) -> dict[str, Any]:
+    """Return live sessions/descriptors, optionally probing one session."""
+    candidates = _descriptor_candidates()
+    result: dict[str, Any] = {
+        "sessions": [asdict(info) for info in sessions.list()],
+        "descriptors": [str(path) for path in candidates],
+        "descriptor_info": [_descriptor_summary(path) for path in candidates],
+        "descriptor": str(candidates[0]) if len(candidates) == 1 else None,
+        "protocol": 2,
+    }
+    if session_id is None:
+        return result
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    result["session"] = {
+        "session_id": session.session_id,
+        "pid": session.pid,
+        "connected": session.connected,
+        "grace_remaining_ms": session.grace_remaining_ms,
+    }
+    try:
+        result["ping"] = await session.client.ping(timeout=2.0)
+        result["alive"] = True
+    except (ClientTimeout, ClientClosed, RpcError, OSError) as exc:
+        result["alive"] = False
+        result["ping_error"] = _map_error(exc)["error"]
+    return result
+
+
+@mcp.tool
+async def qt_environments() -> dict[str, Any]:
+    """Detect Qt versions/kits and C++ toolchains available on this machine."""
+    def detect() -> dict[str, Any]:
+        return {
+            "qt": detect_qt_environments(),
+            "toolchains": detect_toolchains(),
+        }
+
+    try:
+        return await asyncio.to_thread(detect)
+    except Exception as exc:
+        return _map_error(exc)
+
+
+def _mingw_compilers() -> tuple[str, str] | None:
+    cxx = shutil.which("g++")
+    cc = shutil.which("gcc")
+    if cxx and cc:
+        return cc, cxx
+    tools = Path("C:/Software/Qt/Tools")
+    if tools.is_dir():
+        for candidate in sorted(tools.glob("mingw*")):
+            candidate_cxx = candidate / "bin" / "g++.exe"
+            candidate_cc = candidate / "bin" / "gcc.exe"
+            if candidate_cxx.is_file() and candidate_cc.is_file():
+                return str(candidate_cc), str(candidate_cxx)
+    return None
+
+
+def _msvc_command(vcvars: str, args: list[str], script: Path) -> list[str]:
+    command = subprocess.list2cmdline(args)
+    script.write_text(
+        f'@echo off\r\ncall "{vcvars}" >nul\r\n{command}\r\n',
+        encoding="utf-8",
+    )
+    return ["cmd.exe", "/d", "/c", str(script)]
+
+
+async def _run_build_command(
+    args: list[str], timeout_s: int
+) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout_s)
+    except asyncio.TimeoutError:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            process.kill()
+        await process.wait()
+        return -1, f"command timed out after {timeout_s}s"
+    return process.returncode or 0, output.decode("utf-8", "replace")
+
+
+@mcp.tool
+async def qt_build(
+    source_dir: str,
+    build_dir: str | None = None,
+    qt_major: int = 5,
+    toolchain: str = "mingw",
+    arch: str = "x64",
+    build_type: str = "Debug",
+    target: str | None = None,
+    qt_env: str | None = None,
+    vcvars_path: str | None = None,
+    extra_args: list[str] | None = None,
+    timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Configure and build a CMake project against a discovered Qt kit."""
+    source = Path(source_dir)
+    if not (source / "CMakeLists.txt").is_file():
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      f"CMakeLists.txt not found under {source}")
+    if build_type not in {"Debug", "Release", "RelWithDebInfo", "MinSizeRel"}:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      f"invalid build_type: {build_type}")
+    if arch not in {"x64", "x86", "arm64"}:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      f"invalid arch: {arch}")
+    if arch != "x64":
+        return _error(ErrorCode.NOT_IMPLEMENTED.value,
+                      "only host x64 builds are implemented")
+    if not 1 <= timeout_s <= 3600:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "timeout_s must be between 1 and 3600")
+    if extra_args is not None and not all(isinstance(a, str) for a in extra_args):
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "extra_args must be a list of strings")
+
+    try:
+        environments = await asyncio.to_thread(detect_qt_environments)
+    except Exception as exc:
+        return _map_error(exc)
+    version = None
+    kit = None
+    if qt_env is not None:
+        env_path = Path(qt_env)
+        for item in environments:
+            for candidate in item["kits"]:
+                if Path(candidate["path"]) == env_path:
+                    version, kit = item, candidate
+                    break
+            if kit is not None:
+                break
+        if kit is None:
+            return _error(ErrorCode.INVALID_ARGUMENT.value,
+                          f"qt_env is not a known Qt kit: {qt_env}")
+    else:
+        for item in environments:
+            if item["major"] != qt_major:
+                continue
+            for candidate in item["kits"]:
+                if candidate["compiler"] == toolchain:
+                    version, kit = item, candidate
+                    break
+            if kit is not None:
+                break
+    if kit is None or version is None:
+        return _error(ErrorCode.BUILD_REQUIRED.value,
+                      f"no Qt {qt_major} {toolchain} kit found; run qt_environments")
+    if version["major"] != qt_major:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "qt_env does not match qt_major")
+    if toolchain == "msvc":
+        if not vcvars_path:
+            tools = await asyncio.to_thread(detect_toolchains)
+            msvc = next(
+                (tool for tool in tools
+                 if tool.get("name") == "msvc" and tool.get("vcvars")),
+                None,
+            )
+            if msvc is None:
+                return _error(
+                    ErrorCode.BUILD_REQUIRED.value,
+                    "no MSVC vcvars environment found",
+                    hint="install Visual Studio C++ tools or pass vcvars_path",
+                )
+            vcvars_path = msvc["vcvars"]
+        if not Path(vcvars_path).is_file():
+            return _error(ErrorCode.INVALID_ARGUMENT.value,
+                          f"vcvars_path not found: {vcvars_path}")
+
+    build_id = f"qt{version['version']}/{toolchain}-{arch}/{build_type}"
+    build = Path(build_dir) if build_dir else source.parent / "builds" / build_id
+    build.mkdir(parents=True, exist_ok=True)
+    cmake = shutil.which("cmake")
+    if not cmake:
+        return _error(ErrorCode.BUILD_FAILED.value, "cmake is not on PATH")
+    ninja = shutil.which("ninja")
+
+    configure = [
+        cmake, "-S", str(source), "-B", str(build),
+        f"-DCMAKE_BUILD_TYPE={build_type}",
+        f"-DQT_MAJOR_VERSION={qt_major}",
+        f"-DQt{qt_major}_DIR={Path(kit['path']) / 'lib' / 'cmake' / f'Qt{qt_major}'}",
+    ]
+    if ninja:
+        configure += ["-G", "Ninja"]
+    if toolchain == "mingw":
+        compilers = _mingw_compilers()
+        if compilers is None:
+            return _error(ErrorCode.BUILD_REQUIRED.value,
+                          "gcc/g++ not found for the mingw toolchain")
+        configure += [f"-DCMAKE_C_COMPILER={compilers[0]}",
+                      f"-DCMAKE_CXX_COMPILER={compilers[1]}"]
+    configure += list(extra_args or [])
+
+    configure_command = (
+        _msvc_command(vcvars_path, configure, build / "qtc-configure.bat")
+        if toolchain == "msvc" and vcvars_path
+        else configure
+    )
+    deadline = time.monotonic() + timeout_s
+    try:
+        code, output = await _run_build_command(
+            configure_command, max(1, int(deadline - time.monotonic())))
+    except OSError as exc:
+        return _error(ErrorCode.BUILD_FAILED.value, str(exc))
+    if code == -1:
+        return {
+            "ok": False,
+            "build_id": build_id,
+            "build_dir": str(build),
+            "stage": "timeout",
+            "error": {
+                "code": ErrorCode.BUILD_FAILED.value,
+                "message": "cmake configure timed out",
+            },
+        }
+    if code != 0:
+        return {
+            "ok": False,
+            "build_id": build_id,
+            "build_dir": str(build),
+            "stage": "configure",
+            "error": {
+                "code": ErrorCode.BUILD_FAILED.value,
+                "message": "cmake configure failed",
+                "details": {"exit_code": code, "output": output[-8000:]},
+            },
+        }
+
+    build_command = [cmake, "--build", str(build)]
+    if target:
+        build_command += ["--target", target]
+    if toolchain == "msvc" and vcvars_path:
+        build_command = _msvc_command(vcvars_path, build_command,
+                                      build / "qtc-build.bat")
+    try:
+        code, output = await _run_build_command(
+            build_command, max(1, int(deadline - time.monotonic())))
+    except OSError as exc:
+        return _error(ErrorCode.BUILD_FAILED.value, str(exc))
+    if code == -1:
+        return {
+            "ok": False,
+            "build_id": build_id,
+            "build_dir": str(build),
+            "stage": "timeout",
+            "error": {
+                "code": ErrorCode.BUILD_FAILED.value,
+                "message": "cmake build timed out",
+            },
+        }
+    if code != 0:
+        return {
+            "ok": False,
+            "build_id": build_id,
+            "build_dir": str(build),
+            "stage": "build",
+            "error": {
+                "code": ErrorCode.BUILD_FAILED.value,
+                "message": "cmake build failed",
+                "details": {"exit_code": code, "output": output[-8000:]},
+            },
+        }
+    return {
+        "ok": True,
+        "build_id": build_id,
+        "build_dir": str(build),
+        "qt_version": version["version"],
+        "kit": kit["path"],
+        "toolchain": toolchain,
+        "build_type": build_type,
+        "output": output[-4000:],
+    }
+
+
+@mcp.tool
+async def qt_attach(
+    descriptor: str | None = None,
+    pid: int | None = None,
+    session_id: str | None = None,
+    mode: str = "auto",
+    build_id: str | None = None,
+) -> dict[str, Any]:
+    """Attach to a linked runtime via its descriptor."""
+    if mode not in {"auto", "linked", "injection"}:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      f"unsupported attach mode: {mode}")
+    if mode == "injection" and descriptor:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "descriptor cannot be combined with injection mode")
+    if mode == "injection" and pid is None:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "injection mode requires pid")
+    if build_id is not None:
+        return _error(ErrorCode.NOT_IMPLEMENTED.value,
+                      "build_id attach is not implemented")
+
+    if mode == "injection":
+        existing = _live_descriptors(pid)
+        if existing:
+            return _error(ErrorCode.MODE_CONFLICT.value,
+                          "target already has a descriptor")
+        injected = await _inject_target(pid)
+        if isinstance(injected, dict):
+            return injected
+        path = injected
+    elif descriptor:
+        path = Path(descriptor)
+        if session_id is not None and _descriptor_session_id(path) != session_id:
+            return _error(ErrorCode.LINKED_IDENTITY.value,
+                          "descriptor session mismatch")
+    else:
+        candidates = _live_descriptors(pid)
+        if session_id is not None:
+            candidates = [p for p in candidates
+                          if _descriptor_session_id(p) == session_id]
+        if not candidates:
+            if mode == "auto" and pid is not None:
+                injected = await _inject_target(pid)
+                if isinstance(injected, dict):
+                    return injected
+                path = injected
+            else:
+                return _error(
+                    ErrorCode.LINKED_NOT_FOUND.value,
+                    "no linked descriptor found",
+                    hint="start the app with qt_commander::start() or pass mode=injection",
+                )
+        else:
+            if len(candidates) > 1:
+                return _error(
+                    ErrorCode.AMBIGUOUS_SESSION.value,
+                    "multiple linked descriptors found; pass descriptor or pid",
+                )
+            path = candidates[0]
+    if not path.exists() or not path.is_file():
+        return _error(
+            ErrorCode.LINKED_NOT_FOUND.value,
+            f"descriptor not found: {path}",
+        )
+    if path.is_symlink():
+        return _error(ErrorCode.RENDEZVOUS_UNSAFE.value,
+                      "descriptor must not be a symlink")
+    try:
+        if path.stat().st_size > 64 * 1024:
+            return _error(ErrorCode.LINKED_INVALID.value,
+                          "descriptor is too large")
+        if os.name != "nt" and (path.stat().st_mode & 0o077):
+            return _error(ErrorCode.RENDEZVOUS_UNSAFE.value,
+                          "descriptor permissions are too broad")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _error(ErrorCode.LINKED_INVALID.value, str(exc))
+    if not isinstance(data, dict):
+        return _error(ErrorCode.LINKED_INVALID.value,
+                      "descriptor root must be an object")
+    protocol = data.get("protocol")
+    if not isinstance(protocol, dict) or protocol.get("major") != 2:
+        return _error(ErrorCode.PROTOCOL.value,
+                      "unsupported descriptor protocol")
+    if data.get("schema") != 2:
+        return _error(ErrorCode.LINKED_INVALID.value, "unsupported descriptor schema")
+    if data.get("mode") not in {"linked", "injection"}:
+        return _error(ErrorCode.LINKED_INVALID.value,
+                      "descriptor mode must be linked or injection")
+    try:
+        descriptor_pid = int(data["pid"])
+        port = int(data["port"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return _error(ErrorCode.LINKED_INVALID.value, str(exc))
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        return _error(ErrorCode.LINKED_INVALID.value, "descriptor token is missing")
+    if not 1 <= port <= 65535:
+        return _error(ErrorCode.LINKED_INVALID.value, "descriptor port is invalid")
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return _error(ErrorCode.LINKED_INVALID.value,
+                      "descriptor session_id is missing")
+    if pid is not None and descriptor_pid != pid:
+        return _error(ErrorCode.LINKED_IDENTITY.value, "descriptor pid mismatch")
+
+    start_time = data.get("process_start_time")
+    if start_time is not None:
+        try:
+            expected_start = float(start_time)
+            actual_start = psutil.Process(descriptor_pid).create_time()
+        except (TypeError, ValueError, psutil.Error):
+            return _error(ErrorCode.LINKED_STALE.value,
+                          "descriptor process identity is stale")
+        if abs(expected_start - actual_start) > 0.25:
+            return _error(ErrorCode.LINKED_STALE.value,
+                          "descriptor process start time mismatch")
+
+    try:
+        existing = sessions.get(session_id)
+    except SessionNotFound:
+        existing = None
+    if existing is not None:
+        if existing.connected:
+            return _error(ErrorCode.SESSION_EXISTS.value,
+                          f"session already attached: {session_id}")
+        sessions.remove(session_id)
+        await existing.close()
+
+    client = None
+    try:
+        client = await RpcClient.connect("127.0.0.1", port, token)
+        if client.hello is None or client.hello.session_tag != session_id:
+            await client.close()
+            return _error(ErrorCode.LINKED_IDENTITY.value,
+                          "descriptor and runtime identity mismatch")
+        session = Session(session_id, descriptor_pid, client, client.hello)
+        sessions.add(session)
+    except SessionExists:
+        if client is not None:
+            await client.close()
+        return _error(ErrorCode.SESSION_EXISTS.value, session_id)
+    except (ClientTimeout, ClientClosed, RpcError, OSError, ValueError) as exc:
+        if client is not None:
+            await client.close()
+        return _map_error(exc)
+
+    return {
+        "ok": True,
         "session_id": session_id,
-        "uri": ss_path.resolve().as_uri(),
-    })
-
-
-# ============================================================================
-# Interaction Tools
-# ============================================================================
-
-@mcp.tool()
-async def qt_mouse_click(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None) -> str:
-    """Send a mouse click to a UI element (direct delivery).
-
-    For plain QtWidgets (QPushButton, QLineEdit, ...) direct delivery
-    works and is the cheapest option.  Use qt_mouse_click_region (element
-    center) or qt_mouse_click_at (exact coordinates) for QML custom
-    components (buttons, nav rows, list items) — those route through the
-    real Qt input pipeline with real hit testing and are far more
-    reliable.  ``button``: "left"/"right"/"middle" (anything else falls
-    back to left); ``modifiers``: list of "Ctrl"/"Alt"/"Shift"/"Meta".
-    A result with ok:false means the element was rejected (hidden/
-    disabled/zero-size/stale id) — re-find and retry."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.click", {
-        "element_id": element_id, "button": button, "modifiers": modifiers or [],
-    })
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_mouse_dbl_click(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None, x: float | None = None, y: float | None = None) -> str:
-    """Send a double-click to a UI element (direct delivery).
-
-    x/y are optional logical-pixel coordinates relative to the element's
-    top-left corner; either both or neither (omitted = element center)."""
-    session = _resolve_session(session_id)
-    params = {
-        "element_id": element_id, "button": button,
-        "modifiers": modifiers or [],
+        "pid": session.pid,
+        "capabilities": list(session.hello.capabilities),
+        "descriptor": str(path),
     }
-    if x is not None and y is not None:
-        params["x"] = float(x)
-        params["y"] = float(y)
-    result = await session.send_rpc("qt.dblClick", params)
-    return _dumps(result, indent=2)
 
 
-@mcp.tool()
-async def qt_mouse_click_at(session_id: str, x: float, y: float, button: str = "left", modifiers: list[str] | None = None, window_id: int = 0) -> str:
-    """Click at an exact window coordinate, exactly like a real mouse click at that position.
-
-    x/y are relative to the target window's client area (same space as
-    screenshots, logical pixels — DPI is handled internally). The click
-    goes through the real Qt input pipeline, so the hit test (scene graph
-    for QML, widget tree for QtWidgets) determines what receives it —
-    identical behavior to a human clicking there, including real
-    consequences (menus, close buttons, destructive actions).  window_id:
-    id of a top-level window from the MOST RECENT snapshot/find (ids
-    expire on refresh); 0 uses the session's first visible top-level
-    window — pass it explicitly when the session has multiple windows."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.clickAt", {
-        "x": x, "y": y, "button": button,
-        "modifiers": modifiers or [], "window_id": window_id,
-    })
-    return _dumps(result, indent=2)
+@mcp.tool
+async def qt_detach(session_id: str, purge: bool = False) -> dict[str, Any]:
+    """Close a session; purge is reserved for descriptor removal."""
+    if purge:
+        return _error(ErrorCode.NOT_IMPLEMENTED.value,
+                      "purge is not implemented")
+    try:
+        session = sessions.remove(session_id)
+    except SessionNotFound:
+        return _error(ErrorCode.SESSION_EXPIRED.value,
+                      f"unknown session: {session_id}")
+    await session.close()
+    return {"ok": True, "session_id": session_id}
 
 
-@mcp.tool()
-async def qt_mouse_click_region(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None) -> str:
-    """Click at the center of an element's on-screen region.
-
-    Unlike qt_mouse_click (which delivers straight to the element), this
-    routes through the real Qt input pipeline with real hit testing: for a
-    QML container (e.g. a Rectangle with a MouseArea inside) the scene graph
-    hit test delivers the click to the MouseArea, exactly as a human click
-    would."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.clickRegion", {
-        "element_id": element_id, "button": button, "modifiers": modifiers or [],
-    })
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_mouse_press(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None, x: float | None = None, y: float | None = None) -> str:
-    """Press a mouse button on an element WITHOUT releasing it.
-
-    Pair with qt_mouse_release to split a click, or qt_mouse_move for a
-    drag (press -> move -> release).  x/y are optional logical-pixel
-    coordinates relative to the element's top-left corner; either both or
-    neither (omitted = element center).  IMPORTANT: after a press you must
-    release in the same session, or the target app stays in a pressed/
-    dragging state."""
-    session = _resolve_session(session_id)
-    params = {
-        "element_id": element_id, "button": button,
-        "modifiers": modifiers or [],
-    }
-    if x is not None and y is not None:
-        params["x"] = float(x)
-        params["y"] = float(y)
-    result = await session.send_rpc("qt.mousePress", params)
-    return _dumps(result, indent=2)
+@mcp.tool
+async def qt_query(
+    session_id: str,
+    where: dict[str, Any] | None = None,
+    scope: dict[str, Any] | None = None,
+    props: Any = None,
+    coords: str = "parent",
+    max_depth: int = -1,
+    limit: int = 200,
+    include_hidden: bool = False,
+    occlusion: bool = False,
+    count_only: bool = False,
+) -> dict[str, Any]:
+    """Live query of the object tree ."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.query(
+            session,
+            where=where,
+            scope=scope,
+            props=props,
+            coords=coords,
+            max_depth=max_depth,
+            limit=limit,
+            include_hidden=include_hidden,
+            occlusion=occlusion,
+            count_only=count_only,
+        )
+    except Exception as exc:
+        return _map_error(exc)
 
 
-@mcp.tool()
-async def qt_mouse_release(session_id: str, element_id: int, button: str = "left", modifiers: list[str] | None = None, x: float | None = None, y: float | None = None) -> str:
-    """Release a previously pressed mouse button on an element.
-
-    Completes a press/release pair (a click) or finishes a drag started
-    with qt_mouse_press + qt_mouse_move.  x/y are optional logical-pixel
-    coordinates relative to the element's top-left corner; either both or
-    neither (omitted = element center)."""
-    session = _resolve_session(session_id)
-    params = {
-        "element_id": element_id, "button": button,
-        "modifiers": modifiers or [],
-    }
-    if x is not None and y is not None:
-        params["x"] = float(x)
-        params["y"] = float(y)
-    result = await session.send_rpc("qt.mouseRelease", params)
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_mouse_wheel(session_id: str, element_id: int, dx: float = 0.0, dy: float = 0.0, x: float | None = None, y: float | None = None, pixel: bool = False) -> str:
-    """Scroll the mouse wheel over an element.
-
-    dx/dy are the wheel deltas in either pixel (``pixel=True``) or line
-    (default) units.  x/y optionally position the wheel inside the
-    element (element-local logical px, both or neither — omitted = center).
-    Use this to scroll lists, tables, canvases and other scrollable
-    content."""
-    session = _resolve_session(session_id)
-    params = {
-        "element_id": element_id, "dx": dx, "dy": dy,
-        "pixel": pixel,
-    }
-    if x is not None and y is not None:
-        params["x"] = float(x)
-        params["y"] = float(y)
-    result = await session.send_rpc("qt.wheel", params)
-    return _dumps(result, indent=2)
+@mcp.tool
+async def qt_items(
+    owner: str,
+    where: dict[str, Any] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    include_hidden: bool = False,
+    compact: bool = False,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """List non-QObject children of an owner (provider chain)."""
+    session = _session(session_id or owner.split(".")[0])
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.items(
+            session,
+            owner,
+            where=where,
+            limit=limit,
+            offset=offset,
+            include_hidden=include_hidden,
+            compact=compact,
+        )
+    except Exception as exc:
+        return _map_error(exc)
 
 
-@mcp.tool()
-async def qt_mouse_move(session_id: str, element_id: int, x: float, y: float) -> str:
-    """Move the mouse pointer to an element-local position (no buttons).
-
-    Use between qt_mouse_press and qt_mouse_release to drag, or alone to
-    hover.  x/y are coordinates relative to the element's top-left corner."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.mouseMove", {
-        "element_id": element_id, "x": float(x), "y": float(y),
-    })
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_mouse_context_menu(session_id: str, element_id: int, x: float | None = None, y: float | None = None) -> str:
-    """Open the context menu at an element (right-click menu).
-
-    x/y are optional logical-pixel coordinates relative to the element's
-    top-left corner; either both or neither (omitted = element center)."""
-    session = _resolve_session(session_id)
-    params = {"element_id": element_id}
-    if x is not None and y is not None:
-        params["x"] = float(x)
-        params["y"] = float(y)
-    result = await session.send_rpc("qt.contextMenu", params)
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_keyboard_input(session_id: str, element_id: int, text: str, modifiers: list[str] | None = None) -> str:
-    """Send keyboard input (typed text) to a UI element.
-
-    Real input: the text lands in whatever the target would receive — it
-    can overwrite existing text and trigger real app behaviour.  If
-    element_id is 0 or does not resolve, the input goes to the widget
-    that currently has focus (be careful: a stale id silently redirects
-    the text).  Widgets that rely on focus (QLineEdit etc.) may ignore
-    input to an unfocused element — call qt_focus first when text does
-    not land.  Use qt_key_combo for shortcuts like Enter or Ctrl+C."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.typeText", {
-        "element_id": element_id, "text": text, "modifiers": modifiers or [],
-    })
-    return _dumps(result, indent=2)
-
-
-@mcp.tool()
-async def qt_key_combo(session_id: str, element_id: int, keys: str) -> str:
-    """Send a keyboard shortcut to an element, e.g. "Ctrl+C", "Ctrl+Shift+A".
-
-    Format: modifier names ("Ctrl", "Alt", "Shift", "Meta") joined with '+'
-    followed by the key name ("C", "F5", "Enter", "Tab", "Escape", "Home",
-    arrows, ...).  element_id 0 targets the widget that currently has focus.
-    Delivered as a real key press/release pair with the modifier state set —
-    shortcuts can trigger real app actions (close window, save, submit)."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.keyCombo", {
-        "element_id": element_id, "keys": keys,
-    })
-    return _dumps(result, indent=2)
+@mcp.tool
+async def qt_act(
+    session_id: str,
+    target: str | dict[str, Any],
+    action: str,
+    nth: int = 0,
+    position: dict[str, float] | None = None,
+    button: str = "left",
+    modifiers: list[str] | None = None,
+    text: str | None = None,
+    clear: bool = False,
+    submit: bool = False,
+    keys: list[str] | None = None,
+    dx: float = 0.0,
+    dy: float = 0.0,
+    to: str | dict[str, Any] | None = None,
+    duration_ms: int = 300,
+    expect: dict[str, Any] | list[dict[str, Any]] | None = None,
+    timeout_ms: int = 2000,
+    settle_ms: int = 0,
+    observe: bool = True,
+    input: str = "auto",
+    js_risk_ack: bool = False,
+) -> dict[str, Any]:
+    """Dispatch one action (click/type/focus today; more in the engine)."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.act(
+            session,
+            target,
+            action,
+            nth=nth,
+            position=position,
+            button=button,
+            modifiers=modifiers,
+            text=text,
+            clear=clear,
+            submit=submit,
+            keys=keys,
+            dx=dx,
+            dy=dy,
+            to=to,
+            duration_ms=duration_ms,
+            expect=expect,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            observe=observe,
+            input=input,
+            js_risk_ack=js_risk_ack,
+        )
+    except Exception as exc:
+        return _map_error(exc)
 
 
-@mcp.tool()
-async def qt_focus(session_id: str, element_id: int) -> str:
-    """Set focus on a UI element.
-
-    Best effort: QWidget focus works directly; some QML items may need an
-    explicit focus request from within the app and report ok without
-    changing focus."""
-    session = _resolve_session(session_id)
-    result = await session.send_rpc("qt.focus", {"element_id": element_id})
-    return _dumps(result, indent=2)
-
-
-# ============================================================================
-# Resources
-# ============================================================================
-
-@mcp.resource("qt-commander://sessions/{session_id}/snapshots/{filename}")
-async def read_snapshot_resource(session_id: str, filename: str) -> str:
-    """Read a snapshot resource."""
-    if ".." in filename or "/" in filename or "\\" in filename:
-        return _dumps({"error": "invalid filename"})
-    sess = _resolve_session(session_id)
-    path = (sess.session_dir / "snapshots" / filename).resolve()
-    if not str(path).startswith(str(sess.session_dir.resolve())):
-        return _dumps({"error": "path traversal detected"})
-    if not path.exists():
-        return _dumps({"error": "resource not found"})
-    return path.read_text(encoding="utf-8")
+@mcp.tool
+async def qt_batch(
+    session_id: str,
+    steps: list[dict[str, Any]],
+    stop_on_error: bool = True,
+) -> dict[str, Any]:
+    """Run act/wait steps sequentially ."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.batch(session, steps, stop_on_error=stop_on_error)
+    except Exception as exc:
+        return _map_error(exc)
 
 
-@mcp.resource("qt-commander://sessions/{session_id}/screenshots/{filename}")
-async def read_screenshot_resource(session_id: str, filename: str) -> bytes:
-    """Read a screenshot resource."""
-    if ".." in filename or "/" in filename or "\\" in filename:
-        return b""
-    sess = _resolve_session(session_id)
-    path = (sess.session_dir / "screenshots" / filename).resolve()
-    if not str(path).startswith(str(sess.session_dir.resolve())):
-        return b""
-    if not path.exists():
-        return b""
-    return path.read_bytes()
+@mcp.tool
+async def qt_wait(
+    session_id: str,
+    condition: dict[str, Any],
+    timeout_ms: int = 2000,
+    poll_ms: int = 75,
+) -> dict[str, Any]:
+    """Poll a declarative condition ."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.wait(
+            session, condition, timeout_ms=timeout_ms, poll_ms=poll_ms
+        )
+    except Exception as exc:
+        return _map_error(exc)
 
 
-# ============================================================================
-# Server lifecycle
-# ============================================================================
+@mcp.tool
+async def qt_screenshot(
+    session_id: str,
+    target: str | dict[str, Any] | None = None,
+    max_width: int = 1024,
+    annotate: str = "none",
+    where: dict[str, Any] | None = None,
+    max_labels: int = 50,
+    format: str = "png",
+) -> list[Any]:
+    """Capture a PNG; returns the image plus a small metadata block."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return [json.dumps(session, ensure_ascii=False)]
+    try:
+        frame = await ops.screenshot(
+            session,
+            target=target,
+            max_width=max_width,
+            annotate=annotate,
+            where=where,
+            max_labels=max_labels,
+            format=format,
+        )
+    except Exception as exc:
+        return [json.dumps(_map_error(exc), ensure_ascii=False)]
+    metadata = dict(frame.result)
+    metadata["ok"] = True
+    metadata["bytes"] = len(frame.binary)
+    return [Image(data=frame.binary, format="png"),
+            json.dumps(metadata, ensure_ascii=False)]
 
-def main():
-    """Entry point (console script `qt-commander-mcp`; also runnable via
-    `python -m qt_commander`)."""
+
+@mcp.tool
+async def qt_get(
+    session_id: str,
+    target: str | dict[str, Any],
+    props: Any = None,
+) -> dict[str, Any]:
+    """Read one node/virtual node ."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.get(session, target, props=props)
+    except Exception as exc:
+        return _map_error(exc)
+
+
+@mcp.tool
+async def qt_set(
+    session_id: str,
+    target: str | dict[str, Any],
+    name: str,
+    value: Any,
+) -> dict[str, Any]:
+    """Set a property (destructive)."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.set_property(session, target, name, value)
+    except Exception as exc:
+        return _map_error(exc)
+
+
+@mcp.tool
+async def qt_call(
+    session_id: str,
+    target: str | dict[str, Any],
+    method: str,
+    args: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Invoke a method (destructive)."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.call_method(session, target, method, args=args)
+    except Exception as exc:
+        return _map_error(exc)
+
+
+@mcp.tool
+async def qt_source(
+    session_id: str,
+    target: str | dict[str, Any],
+    handler: str | None = None,
+    snippet_lines: int = 3,
+    max_lines: int = 20,
+) -> dict[str, Any]:
+    """Return source location (engine support pending)."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.source(
+            session,
+            target,
+            handler=handler,
+            snippet_lines=snippet_lines,
+            max_lines=max_lines,
+        )
+    except Exception as exc:
+        return _map_error(exc)
+
+
+def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
+
+
+

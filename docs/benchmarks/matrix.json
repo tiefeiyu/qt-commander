@@ -1,0 +1,61 @@
+{
+  "label": "matrix",
+  "results": [
+    {
+      "mode": "basic",
+      "target": "btnBasic",
+      "query_ms": 2.01,
+      "screenshot_ms": 55.37,
+      "count": 1,
+      "png_bytes": 808200
+    },
+    {
+      "mode": "complex",
+      "target": "tabs",
+      "query_ms": 1.45,
+      "screenshot_ms": 60.91,
+      "count": 1,
+      "png_bytes": 808200
+    },
+    {
+      "mode": "custom-painted",
+      "target": "customPainted",
+      "query_ms": 3.82,
+      "screenshot_ms": 70.48,
+      "count": 1,
+      "png_bytes": 808200
+    },
+    {
+      "mode": "multi-window",
+      "target": "btnMain",
+      "query_ms": 0.83,
+      "screenshot_ms": 74.32,
+      "count": 1,
+      "png_bytes": 808200
+    },
+    {
+      "mode": "occlusion",
+      "target": "btnTop",
+      "query_ms": 1.8,
+      "screenshot_ms": 73.84,
+      "count": 1,
+      "png_bytes": 808200
+    },
+    {
+      "mode": "qml",
+      "target": "quick",
+      "query_ms": 1.54,
+      "screenshot_ms": 55.01,
+      "count": 1,
+      "png_bytes": 808200
+    },
+    {
+      "mode": "mixed",
+      "target": "quick",
+      "query_ms": 2.18,
+      "screenshot_ms": 73.24,
+      "count": 1,
+      "png_bytes": 808200
+    }
+  ]
+}

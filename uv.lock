@@ -1253,7 +1253,7 @@ wheels = [
 
 [[package]]
 name = "qt-commander-mcp"
-version = "0.1.0"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -1269,7 +1269,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=4.1.4" },
-    { name = "psutil", specifier = ">=7.2.2" },
+    { name = "psutil", specifier = ">=7.0" },
 ]
 
 [package.metadata.requires-dev]
