@@ -83,6 +83,31 @@ async def run_mode(mode: str) -> None:
                 print(mode, "default screenshot rejected:", type(exc).__name__)
             else:
                 raise AssertionError("default screenshot should be ambiguous")
+        elif mode == "multi-mainwindow":
+            assert windows["count"] == 2
+            assert all(w["class"] == "QMainWindow"
+                       for w in windows["windows"])
+            second = next(w for w in windows["windows"]
+                          if w["objectName"] == "windowB")
+            frame = await session.call_frame("screenshot", {
+                "target": {"id": second["id"]},
+                "annotate": "all",
+            })
+            assert frame.result["legend"]
+            button = frame.result["legend"][0]
+            acted = await session.call("act", {
+                "target": {"id": button["id"]},
+                "action": "click",
+            })
+            assert acted["ok"] is True
+            try:
+                await session.call("screenshot", {})
+            except Exception as exc:
+                print(mode, "default screenshot rejected:", type(exc).__name__)
+            else:
+                raise AssertionError("default screenshot should be ambiguous")
+            print(mode, "second window screenshot/act:", frame.result["width"],
+                  frame.result["height"])
         elif mode == "modal":
             await asyncio.sleep(0.5)
             windows = await session.call("windows", {})
@@ -140,7 +165,7 @@ async def run_mode(mode: str) -> None:
 
 
 async def main() -> None:
-    for mode in ("multi-window", "modal", "popup"):
+    for mode in ("multi-window", "multi-mainwindow", "modal", "popup"):
         await run_mode(mode)
 
 

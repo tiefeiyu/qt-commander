@@ -589,7 +589,7 @@ inject：
 
 **矩阵 smoke（`tests/test-apps/matrix`，2026-10-29）**
 
-- 覆盖 `basic`、`complex`、`custom-painted`、`multi-window`（含独立窗口/父 dialog）、`modal`、`popup`、`occlusion`、`qml`、`mixed`。
+- 覆盖 `basic`、`complex`、`custom-painted`、`multi-window`（含独立窗口/父 dialog）、`multi-mainwindow`、`modal`、`popup`、`occlusion`、`qml`、`mixed`。
 - 每个模式启动真实进程，按 objectName 查询，再截 1024 图。
 - 实测 query 1.4–2.7 ms，screenshot 49–77 ms，全部模式 count=1，PNG < 1 MB。
 - 结果：`docs/benchmarks/matrix.json`。

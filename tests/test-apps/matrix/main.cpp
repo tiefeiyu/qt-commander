@@ -137,6 +137,24 @@ int main(int argc, char** argv)
         independent->resize(240, 100);
         independent->move(700, 200);
         independent->show();
+    } else if (mode == QStringLiteral("multi-mainwindow")) {
+        auto* button = new QPushButton(QStringLiteral("Main A"), central);
+        button->setObjectName(QStringLiteral("btnMainA"));
+        layout->addWidget(button);
+
+        auto* second = new QMainWindow(nullptr);
+        second->setObjectName(QStringLiteral("windowB"));
+        second->setWindowTitle(QStringLiteral("Second Main"));
+        auto* secondCentral = new QWidget(second);
+        auto* secondLayout = new QVBoxLayout(secondCentral);
+        auto* secondButton =
+            new QPushButton(QStringLiteral("Main B"), secondCentral);
+        secondButton->setObjectName(QStringLiteral("btnMainB"));
+        secondLayout->addWidget(secondButton);
+        second->setCentralWidget(secondCentral);
+        second->resize(360, 200);
+        second->move(700, 200);
+        second->show();
     } else if (mode == QStringLiteral("modal")) {
         auto* open = new QPushButton(QStringLiteral("Open modal"), central);
         open->setObjectName(QStringLiteral("btnOpenModal"));
