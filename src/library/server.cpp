@@ -46,6 +46,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
+#include <QToolBar>
 #include <QToolButton>
 #include <QTcpSocket>
 #include <QTreeView>
@@ -2097,6 +2098,26 @@ QJsonObject Server::items(const QJsonObject& params)
                      QStringLiteral("QDockWidget::button"), i, rect, props,
                      QPersistentModelIndex(), nullptr, button);
         }
+    } else if (auto* toolbar = qobject_cast<QToolBar*>(owner)) {
+        const auto actions = toolbar->actions();
+        total = actions.size();
+        for (int i = 0; i < actions.size(); ++i) {
+            QAction* action = actions.at(i);
+            if (!action || action->isSeparator() || !action->isVisible())
+                continue;
+            QWidget* actionWidget = toolbar->widgetForAction(action);
+            if (!actionWidget || !actionWidget->isVisible())
+                continue;
+            const QRect rect(actionWidget->mapTo(toolbar, QPoint(0, 0)),
+                             actionWidget->size());
+            QJsonObject props;
+            props.insert(QStringLiteral("text"), action->text());
+            props.insert(QStringLiteral("enabled"), action->isEnabled());
+            props.insert(QStringLiteral("checked"), action->isChecked());
+            consider(QStringLiteral("toolbar_action"),
+                     QStringLiteral("QToolBar::action"), i, rect, props,
+                     QPersistentModelIndex(), action);
+        }
     } else if (auto* splitter = qobject_cast<QSplitter*>(owner)) {
         total = qMax(0, splitter->count() - 1);
         for (int i = 0; i < total; ++i) {
@@ -2323,6 +2344,11 @@ QJsonObject Server::virtualItem(const QString& id)
             props.insert(QStringLiteral("enabled"), dock->isEnabled());
             props.insert(QStringLiteral("floating"), dock->isFloating());
         }
+    } else if (ref.kind == QStringLiteral("toolbar_action") &&
+               !ref.action.isNull()) {
+        props.insert(QStringLiteral("text"), ref.action->text());
+        props.insert(QStringLiteral("enabled"), ref.action->isEnabled());
+        props.insert(QStringLiteral("checked"), ref.action->isChecked());
     } else if (ref.kind == QStringLiteral("menu_item") &&
                !ref.action.isNull()) {
         props.insert(QStringLiteral("text"), ref.action->text());
@@ -2447,6 +2473,21 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
             else
                 spin->stepDown();
         }
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
+    if (ref.kind == QStringLiteral("toolbar_action")) {
+        if (!ref.action.isNull())
+            ref.action->trigger();
         QJsonObject resolved;
         resolved.insert(QStringLiteral("id"), id);
         resolved.insert(QStringLiteral("class"), ref.className);

@@ -19,6 +19,7 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTableWidget>
+#include <QToolBar>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -252,6 +253,15 @@ int main(int argc, char** argv)
         dock->setObjectName(QStringLiteral("dock"));
         dock->setWidget(new QLabel(QStringLiteral("Dock content"), dock));
         window.addDockWidget(Qt::LeftDockWidgetArea, dock);
+        auto* toolbar = window.addToolBar(QStringLiteral("Tools"));
+        toolbar->setObjectName(QStringLiteral("toolbar"));
+        auto* toolbarAction = toolbar->addAction(QStringLiteral("Toolbar action"));
+        toolbarAction->setObjectName(QStringLiteral("toolbarAction"));
+        auto* status = new QLabel(QStringLiteral("idle"), central);
+        status->setObjectName(QStringLiteral("dockStatus"));
+        layout->addWidget(status);
+        QObject::connect(toolbarAction, &QAction::triggered, status,
+                         [status]() { status->setText(QStringLiteral("triggered")); });
     } else if (mode == QStringLiteral("occlusion")) {
         auto* top = new QPushButton(QStringLiteral("Top"), central);
         top->setObjectName(QStringLiteral("btnTop"));

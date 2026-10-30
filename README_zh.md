@@ -28,7 +28,7 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
   `QTableView`、`QTreeView`、`QListView`、`QComboBox`、`QScrollBar`、`QSlider`、
   `QSpinBox`、可勾选的 `QGroupBox`、`QDockWidget` 标题按钮、`QSplitter`
-  手柄；custom/proxy model 通过 item-view adapter 工作。
+  手柄、`QToolBar` action；custom/proxy model 通过 item-view adapter 工作。
 - `QQuickWidget` 下的 QML 深层对象会出现在 `query` 树中，带
   `qml_type`/`qml_id`/`objectName`/局部 rect；其 `vqml` ID 可用于
   `qt_get`、`qt_act`、`qt_screenshot` 裁剪和 `qt_source`。

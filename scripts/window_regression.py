@@ -221,7 +221,24 @@ async def run_mode(mode: str) -> None:
                 "action": "click",
             })
             assert acted["ok"] is True
-            print(mode, "dock buttons:", len(items["items"]))
+            toolbar_tree = await session.call("query", {
+                "where": {"object_name": "toolbar"},
+            })
+            toolbar = find(toolbar_tree["tree"][0], "toolbar")
+            toolbar_items = await session.call("items", {"owner": toolbar["id"]})
+            assert toolbar_items["items"]
+            toolbar_act = await session.call("act", {
+                "target": {"id": toolbar_items["items"][0]["id"]},
+                "action": "click",
+            })
+            assert toolbar_act["ok"] is True
+            status_tree = await session.call("query", {
+                "where": {"object_name": "dockStatus"},
+                "props": ["text"],
+            })
+            assert find(status_tree["tree"][0], "dockStatus")["props"]["text"] == "triggered"
+            print(mode, "dock buttons:", len(items["items"]),
+                  "toolbar actions:", len(toolbar_items["items"]))
         elif mode == "custom-model":
             table_tree = await session.call("query", {
                 "where": {"object_name": "customTable"},
