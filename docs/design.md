@@ -519,12 +519,12 @@ inject：
 | 平台 | 闭源（仅注入） | 白盒 linked | 条件 |
 |---|---|---|---|
 | Windows x64 | 可用 | 可用 | CIG/PPL/EDR 拦截则不可行；同架构/CRT；建议 delay-load |
-| Linux X11 | 未实现（仅 linked） | 可用 | 当前仓库只有 Windows injector；Linux 注入未验证 |
-| Linux Wayland | 未实现（仅 linked） | 可用 | linked 不依赖 ptrace |
+| Linux X11 | 可用（native ptrace） | 可用 | 需要 Yama 允许：父进程注入或 `ptrace_scope=0` |
+| Linux Wayland | 可用（native ptrace） | 可用 | linked 不依赖 ptrace；XCB 输入/截图受 Wayland 限制 |
 | macOS arm64/x64 | 不可行（无注入器） | 可用 | Hardened Runtime 需 disable-library-validation 或同 Team 签名 |
 
-- 官方支持：白盒 linked 三平台；闭源注入仅 Windows（MinGW/MSVC 已实测）。
-- macOS/Linux 闭源注入明确不支持；错误 hint 说明用 linked。
+- 官方支持：白盒 linked 三平台；闭源注入 Windows（MinGW/MSVC）与 Linux（native ptrace）。
+- macOS 闭源明确不支持；错误 hint 说明用 linked。
 - Qt 版本必须与库一致（私有头）；不跨版本。
 - Wayland：`coords:"screen"` 报 `E_COORDS_UNAVAILABLE`；不静默给 0。
 
@@ -686,11 +686,11 @@ inject：
 - `qt_wait` 用剩余 deadline 作为每次 query 的超时；query 超时返回 `matched:false`。
 - `qt_batch` 先校验全部 step 再执行，传输异常保留已完成 steps。
 - `qt_build` 已可用：选择发现的 Qt kit，`cmake` configure + build，返回 `build_id/build_dir/output`；MinGW 自动定位编译器；MSVC 通过 `vswhere` 自动发现 VS2022/2026 的 `vcvars64.bat`，也接受显式 `vcvars_path`。实测 Qt5.15.2 msvc2019_64 构建 linked app 成功，并用该二进制度过 MCP attach/query/virtual get/act E2E。
-- screenshot 的 `max_width` 按逻辑像素计算，返回 `dpr/pixel_width/pixel_height`；`annotate` 支持 none/interactive/matched/all，返回 `legend`（n/color/id/class/text/virtual/rect/image_rect）。编号放在右侧独立 legend 栏（颜色+引线，不互相覆盖）；all 只标叶子控件，避免嵌套框；`format` 仅 png。
+- screenshot 的 `max_width` 按逻辑像素计算，返回 `dpr/pixel_width/pixel_height`；`annotate` 支持 none/interactive/matched/all，返回 `legend`（n/color/id/objectName/class/text/enabled/focusable/virtual/rect/image_rect）。每个框内画编号 badge，右侧 gutter 用同色数字对应（无引线、无标签重叠）；按视觉位置排序，all 只标叶子控件；密码类 QLineEdit 的 text 记为 `***`；返回 annotate_total/shown/truncated；`format` 仅 png。
 - 虚拟 item 可 `qt_screenshot(target=virtual_id)`：按注册 rect 裁剪 owner；返回 `virtual:true/target`。
 - `qt_status` 的 `descriptor_info` 列出 `pid_alive/session_id/started_at/build_id`。
 - Session 记录 `disconnected_at`，`qt_status`/`SessionInfo` 返回 `grace_remaining_ms`；断开后有 60s 重连窗口。
-- Windows injection 已可用：`qt_commander_inject.dll` 等待目标 `QCoreApplication` 后在 GUI 线程调用同一 `start()`；Python `ctypes` 注入器支持 `mode="injection"` 和 `auto`（无 descriptor 时）。MinGW Qt5/Qt6、MSVC Qt5 注入 app 的 attach/query/act E2E 均通过，脚本 `scripts/injection_smoke.py`。
+- Native injection 已可用：C++ `qtc-inject`（Windows `CreateRemoteThread(LoadLibraryW)` / Linux `ptrace`+`dlopen`）加载 `qt_commander_inject.dll/.so`；库等待目标 `QCoreApplication` 后在 GUI 线程调用同一 `start()`。Python `inject.py` 只调用 native 可执行，不承载注入机制。MinGW Qt5/Qt6、MSVC Qt5 与 Linux Qt5 注入 app 的 attach/query/act E2E 均通过，脚本 `scripts/injection_smoke.py`。
 
 ### 测试
 

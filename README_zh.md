@@ -13,9 +13,13 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   MCP stdio E2E 也已验证。Qt 6 MSVC 未单独构建。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
-- Windows injection：`qt_attach(pid=..., mode="injection")` 注入
-  `qt_commander_inject.dll`，在目标 GUI 线程启动同一套 in-process server；
-  `auto` 在无 live descriptor 时自动注入。
+- 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
+  调用 C++ `qtc-inject` 加载 `qt_commander_inject.dll/.so`，在目标 GUI 线程
+  启动同一套 in-process server；`auto` 在无 live descriptor 时自动注入。
+  Python 只是 MCP 编排层，目标机不需要 Python 或 gdb。Linux ptrace 仍需
+  Yama 权限（让注入器成为目标的父进程，或设置
+  `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
+  可执行路径。
 - 已注册 15 个 MCP 工具。当前可用：
   `status`、`environments`、`build`、`attach`、`detach`、`query`、`items`、
   `act`、`batch`、`wait`、`screenshot`、`get`、`set`、`call`、`source`。
@@ -82,7 +86,7 @@ uv run pytest tests/unit_server -q
 uv run python scripts/linked_smoke.py
 uv run python scripts/mcp_linked_smoke.py
 
-# Windows injection smoke（传入目标 pid）
+# 原生 injection smoke（传入目标 pid）
 uv run python scripts/injection_smoke.py <pid> --mode injection
 
 # P0 benchmark
@@ -93,8 +97,9 @@ uv run python scripts/p0_matrix.py --exe build/matrix-mingw5/qt-matrix-test.exe
 ## 目录
 
 ```
-qt_commander/        Python MCP server、protocol、client、session、ops、注入器
+qt_commander/        Python MCP server、protocol、client、session、ops、注入适配器
 src/                 C++ 运行时（linked 库 + injection DLL）
+src/injector/        原生 C++ qtc-inject（Windows remote thread / Linux ptrace）
 tests/unit_server/   Python 单元测试
 tests/test-apps/     linked / large / injected / matrix 测试应用
 scripts/             smoke、注入与 P0 benchmark 脚本

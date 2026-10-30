@@ -16,7 +16,9 @@
 #include <QJsonArray>
 #include <QKeySequence>
 #include <QJsonDocument>
+#include <QLineEdit>
 #include <QListView>
+#include <QFont>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMenuBar>
@@ -922,6 +924,9 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
 
     QImage canvas = pixmap.toImage();
     QJsonArray legend;
+    int annotateTotal = 0;
+    int annotateShown = 0;
+    bool annotateTruncated = false;
     if (annotate != QStringLiteral("none")) {
         const QJsonObject where = params.value(QStringLiteral("where")).toObject();
         QList<QWidget*> nodes =
@@ -973,8 +978,17 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             if (!leaves.isEmpty())
                 candidates = leaves;
         }
-        if (candidates.size() > maxLabels)
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const Candidate& left, const Candidate& right) {
+                      if (left.rect.top() != right.rect.top())
+                          return left.rect.top() < right.rect.top();
+                      return left.rect.left() < right.rect.left();
+                  });
+        annotateTotal = candidates.size();
+        annotateTruncated = candidates.size() > maxLabels;
+        if (annotateTruncated)
             candidates = candidates.mid(0, maxLabels);
+        annotateShown = candidates.size();
 
         const int originalWidth = canvas.width();
         const int logicalImageWidth = qRound(originalWidth / dpr);
@@ -983,11 +997,20 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         const double deviceScale =
             widget->width() > 0 ? double(originalWidth) / widget->width() : 1.0;
 
-        const int gutterWidth = qRound(44 * dpr);
+        const int digits =
+            QString::number(qMax(1, candidates.size())).size();
         const int rowHeight = qRound(16 * dpr);
-        const int height = qMax(canvas.height(),
-                                candidates.size() * rowHeight + qRound(12 * dpr));
-        QImage expanded(originalWidth + gutterWidth, height, canvas.format());
+        const int baseGutter = qMax(qRound(44 * dpr),
+                                    qRound((digits * 8 + 18) * dpr));
+        const int maxRows = qMax(1, canvas.height() / rowHeight);
+        const int columns =
+            qMax(1, (candidates.size() + maxRows - 1) / maxRows);
+        const int rowsPerColumn =
+            qMax(1, (candidates.size() + columns - 1) / columns);
+        const int gutterWidth = baseGutter * columns;
+
+        QImage expanded(originalWidth + gutterWidth, canvas.height(),
+                        canvas.format());
         expanded.fill(QColor(255, 255, 255));
         {
             QPainter background(&expanded);
@@ -997,6 +1020,9 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
 
         QPainter painter(&canvas);
         painter.setRenderHint(QPainter::Antialiasing, false);
+        QFont font = painter.font();
+        font.setPixelSize(qMax(9, qRound(10 * dpr)));
+        painter.setFont(font);
         painter.fillRect(QRect(originalWidth, 0, gutterWidth, canvas.height()),
                          QColor(248, 248, 248));
         painter.setPen(QColor(180, 180, 180));
@@ -1007,27 +1033,44 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             ++number;
             const QColor color = QColor::fromHsv((number * 47) % 360, 175, 190);
             QPen boxPen(color);
-            boxPen.setWidth(2);
+            boxPen.setWidth(qMax(1, qRound(2 * dpr)));
             painter.setPen(boxPen);
-            const QRect drawRect(
+            QRect drawRect(
                 qRound(candidate.rect.x() * deviceScale),
                 qRound(candidate.rect.y() * deviceScale),
                 qRound(candidate.rect.width() * deviceScale),
                 qRound(candidate.rect.height() * deviceScale));
+            drawRect = drawRect.intersected(
+                QRect(0, 0, originalWidth, canvas.height()));
+            if (drawRect.isEmpty())
+                continue;
             painter.drawRect(drawRect);
 
+            const int badgeW = qMin(drawRect.width(), qRound(24 * dpr));
+            const int badgeH = qMin(drawRect.height(), qRound(15 * dpr));
+            const QRect badge(drawRect.topLeft() + QPoint(qRound(2 * dpr),
+                                                          qRound(2 * dpr)),
+                              QSize(badgeW, badgeH));
+            painter.fillRect(badge, QColor(255, 255, 255, 235));
+            painter.setPen(QPen(color, 1));
+            painter.drawRect(badge);
+            painter.drawText(badge, Qt::AlignCenter, QString::number(number));
+
+            const int column = (number - 1) / rowsPerColumn;
+            const int row = (number - 1) % rowsPerColumn;
             const QRect labelRect(
-                originalWidth + qRound(4 * dpr),
-                qRound(4 * dpr) + (number - 1) * rowHeight,
-                gutterWidth - qRound(8 * dpr), rowHeight - qRound(2 * dpr));
-            QColor lineColor = color;
-            lineColor.setAlpha(150);
-            painter.setPen(QPen(lineColor, 1));
-            painter.drawLine(QPoint(drawRect.right(), drawRect.center().y()),
-                             QPoint(originalWidth, labelRect.center().y()));
+                originalWidth + column * baseGutter + qRound(4 * dpr),
+                qRound(4 * dpr) + row * rowHeight,
+                baseGutter - qRound(8 * dpr), rowHeight - qRound(2 * dpr));
             painter.fillRect(labelRect, QColor(255, 255, 255));
+            painter.fillRect(
+                QRect(labelRect.left() + qRound(2 * dpr),
+                      labelRect.center().y() - qRound(3 * dpr),
+                      qRound(6 * dpr), qRound(6 * dpr)), color);
             painter.setPen(color);
-            painter.drawText(labelRect, Qt::AlignCenter, QString::number(number));
+            painter.drawText(labelRect.adjusted(qRound(10 * dpr), 0, 0, 0),
+                             Qt::AlignVCenter | Qt::AlignLeft,
+                             QString::number(number));
 
             QJsonObject rect;
             rect.insert(QStringLiteral("x"), candidate.rect.x());
@@ -1043,10 +1086,18 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("n"), number);
             entry.insert(QStringLiteral("color"), color.name());
             entry.insert(QStringLiteral("id"), idFor(candidate.node));
+            entry.insert(QStringLiteral("objectName"), candidate.node->objectName());
             entry.insert(QStringLiteral("class"),
                          QString::fromLatin1(candidate.node->metaObject()->className()));
-            entry.insert(QStringLiteral("text"),
-                         candidate.node->property("text").toString());
+            QString text = candidate.node->property("text").toString();
+            if (auto* line = qobject_cast<QLineEdit*>(candidate.node)) {
+                if (line->echoMode() != QLineEdit::Normal)
+                    text = QStringLiteral("***");
+            }
+            entry.insert(QStringLiteral("text"), text);
+            entry.insert(QStringLiteral("enabled"), candidate.node->isEnabled());
+            entry.insert(QStringLiteral("focusable"),
+                         candidate.node->focusPolicy() != Qt::NoFocus);
             entry.insert(QStringLiteral("virtual"), false);
             entry.insert(QStringLiteral("rect"), rect);
             entry.insert(QStringLiteral("image_rect"), imageRect);
@@ -1104,6 +1155,11 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     image.insert(QStringLiteral("format"), QStringLiteral("png"));
     result.insert(QStringLiteral("image"), image);
     result.insert(QStringLiteral("legend"), legend);
+    if (annotate != QStringLiteral("none")) {
+        result.insert(QStringLiteral("annotate_total"), annotateTotal);
+        result.insert(QStringLiteral("annotate_shown"), annotateShown);
+        result.insert(QStringLiteral("annotate_truncated"), annotateTruncated);
+    }
     if (virtualTarget) {
         result.insert(QStringLiteral("virtual"), true);
         result.insert(QStringLiteral("target"), virtualId);

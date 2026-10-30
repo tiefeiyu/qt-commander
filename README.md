@@ -15,9 +15,14 @@ are no snapshot files and no stale index of the UI.
   built here.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
-- Windows injection: `qt_attach(pid=..., mode="injection")` loads
-  `qt_commander_inject.dll`, which starts the same in-process server. `auto`
-  injects when no live descriptor exists.
+- Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
+  invokes the C++ `qtc-inject` executable, which loads
+  `qt_commander_inject.dll/.so`; the target-side library starts the same
+  in-process server. `auto` injects when no live descriptor exists.
+  Python is only the MCP orchestration layer; the target does not need Python
+  or gdb. Linux ptrace still needs Yama permission (run the injector as the
+  target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
+  can be overridden with `QT_COMMANDER_INJECTOR`.
 - 15 MCP tools are registered. Working today:
   `status`, `environments`, `build`, `attach`, `detach`, `query`, `items`,
   `act`, `batch`, `wait`, `screenshot`, `get`, `set`, `call`, `source`.
@@ -85,7 +90,7 @@ End-to-end / benchmark scripts:
 uv run python scripts/linked_smoke.py
 uv run python scripts/mcp_linked_smoke.py
 
-# Windows injection smoke (pass the target pid)
+# native injection smoke (pass the target pid)
 uv run python scripts/injection_smoke.py <pid> --mode injection
 
 # P0 benchmarks
@@ -96,8 +101,9 @@ uv run python scripts/p0_matrix.py --exe build/matrix-mingw5/qt-matrix-test.exe
 ## Layout
 
 ```
-qt_commander/        Python MCP server, protocol, client, session, ops, injector
+qt_commander/        Python MCP server, protocol, client, session, ops, injector adapter
 src/                 C++ runtime (linked library + injection DLL)
+src/injector/        native C++ qtc-inject (Windows remote thread / Linux ptrace)
 tests/unit_server/   Python unit tests
 tests/test-apps/     linked / large / injected / matrix test applications
 scripts/             smoke, injection and P0 benchmark scripts

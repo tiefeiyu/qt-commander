@@ -42,6 +42,17 @@ if(WIN32)
             -static-libgcc -static-libstdc++
         )
     endif()
+elseif(UNIX AND NOT APPLE)
+    add_library(qt_commander_inject SHARED library/inject_main_unix.cpp)
+    target_link_libraries(qt_commander_inject PRIVATE qt_commander)
+    set_target_properties(qt_commander_inject PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+    )
+endif()
+
+if(WIN32 OR (UNIX AND NOT APPLE))
+    add_subdirectory(injector)
 endif()
 
 

@@ -5,8 +5,16 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#ifdef Q_OS_LINUX
+#include <sys/prctl.h>
+#endif
+
 int main(int argc, char** argv)
 {
+#ifdef Q_OS_LINUX
+    // Allow a sibling injector under Yama ptrace_scope=1 for this test app.
+    prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+#endif
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("qt-injected-test"));
 

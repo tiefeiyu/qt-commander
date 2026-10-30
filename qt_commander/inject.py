@@ -1,30 +1,34 @@
-"""Windows DLL injector used by the injection attach mode.
+"""Thin adapter around the native qtc-inject executable.
 
-The injector only loads a Qt-commander bootstrap DLL.  The DLL itself waits for
-the target's QCoreApplication and starts the same in-process RPC server as
-linked mode, so protocol and tool behavior stay identical.
+Injection mechanics live in C++ (`src/injector`): the native injector runs on
+the target platform, loads `qt_commander_inject.dll/.so`, and the target-side
+library starts the same RPC server as linked mode.  Python only locates the
+injector, invokes it, and maps its exit status into MCP errors.
 """
 from __future__ import annotations
 
-import ctypes
+import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 from .errors import ErrorCode
-
-PROCESS_ALL_ACCESS = 0x1F0FFF
-MEM_COMMIT = 0x00001000
-MEM_RESERVE = 0x00002000
-MEM_RELEASE = 0x00008000
-PAGE_READWRITE = 0x04
-WAIT_OBJECT_0 = 0x00000000
-INFINITE = 0xFFFFFFFF
 
 
 class InjectionError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def _newest(paths: set[Path]) -> Path | None:
+    if not paths:
+        return None
+    try:
+        return max(paths, key=lambda path: path.stat().st_mtime)
+    except OSError:
+        return None
 
 
 def default_dll_path() -> Path | None:
@@ -35,124 +39,75 @@ def default_dll_path() -> Path | None:
     root = Path(__file__).resolve().parents[1]
     candidates = {
         path.resolve()
-        for pattern in ("build/*/qt-commander/qt_commander_inject.dll",
-                        "build/*/qt_commander_inject.dll")
+        for pattern in (
+            "build/*/qt-commander/qt_commander_inject.dll",
+            "build/*/qt_commander_inject.dll",
+            "build/*/qt-commander/libqt_commander_inject.so",
+            "build/*/libqt_commander_inject.so",
+        )
         for path in root.glob(pattern)
     }
-    if not candidates:
-        return None
-    try:
-        return max(candidates, key=lambda path: path.stat().st_mtime)
-    except OSError:
-        return None
+    return _newest(candidates)
 
 
-def inject_library(pid: int, dll_path: Path, *, timeout_ms: int = 8000) -> None:
-    if os.name != "nt":
-        raise InjectionError(
-            ErrorCode.INJECTION_BLOCKED.value,
-            "DLL injection is only implemented on Windows",
-        )
-    dll_path = dll_path.resolve()
-    if not dll_path.is_file():
+def default_injector_path() -> Path | None:
+    override = os.environ.get("QT_COMMANDER_INJECTOR")
+    if override:
+        path = Path(override)
+        return path if path.is_file() else None
+    root = Path(__file__).resolve().parents[1]
+    candidates = {
+        path.resolve()
+        for pattern in ("build/*/qt-commander/qtc-inject",
+                        "build/*/qt-commander/qtc-inject.exe",
+                        "build/*/qtc-inject",
+                        "build/*/qtc-inject.exe")
+        for path in root.glob(pattern)
+    }
+    return _newest(candidates)
+
+
+def inject_library(pid: int, lib_path: Path, *, timeout_ms: int = 8000) -> None:
+    injector = default_injector_path() or shutil.which("qtc-inject")
+    if injector is None:
         raise InjectionError(
             ErrorCode.INJECTION_FAILED.value,
-            f"injection DLL not found: {dll_path}",
+            "native qtc-inject executable not found",
         )
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
-                                     ctypes.c_uint32]
-    kernel32.OpenProcess.restype = ctypes.c_void_p
-    kernel32.VirtualAllocEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                        ctypes.c_size_t, ctypes.c_uint32,
-                                        ctypes.c_uint32]
-    kernel32.VirtualAllocEx.restype = ctypes.c_void_p
-    kernel32.VirtualFreeEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                       ctypes.c_size_t, ctypes.c_uint32]
-    kernel32.WriteProcessMemory.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
-    ]
-    kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
-    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
-    kernel32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    kernel32.GetProcAddress.restype = ctypes.c_void_p
-    kernel32.CreateRemoteThread.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p,
-    ]
-    kernel32.CreateRemoteThread.restype = ctypes.c_void_p
-    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
-    kernel32.GetExitCodeThread.argtypes = [ctypes.c_void_p,
-                                           ctypes.POINTER(ctypes.c_uint32)]
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-
-    process = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
-    if not process:
+    library = lib_path.resolve()
+    if not library.is_file():
         raise InjectionError(
-            ErrorCode.PERMISSION.value,
-            f"OpenProcess failed (pid {pid}, error {ctypes.get_last_error()})",
+            ErrorCode.INJECTION_FAILED.value,
+            f"injection library not found: {library}",
         )
-
-    remote_path = None
-    thread = None
-    thread_completed = False
+    command = [str(injector), "--pid", str(pid), "--library", str(library)]
     try:
-        encoded = str(dll_path).encode("utf-16-le") + b"\x00\x00"
-        remote_path = kernel32.VirtualAllocEx(
-            process, None, len(encoded), MEM_COMMIT | MEM_RESERVE,
-            PAGE_READWRITE,
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=max(8.0, timeout_ms / 1000.0 + 5.0),
+            check=False,
         )
-        if not remote_path:
-            raise InjectionError(
-                ErrorCode.INJECTION_FAILED.value,
-                f"VirtualAllocEx failed (error {ctypes.get_last_error()})",
-            )
-        written = ctypes.c_size_t()
-        buffer = ctypes.create_string_buffer(encoded, len(encoded))
-        if not kernel32.WriteProcessMemory(
-            process, remote_path, buffer, len(encoded), ctypes.byref(written)
-        ):
-            raise InjectionError(
-                ErrorCode.INJECTION_FAILED.value,
-                f"WriteProcessMemory failed (error {ctypes.get_last_error()})",
-            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise InjectionError(
+            ErrorCode.INJECTION_FAILED.value,
+            f"qtc-inject failed: {exc}",
+        ) from exc
 
-        load_library = kernel32.GetProcAddress(
-            kernel32.GetModuleHandleW("kernel32.dll"), b"LoadLibraryW"
-        )
-        if not load_library:
-            raise InjectionError(
-                ErrorCode.INJECTION_FAILED.value,
-                "LoadLibraryW not found",
-            )
-        thread = kernel32.CreateRemoteThread(
-            process, None, 0, load_library, remote_path, 0, None
-        )
-        if not thread:
-            raise InjectionError(
-                ErrorCode.INJECTION_FAILED.value,
-                f"CreateRemoteThread failed (error {ctypes.get_last_error()})",
-            )
-        wait = kernel32.WaitForSingleObject(thread, timeout_ms)
-        if wait != WAIT_OBJECT_0:
-            raise InjectionError(
-                ErrorCode.INJECTION_FAILED.value,
-                "injected LoadLibrary did not finish",
-            )
-        thread_completed = True
-        exit_code = ctypes.c_uint32()
-        kernel32.GetExitCodeThread(thread, ctypes.byref(exit_code))
-        if not exit_code.value:
-            raise InjectionError(
-                ErrorCode.INJECTION_FAILED.value,
-                "target LoadLibraryW returned NULL (missing DLL dependency?)",
-            )
-    finally:
-        if thread:
-            kernel32.CloseHandle(thread)
-        if remote_path and thread_completed:
-            kernel32.VirtualFreeEx(process, remote_path, 0, MEM_RELEASE)
-        kernel32.CloseHandle(process)
+    output = (completed.stdout or "").strip()
+    if completed.returncode == 0:
+        return
+    message = output or (completed.stderr or "").strip() or "qtc-inject failed"
+    code = ErrorCode.INJECTION_FAILED.value
+    try:
+        parsed = json.loads(output)
+        message = str(parsed.get("message") or message)
+        code = str(parsed.get("code") or code)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if completed.returncode == 3:
+        code = ErrorCode.PERMISSION.value
+    elif completed.returncode == 2:
+        code = ErrorCode.INVALID_ARGUMENT.value
+    raise InjectionError(code, message)
