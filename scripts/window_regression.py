@@ -1,4 +1,4 @@
-"""Multi-window, modal and popup regression against the matrix app."""
+"""Multi-window, modal, popup, dock, custom-model and QML regression."""
 from __future__ import annotations
 
 import asyncio
@@ -209,6 +209,71 @@ async def run_mode(mode: str) -> None:
             })
             text = find(status["tree"][0], "popupStatus")["props"]["text"]
             print(mode, "popup result:", text)
+        elif mode == "dock":
+            dock_tree = await session.call("query", {
+                "where": {"object_name": "dock"},
+            })
+            dock = find(dock_tree["tree"][0], "dock")
+            items = await session.call("items", {"owner": dock["id"]})
+            assert len(items["items"]) >= 2
+            acted = await session.call("act", {
+                "target": {"id": items["items"][-1]["id"]},
+                "action": "click",
+            })
+            assert acted["ok"] is True
+            print(mode, "dock buttons:", len(items["items"]))
+        elif mode == "custom-model":
+            table_tree = await session.call("query", {
+                "where": {"object_name": "customTable"},
+            })
+            table = find(table_tree["tree"][0], "customTable")
+            cells = await session.call("items", {"owner": table["id"]})
+            assert cells["items"]
+            assert cells["items"][0]["props"]["text"] == "m00"
+            splitter_tree = await session.call("query", {
+                "where": {"object_name": "splitter"},
+            })
+            splitter = find(splitter_tree["tree"][0], "splitter")
+            handles = await session.call("items", {"owner": splitter["id"]})
+            assert handles["items"]
+            print(mode, "custom cells:", len(cells["items"]),
+                  "splitter handles:", len(handles["items"]))
+        elif mode == "qml":
+            text_tree = await session.call("query", {
+                "where": {"object_name": "qmlText"},
+                "props": ["text"],
+            })
+            text_node = find(text_tree["tree"][0], "qmlText")
+            assert text_node["qml_id"] == "qmlText"
+            mouse_tree = await session.call("query", {
+                "where": {"object_name": "qmlMouse"},
+            })
+            mouse = find(mouse_tree["tree"][0], "qmlMouse")
+            acted = await session.call("act", {
+                "target": {"id": mouse["id"]},
+                "action": "click",
+            })
+            assert acted["ok"] is True
+            status = await session.call("query", {
+                "where": {"object_name": "qmlStatus"},
+                "props": ["text"],
+            })
+            assert find(status["tree"][0], "qmlStatus")["props"]["text"] == "clicked"
+            quick_tree = await session.call("query", {
+                "where": {"object_name": "quick"},
+            })
+            quick = find(quick_tree["tree"][0], "quick")
+            frame = await session.call_frame("screenshot", {
+                "target": {"id": quick["id"]},
+                "annotate": "all",
+            })
+            assert any(entry.get("qml_id") == "qmlText"
+                       for entry in frame.result["legend"])
+            source = await session.call("source", {"target": text_node["id"]})
+            assert source["available"] is True
+            assert source["kind"] == "qml"
+            print(mode, "qml legend:", len(frame.result["legend"]),
+                  "source line:", source["location"]["line"])
         await session.close()
     finally:
         process.terminate()
@@ -219,7 +284,8 @@ async def run_mode(mode: str) -> None:
 
 
 async def main() -> None:
-    for mode in ("multi-window", "multi-mainwindow", "occlusion", "modal", "popup"):
+    for mode in ("multi-window", "multi-mainwindow", "occlusion", "modal",
+                 "popup", "dock", "custom-model", "qml"):
         await run_mode(mode)
 
 
