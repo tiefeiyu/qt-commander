@@ -515,16 +515,36 @@ QJsonObject Server::windows(const QJsonObject& params)
 {
     const bool includeHidden =
         params.value(QStringLiteral("include_hidden")).toBool(false);
+    const QJsonValue classSpec = params.value(QStringLiteral("class"));
+    if (!classSpec.isNull() && !classSpec.isUndefined() &&
+        !validMatcher(classSpec)) {
+        QJsonObject error;
+        error.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_FILTER"));
+        error.insert(QStringLiteral("message"),
+                     QStringLiteral("invalid window class matcher"));
+        return error;
+    }
+    const bool filterVisible = params.contains(QStringLiteral("visible"));
+    const bool wantedVisible =
+        params.value(QStringLiteral("visible")).toBool(true);
+    const int offset = qMax(0, params.value(QStringLiteral("offset")).toInt(0));
+    const int limit = qMax(1, params.value(QStringLiteral("limit")).toInt(200));
     QList<QWidget*> roots = QApplication::topLevelWidgets();
     std::sort(roots.begin(), roots.end(), [](QWidget* left, QWidget* right) {
         return left->winId() < right->winId();
     });
 
-    QJsonArray list;
+    QJsonArray all;
     for (QWidget* root : roots) {
         if (!root || !root->isWindow())
             continue;
         if (!includeHidden && !root->isVisible())
+            continue;
+        if (filterVisible && root->isVisible() != wantedVisible)
+            continue;
+        if (!classSpec.isNull() && !classSpec.isUndefined() &&
+            !matchText(classSpec, QString::fromLatin1(
+                                      root->metaObject()->className())))
             continue;
         const QPoint global = root->mapToGlobal(QPoint(0, 0));
         QJsonObject screenPos;
@@ -558,12 +578,19 @@ QJsonObject Server::windows(const QJsonObject& params)
             root->findChildren<QWidget*>(QString(),
                                          Qt::FindDirectChildrenOnly)
                 .size());
-        list.append(window);
+        all.append(window);
     }
 
+    QJsonArray page;
+    for (int i = offset; i < all.size() && i < offset + limit; ++i)
+        page.append(all.at(i));
     QJsonObject result;
-    result.insert(QStringLiteral("windows"), list);
-    result.insert(QStringLiteral("count"), list.size());
+    result.insert(QStringLiteral("windows"), page);
+    result.insert(QStringLiteral("count"), page.size());
+    result.insert(QStringLiteral("total"), all.size());
+    result.insert(QStringLiteral("offset"), offset);
+    result.insert(QStringLiteral("limit"), limit);
+    result.insert(QStringLiteral("truncated"), all.size() > offset + page.size());
     return result;
 }
 

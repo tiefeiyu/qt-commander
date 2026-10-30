@@ -137,10 +137,25 @@ async def _poll_expect(
         await asyncio.sleep(0.05)
 
 
-async def windows(session: Session, *, include_hidden: bool = False) -> dict[str, Any]:
-    return await session.call(
-        "windows", {"include_hidden": include_hidden}
-    )
+async def windows(
+    session: Session,
+    *,
+    include_hidden: bool = False,
+    visible: bool | None = None,
+    class_name: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "include_hidden": include_hidden,
+        "limit": limit,
+        "offset": offset,
+    }
+    if visible is not None:
+        params["visible"] = visible
+    if class_name is not None:
+        params["class"] = class_name
+    return await session.call("windows", params)
 
 
 async def query(

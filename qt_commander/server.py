@@ -230,13 +230,24 @@ async def qt_status(session_id: str | None = None) -> dict[str, Any]:
 async def qt_windows(
     session_id: str,
     include_hidden: bool = False,
+    visible: bool | None = None,
+    class_name: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """List top-level windows with id/title/class/screen_pos/active/modal."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.windows(session, include_hidden=include_hidden)
+        return await ops.windows(
+            session,
+            include_hidden=include_hidden,
+            visible=visible,
+            class_name=class_name,
+            limit=limit,
+            offset=offset,
+        )
     except Exception as exc:
         return _map_error(exc)
 
