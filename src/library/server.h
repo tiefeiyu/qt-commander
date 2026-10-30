@@ -17,6 +17,8 @@ class QTcpSocket;
 class QWidget;
 class QQuickItem;
 class QQuickWidget;
+class QQuickWindow;
+class QWindow;
 
 namespace qt_commander {
 
@@ -51,6 +53,7 @@ private:
 
     struct VirtualRef {
         QPointer<QWidget> owner;
+        QPointer<QWindow> windowOwner;
         QString kind;
         QString className;
         int index = 0;
@@ -76,10 +79,15 @@ private:
     QJsonObject query(const QJsonObject& params);
     QJsonObject act(const QJsonObject& params);
     QJsonObject screenshot(const QJsonObject& params, QByteArray* binary);
+    QJsonObject quickScreenshot(QQuickWindow* window,
+                                const QJsonObject& params,
+                                QByteArray* binary);
     QJsonObject get(const QJsonObject& params);
     QJsonObject setProperty(const QJsonObject& params);
     QJsonObject call(const QJsonObject& params);
     QJsonObject items(const QJsonObject& params);
+    QJsonObject quickItems(QWindow* window, QQuickItem* root,
+                           const QJsonObject& params);
     QJsonObject source(const QJsonObject& params);
     QJsonObject actVirtual(const QJsonObject& params, const QString& id);
     QJsonObject buildQmlNode(QWidget* owner, QQuickItem* item,
@@ -87,6 +95,16 @@ private:
                              bool* anyMatch);
     QString registerQml(QWidget* owner, QQuickItem* item, int index,
                         const QRect& rect, const QJsonObject& props);
+    QJsonObject buildQuickWindowNode(QQuickWindow* window,
+                                     QueryContext& context, bool isRoot,
+                                     bool* anyMatch);
+    QJsonObject buildQuickItemNode(QQuickWindow* window, QQuickItem* item,
+                                   QueryContext& context, int depth, int* serial,
+                                   bool* anyMatch);
+    QString registerQuickQml(QQuickWindow* window, QQuickItem* item, int index,
+                             const QRect& rect, const QJsonObject& props);
+    QString idForWindow(QWindow* window);
+    QWindow* windowForId(const QString& id) const;
     QString registerVirtual(QWidget* owner, const QString& kind,
                             const QString& className, int index,
                             const QRect& rect, const QJsonObject& props,
@@ -122,6 +140,8 @@ private:
     QSet<QTcpSocket*> handling_;
     QHash<QWidget*, QString> ids_;
     QHash<QString, QPointer<QWidget>> idToWidget_;
+    QHash<QWindow*, QString> windowIds_;
+    QHash<QString, QPointer<QWindow>> idToWindow_;
     QSet<QString> staleIds_;
     QHash<QString, VirtualRef> virtuals_;
     QSet<QWidget*> virtualOwners_;

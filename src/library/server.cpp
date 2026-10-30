@@ -58,7 +58,11 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickItem>
+#include <QQuickView>
+#include <QQuickWindow>
 #include <QQuickWidget>
+#include <QWindow>
+#include <QGuiApplication>
 #include <QRegularExpression>
 #include <QUrl>
 #include <QVariant>
@@ -581,6 +585,52 @@ QJsonObject Server::windows(const QJsonObject& params)
         all.append(window);
     }
 
+    {
+        for (QWindow* window : QGuiApplication::topLevelWindows()) {
+            auto* quick = qobject_cast<QQuickWindow*>(window);
+            if (!quick || !quick->isVisible())
+                continue;
+            if (!includeHidden && !quick->isVisible())
+                continue;
+            if (filterVisible && quick->isVisible() != wantedVisible)
+                continue;
+            if (!classSpec.isNull() && !classSpec.isUndefined() &&
+                !matchText(classSpec, QString::fromLatin1(
+                                          quick->metaObject()->className())))
+                continue;
+            const QPoint global = quick->position();
+            QJsonObject screenPos;
+            screenPos.insert(QStringLiteral("x"), global.x());
+            screenPos.insert(QStringLiteral("y"), global.y());
+            QJsonObject size;
+            size.insert(QStringLiteral("w"), quick->width());
+            size.insert(QStringLiteral("h"), quick->height());
+            QJsonObject windowObject;
+            windowObject.insert(QStringLiteral("id"), idForWindow(quick));
+            windowObject.insert(QStringLiteral("class"), QStringLiteral("QQuickWindow"));
+            windowObject.insert(QStringLiteral("objectName"), quick->objectName());
+            windowObject.insert(QStringLiteral("title"), quick->title());
+            windowObject.insert(QStringLiteral("rect"), size);
+            windowObject.insert(QStringLiteral("screen_pos"), screenPos);
+            windowObject.insert(QStringLiteral("visible"), quick->isVisible());
+            windowObject.insert(QStringLiteral("minimized"),
+                               quick->windowStates().testFlag(Qt::WindowMinimized));
+            windowObject.insert(QStringLiteral("active"), quick->isActive());
+            windowObject.insert(QStringLiteral("modal"), quick->modality() != Qt::NonModal);
+            windowObject.insert(QStringLiteral("popup"),
+                               quick->flags().testFlag(Qt::Popup));
+            windowObject.insert(QStringLiteral("tooltip"),
+                               quick->flags().testFlag(Qt::ToolTip));
+            if (QScreen* screen = quick->screen())
+                windowObject.insert(QStringLiteral("screen"), screen->name());
+            windowObject.insert(
+                QStringLiteral("child_count"),
+                quick->contentItem() ? quick->contentItem()->childItems().size()
+                                      : 0);
+            all.append(windowObject);
+        }
+    }
+
     QJsonArray page;
     for (int i = offset; i < all.size() && i < offset + limit; ++i)
         page.append(all.at(i));
@@ -658,17 +708,26 @@ QJsonObject Server::query(const QJsonObject& params)
     }
     context.screenCoords = coords == QStringLiteral("screen");
     QWidget* scopeRoot = nullptr;
+    QWindow* scopeWindow = nullptr;
     if (params.contains(QStringLiteral("scope"))) {
         const QJsonValue scope = params.value(QStringLiteral("scope"));
         if (!scope.isNull() && !scope.isUndefined()) {
-            QString scopeError;
-            scopeRoot = resolveTarget(scope, &scopeError, -1,
-                                      context.includeHidden);
-            if (!scopeRoot) {
-                QJsonObject error;
-                error.insert(QStringLiteral("error"), resolveErrorCode());
-                error.insert(QStringLiteral("message"), scopeError);
-                return error;
+            const QString scopeId = scope.isString()
+                                        ? scope.toString()
+                                        : scope.toObject()
+                                              .value(QStringLiteral("id"))
+                                              .toString();
+            scopeWindow = windowForId(scopeId);
+            if (!scopeWindow) {
+                QString scopeError;
+                scopeRoot = resolveTarget(scope, &scopeError, -1,
+                                          context.includeHidden);
+                if (!scopeRoot) {
+                    QJsonObject error;
+                    error.insert(QStringLiteral("error"), resolveErrorCode());
+                    error.insert(QStringLiteral("message"), scopeError);
+                    return error;
+                }
             }
         }
     }
@@ -710,10 +769,27 @@ QJsonObject Server::query(const QJsonObject& params)
                 roots.append(root);
         }
     }
+    QList<QQuickWindow*> quickRoots;
+    if (scopeWindow) {
+        if (auto* quick = qobject_cast<QQuickWindow*>(scopeWindow))
+            quickRoots.append(quick);
+    } else if (!scopeRoot) {
+        for (QWindow* window : QGuiApplication::topLevelWindows()) {
+            if (auto* quick = qobject_cast<QQuickWindow*>(window)) {
+                if (context.includeHidden || quick->isVisible())
+                    quickRoots.append(quick);
+            }
+        }
+    }
+
     if (countOnly) {
         for (QWidget* root : roots) {
             if (isCandidate(root, context.includeHidden))
                 countNode(root, context, 0);
+        }
+        for (QQuickWindow* root : quickRoots) {
+            bool any = false;
+            buildQuickWindowNode(root, context, true, &any);
         }
         QJsonObject result;
         result.insert(QStringLiteral("count"),
@@ -730,6 +806,12 @@ QJsonObject Server::query(const QJsonObject& params)
         if (any)
             tree.append(node);
     }
+    for (QQuickWindow* root : quickRoots) {
+        bool any = false;
+        const QJsonObject node = buildQuickWindowNode(root, context, true, &any);
+        if (any)
+            tree.append(node);
+    }
 
     if (context.tooLarge) {
         QJsonObject error;
@@ -742,20 +824,14 @@ QJsonObject Server::query(const QJsonObject& params)
     }
 
     const int count = context.hasWhere ? context.matched : context.total;
-    if (limit > 0 && count > limit) {
-        QJsonObject error;
-        error.insert(QStringLiteral("error"),
-                     QStringLiteral("E_RESULT_TOO_LARGE"));
-        error.insert(QStringLiteral("message"),
-                     QStringLiteral("result has %1 nodes (limit %2)")
-                         .arg(count)
-                         .arg(limit));
-        return error;
-    }
+    const bool truncated = limit > 0 && count > limit;
 
     QJsonObject result;
     result.insert(QStringLiteral("tree"), tree);
     result.insert(QStringLiteral("count"), count);
+    result.insert(QStringLiteral("total"), count);
+    result.insert(QStringLiteral("limit"), limit);
+    result.insert(QStringLiteral("truncated"), truncated);
     if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() >
         2 * 1024 * 1024) {
         QJsonObject error;
@@ -1098,6 +1174,17 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     bool virtualTarget = false;
     QString virtualId;
     const QJsonValue targetValue = params.value(QStringLiteral("target"));
+    if (explicitTarget) {
+        const QString quickId = targetValue.isString()
+                                    ? targetValue.toString()
+                                    : targetValue.toObject()
+                                          .value(QStringLiteral("id"))
+                                          .toString();
+        if (QWindow* quick = windowForId(quickId)) {
+            if (auto* quickWindow = qobject_cast<QQuickWindow*>(quick))
+                return quickScreenshot(quickWindow, params, binary);
+        }
+    }
     if (targetValue.isString() && virtuals_.contains(targetValue.toString())) {
         if (annotate != QStringLiteral("none")) {
             QJsonObject result;
@@ -1653,11 +1740,223 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     return result;
 }
 
+QJsonObject Server::quickScreenshot(QQuickWindow* window,
+                                     const QJsonObject& params,
+                                     QByteArray* binary)
+{
+    if (!window) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"), QStringLiteral("no QQuickWindow"));
+        return result;
+    }
+    QImage image = window->grabWindow();
+    if (image.isNull() && window->screen())
+        image = window->screen()->grabWindow(window->winId()).toImage();
+    if (image.isNull()) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("nothing to capture"));
+        return result;
+    }
+    const double dpr = image.devicePixelRatio() > 0
+                           ? image.devicePixelRatio()
+                           : window->devicePixelRatio();
+    const int maxWidth = params.value(QStringLiteral("max_width")).toInt(1024);
+    if (maxWidth > 0 && qRound(image.width() / dpr) > maxWidth) {
+        image = image.scaledToWidth(qRound(maxWidth * dpr),
+                                    Qt::SmoothTransformation);
+        image.setDevicePixelRatio(dpr);
+    }
+    const QString annotate = params.value(QStringLiteral("annotate"))
+                                 .toString(QStringLiteral("none"));
+    QJsonArray legend;
+    int shown = 0;
+    int total = 0;
+    if (annotate != QStringLiteral("none")) {
+        const QJsonObject where =
+            params.value(QStringLiteral("where")).toObject();
+        const int maxLabels =
+            params.value(QStringLiteral("max_labels")).toInt(50);
+        struct QmlCandidate {
+            QQuickItem* item = nullptr;
+            QRect rect;
+        };
+        QList<QmlCandidate> candidates;
+        int serial = 0;
+        auto quickMatches = [&](QQuickItem* item) {
+            if (where.isEmpty())
+                return true;
+            if (where.contains(QStringLiteral("class")) &&
+                !matchText(where.value(QStringLiteral("class")),
+                           QString::fromLatin1(item->metaObject()->className())))
+                return false;
+            const QJsonValue objectSpec =
+                where.contains(QStringLiteral("object_name"))
+                    ? where.value(QStringLiteral("object_name"))
+                    : where.value(QStringLiteral("objectName"));
+            if ((where.contains(QStringLiteral("object_name")) ||
+                 where.contains(QStringLiteral("objectName"))) &&
+                !matchText(objectSpec, item->objectName()))
+                return false;
+            if (where.contains(QStringLiteral("text")) &&
+                !matchText(where.value(QStringLiteral("text")),
+                           item->property("text").toString()))
+                return false;
+            return true;
+        };
+        std::function<void(QQuickItem*)> walk = [&](QQuickItem* item) {
+            if (!item || !item->isVisible())
+                return;
+            const bool matched = quickMatches(item);
+            if (matched) {
+                const QRect rect =
+                    item->mapRectToScene(item->boundingRect()).toAlignedRect();
+                if (!rect.isEmpty())
+                    candidates.append({item, rect});
+            }
+            ++serial;
+            for (QQuickItem* child : item->childItems())
+                walk(child);
+        };
+        walk(window->contentItem());
+        if (annotate == QStringLiteral("all")) {
+            QList<QmlCandidate> leaves;
+            for (int i = 0; i < candidates.size(); ++i) {
+                bool containsChild = false;
+                for (int j = 0; j < candidates.size(); ++j) {
+                    if (i == j)
+                        continue;
+                    if (candidates[i].rect.contains(candidates[j].rect) &&
+                        candidates[i].rect != candidates[j].rect) {
+                        containsChild = true;
+                        break;
+                    }
+                }
+                if (!containsChild)
+                    leaves.append(candidates[i]);
+            }
+            if (!leaves.isEmpty())
+                candidates = leaves;
+        }
+        total = candidates.size();
+        if (annotate == QStringLiteral("interactive")) {
+            QList<QmlCandidate> filtered;
+            for (const QmlCandidate& candidate : candidates)
+                if (candidate.item->isEnabled())
+                    filtered.append(candidate);
+            candidates = filtered;
+        }
+        if (candidates.size() > maxLabels)
+            candidates = candidates.mid(0, maxLabels);
+        shown = candidates.size();
+        const double scale =
+            window->width() > 0 ? double(image.width()) / window->width() : 1.0;
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        QPen pen(QColor(220, 40, 40));
+        pen.setWidth(qMax(1, qRound(2 * dpr)));
+        painter.setPen(pen);
+        QFont font = painter.font();
+        font.setPixelSize(qMax(8, qRound(9 * dpr)));
+        painter.setFont(font);
+        int number = 0;
+        for (const QmlCandidate& candidate : candidates) {
+            ++number;
+            const QRect drawRect(
+                qRound(candidate.rect.x() * scale),
+                qRound(candidate.rect.y() * scale),
+                qRound(candidate.rect.width() * scale),
+                qRound(candidate.rect.height() * scale));
+            painter.drawRect(drawRect);
+            const int badgeW = qMin(drawRect.width(), qRound(20 * dpr));
+            const int badgeH = qMin(drawRect.height(), qRound(14 * dpr));
+            if (badgeW > 0 && badgeH > 0) {
+                const QRect badge(drawRect.topLeft(), QSize(badgeW, badgeH));
+                painter.fillRect(badge, QColor(255, 255, 255, 230));
+                painter.drawRect(badge);
+                painter.drawText(badge, Qt::AlignCenter, QString::number(number));
+            }
+            QJsonObject entry;
+            entry.insert(QStringLiteral("n"), number);
+            entry.insert(QStringLiteral("id"),
+                         registerQuickQml(window, candidate.item, serial++,
+                                          candidate.rect, QJsonObject{}));
+            entry.insert(QStringLiteral("class"),
+                         QString::fromLatin1(
+                             candidate.item->metaObject()->className()));
+            entry.insert(QStringLiteral("qml_type"),
+                         QString::fromLatin1(
+                             candidate.item->metaObject()->className()));
+            entry.insert(QStringLiteral("qml_id"), QString());
+            entry.insert(QStringLiteral("objectName"),
+                         candidate.item->objectName());
+            entry.insert(QStringLiteral("text"),
+                         candidate.item->property("text").toString());
+            entry.insert(QStringLiteral("rect"), QJsonObject{
+                {QStringLiteral("x"), candidate.rect.x()},
+                {QStringLiteral("y"), candidate.rect.y()},
+                {QStringLiteral("w"), candidate.rect.width()},
+                {QStringLiteral("h"), candidate.rect.height()}});
+            entry.insert(QStringLiteral("image_rect"), QJsonObject{
+                {QStringLiteral("x"), drawRect.x()},
+                {QStringLiteral("y"), drawRect.y()},
+                {QStringLiteral("w"), drawRect.width()},
+                {QStringLiteral("h"), drawRect.height()}});
+            legend.append(entry);
+        }
+        painter.end();
+    }
+
+    QBuffer buffer(binary);
+    if (!buffer.open(QIODevice::WriteOnly)) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"),
+                      QStringLiteral("E_INJECTION_FAILED"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("PNG buffer failed"));
+        return result;
+    }
+    if (!image.save(&buffer, "PNG")) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"),
+                      QStringLiteral("E_INJECTION_FAILED"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("PNG encode failed"));
+        return result;
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("format"), QStringLiteral("png"));
+    result.insert(QStringLiteral("width"),
+                  qRound(image.width() / dpr));
+    result.insert(QStringLiteral("height"),
+                  qRound(image.height() / dpr));
+    result.insert(QStringLiteral("pixel_width"), image.width());
+    result.insert(QStringLiteral("pixel_height"), image.height());
+    result.insert(QStringLiteral("dpr"), dpr);
+    result.insert(QStringLiteral("bytes"), binary->size());
+    result.insert(QStringLiteral("annotate"), annotate);
+    result.insert(QStringLiteral("annotate_shown"), shown);
+    result.insert(QStringLiteral("annotate_total"), total);
+    result.insert(QStringLiteral("annotate_truncated"), total > shown);
+    result.insert(QStringLiteral("legend"), legend);
+    result.insert(QStringLiteral("window"), QJsonObject{
+        {QStringLiteral("id"), idForWindow(window)},
+        {QStringLiteral("title"), window->title()},
+        {QStringLiteral("class"), QStringLiteral("QQuickWindow")}});
+    return result;
+}
+
 QJsonObject Server::get(const QJsonObject& params)
 {
     const QJsonValue targetValue = params.value(QStringLiteral("target"));
-    if (targetValue.isString() && virtuals_.contains(targetValue.toString()))
-        return virtualItem(targetValue.toString());
+    const QString virtualId =
+        targetValue.isString()
+            ? targetValue.toString()
+            : targetValue.toObject().value(QStringLiteral("id")).toString();
+    if (!virtualId.isEmpty() && virtuals_.contains(virtualId))
+        return virtualItem(virtualId);
 
     QString error;
     QWidget* widget = resolveTarget(
@@ -1837,6 +2136,24 @@ QJsonObject Server::items(const QJsonObject& params)
         params.contains(QStringLiteral("owner"))
             ? params.value(QStringLiteral("owner"))
             : params.value(QStringLiteral("target"));
+    const QString ownerVirtualId =
+        ownerTarget.isString()
+            ? ownerTarget.toString()
+            : ownerTarget.toObject().value(QStringLiteral("id")).toString();
+    if (QWindow* quickWindow = windowForId(ownerVirtualId)) {
+        if (auto* window = qobject_cast<QQuickWindow*>(quickWindow))
+            return quickItems(window, window->contentItem(), params);
+    }
+    if (virtuals_.contains(ownerVirtualId)) {
+        const VirtualRef ref = virtuals_.value(ownerVirtualId);
+        if (ref.kind == QStringLiteral("qml_item")) {
+            if (auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data())) {
+                if (auto* window =
+                        qobject_cast<QQuickWindow*>(ref.windowOwner.data()))
+                    return quickItems(window, item, params);
+            }
+        }
+    }
     QWidget* owner = resolveTarget(
         ownerTarget, &error,
         params.value(QStringLiteral("nth")).toInt(-1),
@@ -2468,7 +2785,7 @@ QString Server::registerVirtual(QWidget* owner, const QString& kind,
 bool Server::virtualRect(const VirtualRef& ref, QRect* rect) const
 {
     QWidget* owner = ref.owner.data();
-    if (!owner)
+    if (!owner && ref.windowOwner.isNull())
         return false;
     if (ref.kind == QStringLiteral("combo_item") && !ref.page.isNull() &&
         ref.persistent.isValid()) {
@@ -2560,7 +2877,7 @@ QJsonObject Server::virtualItem(const QString& id)
         return result;
     }
     const VirtualRef ref = it.value();
-    if (ref.owner.isNull()) {
+    if (ref.owner.isNull() && ref.windowOwner.isNull()) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
         result.insert(QStringLiteral("message"),
@@ -2683,7 +3000,7 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         return result;
     }
     const VirtualRef ref = it.value();
-    if (ref.owner.isNull()) {
+    if (ref.owner.isNull() && ref.windowOwner.isNull()) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
         result.insert(QStringLiteral("message"),
@@ -2733,6 +3050,42 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         return result;
     }
 
+    if (ref.kind == QStringLiteral("qml_item") &&
+        !ref.windowOwner.isNull()) {
+        auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        auto* window = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+        if (!item || !window) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML item is gone"));
+            return result;
+        }
+        window->requestActivate();
+        const QPointF point =
+            item->mapToScene(item->boundingRect().center());
+        const int clicks = action == QStringLiteral("dblclick") ? 2 : 1;
+        for (int i = 0; i < clicks; ++i) {
+            QMouseEvent press(QEvent::MouseButtonPress, point, Qt::LeftButton,
+                              Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, point,
+                                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &release);
+            QCoreApplication::processEvents();
+        }
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
     if (ref.kind == QStringLiteral("spin_button")) {
         if (auto* spin = qobject_cast<QSpinBox*>(ref.owner.data())) {
             if (ref.index == 0)
@@ -2861,6 +3214,115 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
     result.insert(QStringLiteral("dispatched"), true);
     result.insert(QStringLiteral("resolved"), resolved);
     result.insert(QStringLiteral("observed"), resolved);
+    return result;
+}
+
+QJsonObject Server::quickItems(QWindow* window, QQuickItem* root,
+                               const QJsonObject& params)
+{
+    auto* quickWindow = qobject_cast<QQuickWindow*>(window);
+    if (!quickWindow || !root) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("QML owner is not available"));
+        return result;
+    }
+    const bool includeHidden =
+        params.value(QStringLiteral("include_hidden")).toBool(false);
+    const bool compact = params.value(QStringLiteral("compact")).toBool(false);
+    const int limit = qMax(1, params.value(QStringLiteral("limit")).toInt(50));
+    const int offset = qMax(0, params.value(QStringLiteral("offset")).toInt(0));
+    const QJsonObject where = params.value(QStringLiteral("where")).toObject();
+    auto matches = [&](QQuickItem* item, const QString& className,
+                       const QString& qmlId) {
+        if (where.isEmpty())
+            return true;
+        if (where.contains(QStringLiteral("class")) &&
+            !matchText(where.value(QStringLiteral("class")), className))
+            return false;
+        if (where.contains(QStringLiteral("qml_type")) &&
+            !matchText(where.value(QStringLiteral("qml_type")), className))
+            return false;
+        if (where.contains(QStringLiteral("qml_id")) &&
+            !matchText(where.value(QStringLiteral("qml_id")), qmlId))
+            return false;
+        if (where.contains(QStringLiteral("text")) &&
+            !matchText(where.value(QStringLiteral("text")),
+                       item->property("text").toString()))
+            return false;
+        const QJsonValue objectSpec =
+            where.contains(QStringLiteral("object_name"))
+                ? where.value(QStringLiteral("object_name"))
+                : where.value(QStringLiteral("objectName"));
+        if ((where.contains(QStringLiteral("object_name")) ||
+             where.contains(QStringLiteral("objectName"))) &&
+            !matchText(objectSpec, item->objectName()))
+            return false;
+        return true;
+    };
+    QJsonArray all;
+    int visible = 0;
+    int total = 0;
+    for (QQuickItem* item : root->childItems()) {
+        if (!item)
+            continue;
+        if (!item->isVisible() && !includeHidden)
+            continue;
+        ++total;
+        if (!item->isVisible())
+            continue;
+        ++visible;
+        const QString className =
+            QString::fromLatin1(item->metaObject()->className());
+        const QString qmlId =
+            QQmlEngine::contextForObject(item)
+                ? QQmlEngine::contextForObject(item)->nameForObject(item)
+                : QString();
+        if (!matches(item, className, qmlId))
+            continue;
+        const QRect rect =
+            item->mapRectToScene(item->boundingRect()).toAlignedRect();
+        QJsonObject props;
+        props.insert(QStringLiteral("text"),
+                     item->property("text").toString());
+        props.insert(QStringLiteral("visible"), item->isVisible());
+        props.insert(QStringLiteral("enabled"), item->isEnabled());
+        const QString id =
+            registerQuickQml(quickWindow, item, all.size(), rect, props);
+        QJsonObject entry;
+        entry.insert(QStringLiteral("id"), id);
+        entry.insert(QStringLiteral("kind"), QStringLiteral("qml_item"));
+        entry.insert(QStringLiteral("virtual"), true);
+        if (!compact) {
+            entry.insert(QStringLiteral("class"), className);
+            entry.insert(QStringLiteral("parent"), idForWindow(quickWindow));
+            entry.insert(QStringLiteral("qml_type"), className);
+            entry.insert(QStringLiteral("qml_id"), qmlId);
+            entry.insert(QStringLiteral("objectName"), item->objectName());
+            entry.insert(QStringLiteral("child_count"), item->childItems().size());
+            entry.insert(QStringLiteral("children"), QJsonArray{});
+            entry.insert(QStringLiteral("source"), QStringLiteral("adapter"));
+        }
+        QJsonObject r;
+        r.insert(QStringLiteral("x"), rect.x());
+        r.insert(QStringLiteral("y"), rect.y());
+        r.insert(QStringLiteral("w"), rect.width());
+        r.insert(QStringLiteral("h"), rect.height());
+        entry.insert(QStringLiteral("rect"), r);
+        entry.insert(QStringLiteral("props"), props);
+        all.append(entry);
+    }
+    QJsonArray page;
+    for (int i = offset; i < all.size() && i < offset + limit; ++i)
+        page.append(all.at(i));
+    QJsonObject result;
+    result.insert(QStringLiteral("owner"), idForWindow(quickWindow));
+    result.insert(QStringLiteral("items"), page);
+    result.insert(QStringLiteral("total"), total);
+    result.insert(QStringLiteral("visible"), visible);
+    result.insert(QStringLiteral("truncated"),
+                  all.size() > offset + page.size());
     return result;
 }
 
@@ -3343,6 +3805,8 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
     *anyMatch = false;
     if (!item)
         return {};
+    if (context.maxDepth >= 0 && depth > context.maxDepth)
+        return {};
     const bool selfMatch =
         context.hasWhere && qmlMatches(item, context.where);
     ++context.total;
@@ -3404,6 +3868,182 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
     node.insert(QStringLiteral("child_count"), childCount);
     node.insert(QStringLiteral("children"), children);
     node.insert(QStringLiteral("props"), props);
+    if (context.hasWhere)
+        node.insert(QStringLiteral("matched"), selfMatch);
+    return node;
+}
+
+QString Server::registerQuickQml(QQuickWindow* window, QQuickItem* item,
+                                 int index, const QRect& rect,
+                                 const QJsonObject& props)
+{
+    const QString id = tag_ + QStringLiteral(".vqml.") +
+                       idForWindow(window) + QStringLiteral(".") +
+                       QString::number(reinterpret_cast<quintptr>(item), 16);
+    VirtualRef ref;
+    ref.windowOwner = window;
+    ref.kind = QStringLiteral("qml_item");
+    ref.className = qmlTypeName(item);
+    ref.index = index;
+    ref.rect = rect;
+    ref.props = props;
+    ref.qmlObject = item;
+    virtuals_.insert(id, ref);
+    return id;
+}
+
+QJsonObject Server::buildQuickItemNode(QQuickWindow* window, QQuickItem* item,
+                                       QueryContext& context, int depth,
+                                       int* serial, bool* anyMatch)
+{
+    *anyMatch = false;
+    if (!item)
+        return {};
+    if (context.maxDepth >= 0 && depth > context.maxDepth)
+        return {};
+    const bool selfMatch =
+        context.hasWhere && qmlMatches(item, context.where);
+    ++context.total;
+    if (selfMatch)
+        ++context.matched;
+    const QRect rect =
+        item->mapRectToScene(item->boundingRect()).toAlignedRect();
+    const QJsonObject props = qmlProps(item, context.props);
+    int childCount = 0;
+    QJsonArray children;
+    bool childAny = false;
+    if (item->isVisible() && context.emitted < QueryContext::kMaxEmitted) {
+        for (QQuickItem* child : item->childItems()) {
+            if (!child || !child->isVisible())
+                continue;
+            bool childMatch = false;
+            const QJsonObject node =
+                buildQuickItemNode(window, child, context, depth + 1, serial,
+                                   &childMatch);
+            if (childMatch) {
+                childAny = true;
+                children.append(node);
+                ++childCount;
+            }
+        }
+    }
+    *anyMatch = context.hasWhere ? (selfMatch || childAny) : true;
+    if (context.hasWhere && !*anyMatch)
+        return {};
+    if (context.emitted >= QueryContext::kMaxEmitted) {
+        context.tooLarge = true;
+        return {};
+    }
+    ++context.emitted;
+
+    const QString id = registerQuickQml(window, item, (*serial)++, rect, props);
+    QJsonObject node;
+    node.insert(QStringLiteral("id"), id);
+    node.insert(QStringLiteral("class"),
+                QString::fromLatin1(item->metaObject()->className()));
+    node.insert(QStringLiteral("qml_type"), qmlTypeName(item));
+    node.insert(QStringLiteral("qml_id"), qmlIdName(item));
+    node.insert(QStringLiteral("objectName"), item->objectName());
+    node.insert(QStringLiteral("qml"), true);
+    node.insert(QStringLiteral("window"), false);
+    node.insert(QStringLiteral("child_count"), childCount);
+    node.insert(QStringLiteral("children"), children);
+    node.insert(QStringLiteral("props"), props);
+    node.insert(QStringLiteral("rect"), QJsonObject{
+        {QStringLiteral("x"), rect.x()}, {QStringLiteral("y"), rect.y()},
+        {QStringLiteral("w"), rect.width()}, {QStringLiteral("h"), rect.height()}});
+    if (context.screenCoords) {
+        const QPoint screen = window->mapToGlobal(rect.topLeft());
+        node.insert(QStringLiteral("screen_rect"), QJsonObject{
+            {QStringLiteral("x"), screen.x()}, {QStringLiteral("y"), screen.y()},
+            {QStringLiteral("w"), rect.width()}, {QStringLiteral("h"), rect.height()}});
+    }
+    if (context.hasWhere)
+        node.insert(QStringLiteral("matched"), selfMatch);
+    return node;
+}
+
+QJsonObject Server::buildQuickWindowNode(QQuickWindow* window,
+                                         QueryContext& context, bool isRoot,
+                                         bool* anyMatch)
+{
+    *anyMatch = false;
+    if (!window)
+        return {};
+    const QString windowClass = QStringLiteral("QQuickWindow");
+    bool selfMatch = false;
+    if (context.hasWhere) {
+        if (context.where.contains(QStringLiteral("class")))
+            selfMatch = matchText(context.where.value(QStringLiteral("class")),
+                                  windowClass);
+        else if (context.where.contains(QStringLiteral("object_name")) ||
+                 context.where.contains(QStringLiteral("objectName")))
+            selfMatch = matchText(
+                context.where.contains(QStringLiteral("object_name"))
+                    ? context.where.value(QStringLiteral("object_name"))
+                    : context.where.value(QStringLiteral("objectName")),
+                window->objectName());
+        else if (context.where.contains(QStringLiteral("text")))
+            selfMatch = matchText(context.where.value(QStringLiteral("text")),
+                                  window->title());
+        else
+            selfMatch = false;
+    }
+    ++context.total;
+    if (selfMatch)
+        ++context.matched;
+
+    QJsonArray children;
+    bool childAny = false;
+    int childCount = 0;
+    if (window->contentItem() &&
+        context.emitted < QueryContext::kMaxEmitted) {
+        for (QQuickItem* child : window->contentItem()->childItems()) {
+            if (!child || !child->isVisible())
+                continue;
+            bool childMatch = false;
+            int serial = 0;
+            const QJsonObject node =
+                buildQuickItemNode(window, child, context, 1, &serial,
+                                   &childMatch);
+            if (childMatch) {
+                childAny = true;
+                children.append(node);
+                ++childCount;
+            }
+        }
+    }
+    *anyMatch = context.hasWhere ? (selfMatch || childAny) : true;
+    if (context.hasWhere && !*anyMatch)
+        return {};
+    if (context.emitted >= QueryContext::kMaxEmitted) {
+        context.tooLarge = true;
+        return {};
+    }
+    ++context.emitted;
+
+    QJsonObject node;
+    node.insert(QStringLiteral("id"), idForWindow(window));
+    node.insert(QStringLiteral("class"), windowClass);
+    node.insert(QStringLiteral("qml_type"), QJsonValue::Null);
+    node.insert(QStringLiteral("qml_id"), QString());
+    node.insert(QStringLiteral("objectName"), window->objectName());
+    node.insert(QStringLiteral("qml"), true);
+    node.insert(QStringLiteral("window"), true);
+    node.insert(QStringLiteral("minimized"),
+                window->windowStates().testFlag(Qt::WindowMinimized));
+    node.insert(QStringLiteral("child_count"), childCount);
+    node.insert(QStringLiteral("children"), children);
+    node.insert(QStringLiteral("rect"), QJsonObject{
+        {QStringLiteral("x"), 0}, {QStringLiteral("y"), 0},
+        {QStringLiteral("w"), window->width()}, {QStringLiteral("h"), window->height()}});
+    const QPoint screen = window->position();
+    node.insert(QStringLiteral("screen_pos"), QJsonObject{
+        {QStringLiteral("x"), screen.x()}, {QStringLiteral("y"), screen.y()}});
+    if (context.screenCoords)
+        node.insert(QStringLiteral("screen_rect"), QJsonObject{
+            {QStringLiteral("x"), screen.x()}, {QStringLiteral("y"), screen.y()},
+            {QStringLiteral("w"), window->width()}, {QStringLiteral("h"), window->height()}});
     if (context.hasWhere)
         node.insert(QStringLiteral("matched"), selfMatch);
     return node;
@@ -3662,6 +4302,35 @@ void Server::addProps(QJsonObject* node, QWidget* widget,
         props.insert(name, QJsonValue::fromVariant(value));
     }
     node->insert(QStringLiteral("props"), props);
+}
+
+QString Server::idForWindow(QWindow* window)
+{
+    if (!window)
+        return {};
+    auto it = windowIds_.find(window);
+    if (it != windowIds_.end()) {
+        if (!idToWindow_.value(it.value()).isNull())
+            return it.value();
+        staleIds_.insert(it.value());
+        idToWindow_.remove(it.value());
+        windowIds_.erase(it);
+    }
+    const QString id = tag_ + QStringLiteral(".qw") +
+                       QString::number(nextId_++);
+    windowIds_.insert(window, id);
+    idToWindow_.insert(id, QPointer<QWindow>(window));
+    connect(window, &QObject::destroyed, this, [this, id, window]() {
+        windowIds_.remove(window);
+        idToWindow_.remove(id);
+        staleIds_.insert(id);
+    });
+    return id;
+}
+
+QWindow* Server::windowForId(const QString& id) const
+{
+    return idToWindow_.value(id).data();
 }
 
 QString Server::idFor(QWidget* widget)
