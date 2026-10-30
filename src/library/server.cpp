@@ -3052,11 +3052,13 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
     }
     const QString action = params.value(QStringLiteral("action")).toString();
     if (action != QStringLiteral("click") &&
-        action != QStringLiteral("dblclick")) {
+        action != QStringLiteral("dblclick") &&
+        action != QStringLiteral("key") &&
+        action != QStringLiteral("type")) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_IMPLEMENTED"));
         result.insert(QStringLiteral("message"),
-                      QStringLiteral("only click/dblclick work on virtual items"));
+                      QStringLiteral("only click/dblclick/key/type work on virtual items"));
         return result;
     }
     QRect rect;
@@ -3068,6 +3070,85 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         return result;
     }
 
+    if (action == QStringLiteral("key") &&
+        !ref.windowOwner.isNull()) {
+        auto* window = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+        if (!window) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
+            return result;
+        }
+        QStringList names;
+        const QJsonValue keysValue = params.value(QStringLiteral("keys"));
+        if (keysValue.isArray()) {
+            for (const QJsonValue& value : keysValue.toArray())
+                names.append(value.toString());
+        } else if (!params.value(QStringLiteral("key")).toString().isEmpty()) {
+            names.append(params.value(QStringLiteral("key")).toString());
+        } else {
+            names.append(keysValue.toString());
+        }
+        for (const QString& name : names) {
+            if (name.isEmpty())
+                continue;
+            const QKeySequence sequence(name);
+            if (sequence.isEmpty())
+                continue;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            const int key = sequence[0].key();
+#else
+            const int key = sequence[0];
+#endif
+            QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &press);
+            QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &release);
+            QCoreApplication::processEvents();
+        }
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
+    if (action == QStringLiteral("type") &&
+        ref.kind == QStringLiteral("qml_item") &&
+        !ref.windowOwner.isNull()) {
+        auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        if (!item || item->metaObject()->indexOfProperty("text") < 0) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_NOT_EDITABLE"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML item has no text property"));
+            return result;
+        }
+        QMetaObject::invokeMethod(item, "forceActiveFocus",
+                                  Qt::DirectConnection);
+        QString text = item->property("text").toString();
+        if (params.value(QStringLiteral("clear")).toBool(false))
+            text.clear();
+        text += params.value(QStringLiteral("text")).toString();
+        item->setProperty("text", text);
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("text_after"), text);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
     if (ref.kind == QStringLiteral("qml_item") &&
         !ref.windowOwner.isNull()) {
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
@@ -3080,13 +3161,29 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
             return result;
         }
         window->requestActivate();
+        QQuickItem* clickItem = item;
+        for (QQuickItem* candidate = item; candidate;
+             candidate = candidate->parentItem()) {
+            if ((candidate->acceptedMouseButtons() & Qt::LeftButton) ||
+                candidate->inherits("QQuickAbstractButton") ||
+                candidate->inherits("QQuickMouseArea")) {
+                clickItem = candidate;
+                break;
+            }
+        }
+        QQuickItem* clickTarget = clickItem;
         const QPointF point =
-            item->mapToScene(item->boundingRect().center());
+            clickTarget->mapToScene(clickTarget->boundingRect().center());
         const int clicks = action == QStringLiteral("dblclick") ? 2 : 1;
         for (int i = 0; i < clicks; ++i) {
+            QMouseEvent move(QEvent::MouseMove, point, Qt::NoButton,
+                             Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &move);
+            QCoreApplication::processEvents();
             QMouseEvent press(QEvent::MouseButtonPress, point, Qt::LeftButton,
                               Qt::LeftButton, Qt::NoModifier);
             QCoreApplication::sendEvent(window, &press);
+            QCoreApplication::processEvents();
             QMouseEvent release(QEvent::MouseButtonRelease, point,
                                 Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
             QCoreApplication::sendEvent(window, &release);
