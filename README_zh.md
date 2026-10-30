@@ -82,10 +82,11 @@ Claude/MCP 进程，再重新执行 `uv run`。
 `QT_COMMANDER_INJECT_DLL` 覆盖。
 
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
-且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个。
-`qt_query(scope=...)` 可以限定到单个窗口/控件子树；`where` 同时接受
-`object_name` 和 `objectName` 别名；字符串支持通配符或
-`contains/startsWith/regex/equals` 匹配器。
+且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个；QMenu/QToolTip
+等 popup 不计入歧义判断。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
+`where` 同时接受 `object_name` 和 `objectName` 别名；字符串支持通配符或
+`contains/startsWith/regex/equals` 匹配器。QAction/菜单项是虚拟项，用
+`qt_items(owner=menu, where=...)` 查询，不在 QWidget query 树中。
 
 ## 测试
 

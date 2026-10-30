@@ -670,7 +670,7 @@ inject：
 
 ### MCP 16 工具
 
-- `qt_screenshot` 在 MCP 层限制单张 PNG 约 6 MiB；超限会自动降低 `max_width` 重截并返回 `auto_downscaled/requested_max_width`，避免大图导致 MCP 连接断开。截图使用 widget grab（而不是原生窗口 grabWindow），避免 Windows 标题栏造成 annotation 偏移。
+- `qt_screenshot` 在 MCP 层限制单张 PNG 约 6 MiB；超限会自动降低 `max_width` 重截并返回 `auto_downscaled/requested_max_width`，避免大图导致 MCP 连接断开。截图使用 widget grab（而不是原生窗口 grabWindow），避免 Windows 标题栏造成 annotation 偏移。`width` 是逻辑宽度，`pixel_width` 是 dpr 放大后的实际图像宽度；无 target 时只有可见普通 top-level 窗口参与歧义判断，QMenu/QToolTip 等 popup 不计入。
 - `qt_commander/server.py` 注册 16 个工具：`status/environments/build/attach/detach/windows/query/items/act/batch/wait/screenshot/get/set/call/source`。
 - `scripts/mcp_linked_smoke.py` 通过 stdio 实测：`qt_attach` → `qt_windows`/`qt_query` → `qt_act` → `qt_screenshot` → `qt_detach`；另测 `qt_get`/`qt_set`/`qt_call` 和 `qt_items`。
 - 当前可用：linked/injection attach/detach、windows（top-level id/title/active/modal/screen_pos）、query、items、act（click/dblclick/type/focus/key/scroll/hover/drag）、batch/wait、screenshot、get/set/call、source、build、environments。
