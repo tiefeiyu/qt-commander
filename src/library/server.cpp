@@ -1006,8 +1006,12 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         boxPen.setWidth(qMax(1, qRound(2 * dpr)));
         painter.setPen(boxPen);
 
+        struct BadgeTarget {
+            QRect rect;
+            int number = 0;
+        };
         int number = 0;
-        QList<QRect> badgeRects;
+        QList<BadgeTarget> badgeTargets;
         for (const Candidate& candidate : candidates) {
             ++number;
             painter.setPen(boxPen);
@@ -1021,45 +1025,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             if (drawRect.isEmpty())
                 continue;
             painter.drawRect(drawRect);
-
-            const int badgeW = qMin(drawRect.width(), qRound(24 * dpr));
-            const int badgeH = qMin(drawRect.height(), qRound(15 * dpr));
-            const QPoint gap(qRound(2 * dpr), qRound(2 * dpr));
-            const QPoint positions[] = {
-                drawRect.topLeft() + gap,
-                QPoint(drawRect.right() - badgeW - gap.x(),
-                       drawRect.top() + gap.y()),
-                QPoint(drawRect.left() + gap.x(),
-                       drawRect.bottom() - badgeH - gap.y()),
-                QPoint(drawRect.right() - badgeW - gap.x(),
-                       drawRect.bottom() - badgeH - gap.y()),
-            };
-            QRect badge;
-            for (const QPoint& position : positions) {
-                QRect candidateBadge(position, QSize(badgeW, badgeH));
-                candidateBadge = candidateBadge.intersected(drawRect);
-                if (candidateBadge.isEmpty())
-                    continue;
-                bool overlaps = false;
-                for (const QRect& used : badgeRects) {
-                    if (candidateBadge.intersects(used)) {
-                        overlaps = true;
-                        break;
-                    }
-                }
-                if (!overlaps) {
-                    badge = candidateBadge;
-                    break;
-                }
-            }
-            if (badge.isEmpty())
-                badge = QRect(drawRect.topLeft(), QSize(badgeW, badgeH))
-                            .intersected(drawRect);
-            badgeRects.append(badge);
-            painter.fillRect(badge, QColor(255, 255, 255, 230));
-            painter.setPen(QPen(QColor(220, 40, 40), 1));
-            painter.drawRect(badge);
-            painter.drawText(badge, Qt::AlignCenter, QString::number(number));
+            badgeTargets.append({drawRect, number});
 
             QJsonObject rect;
             rect.insert(QStringLiteral("x"), candidate.rect.x());
@@ -1097,6 +1063,54 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("rect"), rect);
             entry.insert(QStringLiteral("image_rect"), imageRect);
             legend.append(entry);
+        }
+
+        // Draw all boxes first, then all badges. Otherwise a later box can
+        // paint over an earlier badge in nested/overlapping layouts.
+        QList<QRect> badgeRects;
+        for (const BadgeTarget& target : badgeTargets) {
+            const QRect& drawRect = target.rect;
+            const int badgeW = qMin(drawRect.width(), qRound(24 * dpr));
+            const int badgeH = qMin(drawRect.height(), qRound(15 * dpr));
+            const QPoint gap(qRound(2 * dpr), qRound(2 * dpr));
+            const QPoint positions[] = {
+                drawRect.topLeft() + gap,
+                QPoint(drawRect.right() - badgeW - gap.x(),
+                       drawRect.top() + gap.y()),
+                QPoint(drawRect.left() + gap.x(),
+                       drawRect.bottom() - badgeH - gap.y()),
+                QPoint(drawRect.right() - badgeW - gap.x(),
+                       drawRect.bottom() - badgeH - gap.y()),
+            };
+            QRect badge;
+            for (const QPoint& position : positions) {
+                QRect candidateBadge(position, QSize(badgeW, badgeH));
+                candidateBadge = candidateBadge.intersected(drawRect);
+                if (candidateBadge.isEmpty())
+                    continue;
+                bool overlaps = false;
+                for (const QRect& used : badgeRects) {
+                    if (candidateBadge.intersects(used)) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+                if (!overlaps) {
+                    badge = candidateBadge;
+                    break;
+                }
+            }
+            if (badge.isEmpty())
+                badge = QRect(drawRect.topLeft(), QSize(badgeW, badgeH))
+                            .intersected(drawRect);
+            if (badge.isEmpty())
+                continue;
+            badgeRects.append(badge);
+            painter.fillRect(badge, QColor(255, 255, 255, 230));
+            painter.setPen(QPen(QColor(220, 40, 40), 1));
+            painter.drawRect(badge);
+            painter.drawText(badge, Qt::AlignCenter,
+                             QString::number(target.number));
         }
     }
 
