@@ -8,9 +8,9 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 
 ## 当前状态
 
-- 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW）；
-  Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的 linked、72 个 Python 测试和
-  MCP stdio E2E 也已验证。Qt 6 MSVC 未单独构建。
+- 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
+  linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
+  linked、72 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`

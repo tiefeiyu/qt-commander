@@ -692,7 +692,7 @@ inject：
 - 虚拟 item 可 `qt_screenshot(target=virtual_id)`：按注册 rect 裁剪 owner；返回 `virtual:true/target`。
 - `qt_status` 的 `descriptor_info` 列出 `pid_alive/session_id/started_at/build_id`。
 - Session 记录 `disconnected_at`，`qt_status`/`SessionInfo` 返回 `grace_remaining_ms`；断开后有 60s 重连窗口。
-- Native injection 已可用：C++ `qtc-inject`（Windows `CreateRemoteThread(LoadLibraryW)` / Linux `ptrace`+`dlopen`）加载 `qt_commander_inject.dll/.so`；库等待目标 `QCoreApplication` 后在 GUI 线程调用同一 `start()`。Python `inject.py` 只调用 native 可执行，不承载注入机制。MinGW Qt5/Qt6、MSVC Qt5 与 Linux Qt5 注入 app 的 attach/query/act E2E 均通过，脚本 `scripts/injection_smoke.py`。
+- Native injection 已可用：C++ `qtc-inject`（Windows `CreateRemoteThread(LoadLibraryW)` / Linux `ptrace`+`dlopen`）加载 `qt_commander_inject.dll/.so`；库等待目标 `QCoreApplication` 后在 GUI 线程调用同一 `start()`。Python `inject.py` 只调用 native 可执行，不承载注入机制。MinGW Qt5/Qt6、MSVC Qt5/Qt6 与 Linux Qt5 注入 app 的 attach/query/act E2E 均通过，脚本 `scripts/injection_smoke.py`。
 
 ### 测试
 

@@ -9,10 +9,9 @@ are no snapshot files and no stale index of the UI.
 
 ## Status
 
-- Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 MinGW verified for linked
-  and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB) verified for linked,
-  the 72-test Python suite, and MCP stdio E2E. Qt 6 MSVC was not separately
-  built here.
+- Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
+  MSVC for linked and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB)
+  verified for linked, the 72-test Python suite, and MCP stdio E2E.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
 - Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
