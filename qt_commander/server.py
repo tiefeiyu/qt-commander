@@ -227,6 +227,21 @@ async def qt_status(session_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool
+async def qt_windows(
+    session_id: str,
+    include_hidden: bool = False,
+) -> dict[str, Any]:
+    """List top-level windows with id/title/class/screen_pos/active/modal."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.windows(session, include_hidden=include_hidden)
+    except Exception as exc:
+        return _map_error(exc)
+
+
+@mcp.tool
 async def qt_environments() -> dict[str, Any]:
     """Detect Qt versions/kits and C++ toolchains available on this machine."""
     def detect() -> dict[str, Any]:
@@ -722,7 +737,7 @@ async def qt_act(
     session_id: str,
     target: str | dict[str, Any],
     action: str,
-    nth: int = 0,
+    nth: int | None = None,
     position: dict[str, float] | None = None,
     button: str = "left",
     modifiers: list[str] | None = None,
@@ -812,7 +827,7 @@ async def qt_wait(
 async def qt_screenshot(
     session_id: str,
     target: str | dict[str, Any] | None = None,
-    nth: int = 0,
+    nth: int | None = None,
     max_width: int = 1024,
     annotate: str = "none",
     where: dict[str, Any] | None = None,
@@ -820,6 +835,10 @@ async def qt_screenshot(
     format: str = "png",
 ) -> list[Any]:
     """Capture a PNG plus metadata.
+
+    With no target, exactly one visible top-level window is captured; if
+    several are visible the call fails with ``E_AMBIGUOUS`` and the caller
+    must choose a window from ``qt_windows``.
 
     With ``annotate`` enabled, ``legend`` lists the numbered regions
     (``n``, ``id``, ``rect``, ``image_rect``). The number is only a
@@ -853,13 +872,14 @@ async def qt_get(
     session_id: str,
     target: str | dict[str, Any],
     props: Any = None,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     """Read one node/virtual node ."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.get(session, target, props=props)
+        return await ops.get(session, target, props=props, nth=nth)
     except Exception as exc:
         return _map_error(exc)
 
@@ -870,13 +890,14 @@ async def qt_set(
     target: str | dict[str, Any],
     name: str,
     value: Any,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     """Set a property (destructive)."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.set_property(session, target, name, value)
+        return await ops.set_property(session, target, name, value, nth=nth)
     except Exception as exc:
         return _map_error(exc)
 
@@ -887,13 +908,14 @@ async def qt_call(
     target: str | dict[str, Any],
     method: str,
     args: list[Any] | None = None,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     """Invoke a method (destructive)."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.call_method(session, target, method, args=args)
+        return await ops.call_method(session, target, method, args=args, nth=nth)
     except Exception as exc:
         return _map_error(exc)
 
@@ -905,6 +927,7 @@ async def qt_source(
     handler: str | None = None,
     snippet_lines: int = 3,
     max_lines: int = 20,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     """Return source location (engine support pending)."""
     session = _session(session_id)
@@ -917,6 +940,7 @@ async def qt_source(
             handler=handler,
             snippet_lines=snippet_lines,
             max_lines=max_lines,
+            nth=nth,
         )
     except Exception as exc:
         return _map_error(exc)

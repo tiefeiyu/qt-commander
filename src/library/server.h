@@ -68,6 +68,7 @@ private:
                           const QJsonObject& result,
                           const QByteArray& binary);
 
+    QJsonObject windows(const QJsonObject& params);
     QJsonObject query(const QJsonObject& params);
     QJsonObject act(const QJsonObject& params);
     QJsonObject screenshot(const QJsonObject& params, QByteArray* binary);
@@ -90,7 +91,7 @@ private:
                      const QString& cls, const QJsonObject& where) const;
     QJsonObject nodeFor(QWidget* widget, const QJsonValue& props);
     QWidget* resolveTarget(const QJsonValue& target, QString* error,
-                           int nth = 0);
+                           int nth = -1);
     QList<QWidget*> collectMatches(const QJsonObject& where) const;
     QString resolveErrorCode() const;
     QWidget* findByWhere(const QJsonObject& where) const;

@@ -23,9 +23,9 @@ are no snapshot files and no stale index of the UI.
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
-- 15 MCP tools are registered. Working today:
-  `status`, `environments`, `build`, `attach`, `detach`, `query`, `items`,
-  `act`, `batch`, `wait`, `screenshot`, `get`, `set`, `call`, `source`.
+- 16 MCP tools are registered. Working today:
+  `status`, `environments`, `build`, `attach`, `detach`, `windows`, `query`,
+  `items`, `act`, `batch`, `wait`, `screenshot`, `get`, `set`, `call`, `source`.
   `source` uses `.ui`/`.qml`-by-objectName heuristics and otherwise returns
   identity with `E_NO_DEBUGINFO`.
 - `items` covers `QTabWidget`/`QTabBar`, `QMenuBar`/`QMenu`, `QHeaderView`,
@@ -75,6 +75,10 @@ set `QT_COMMANDER_RENDEZVOUS` before starting the server. For an already-running
 Windows Qt app, use `qt_attach(pid=<pid>, mode="injection")`; the DLL path can
 be overridden with `QT_COMMANDER_INJECT_DLL`.
 
+For multiple windows, call `qt_windows` first and pass that window's `id` to
+`qt_screenshot`. Without a target, a screenshot is refused when more than one
+visible top-level window exists; it never silently picks one.
+
 ## Test
 
 ```bash
@@ -89,6 +93,7 @@ End-to-end / benchmark scripts:
 # linked smoke (start tests/test-apps/linked first)
 uv run python scripts/linked_smoke.py
 uv run python scripts/mcp_linked_smoke.py
+uv run python scripts/window_regression.py
 
 # native injection smoke (pass the target pid)
 uv run python scripts/injection_smoke.py <pid> --mode injection

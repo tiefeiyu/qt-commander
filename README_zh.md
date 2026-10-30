@@ -20,9 +20,9 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 15 个 MCP 工具。当前可用：
-  `status`、`environments`、`build`、`attach`、`detach`、`query`、`items`、
-  `act`、`batch`、`wait`、`screenshot`、`get`、`set`、`call`、`source`。
+- 已注册 16 个 MCP 工具。当前可用：
+  `status`、`environments`、`build`、`attach`、`detach`、`windows`、`query`、
+  `items`、`act`、`batch`、`wait`、`screenshot`、`get`、`set`、`call`、`source`。
   `source` 先按 objectName 搜索 `.ui`/`.qml`，未命中才返回身份信息和
   `E_NO_DEBUGINFO`。
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
@@ -71,6 +71,9 @@ uv run --project . qt-commander-mcp
 `qt_attach(pid=<pid>, mode="injection")`；DLL 路径可用
 `QT_COMMANDER_INJECT_DLL` 覆盖。
 
+多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
+且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个。
+
 ## 测试
 
 ```bash
@@ -85,6 +88,7 @@ uv run pytest tests/unit_server -q
 # linked smoke（先启动 tests/test-apps/linked）
 uv run python scripts/linked_smoke.py
 uv run python scripts/mcp_linked_smoke.py
+uv run python scripts/window_regression.py
 
 # 原生 injection smoke（传入目标 pid）
 uv run python scripts/injection_smoke.py <pid> --mode injection

@@ -71,8 +71,11 @@ async def run_mode(exe: Path, mode: str, target: str) -> dict:
                 session.call("query", {"where": {"object_name": target}})
             )
             count = int(found.get("count", 0))
+            shot_params = {"max_width": 1024}
+            if mode == "multi-window":
+                shot_params["target"] = {"object_name": "btnMain"}
             shot_latency, frame = await measure(
-                session.call_frame("screenshot", {"max_width": 1024})
+                session.call_frame("screenshot", shot_params)
             )
             png_path = ROOT / ".test-workspace" / f"matrix-{mode}.png"
             png_path.write_bytes(frame.binary)

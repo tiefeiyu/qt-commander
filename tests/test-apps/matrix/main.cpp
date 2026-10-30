@@ -1,3 +1,4 @@
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
@@ -5,12 +6,14 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
+#include <QMenu>
 #include <QPainter>
 #include <QPushButton>
 #include <QQuickWidget>
 #include <QSlider>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -122,6 +125,55 @@ int main(int argc, char** argv)
         dialogLayout->addWidget(dialogButton);
         dialog->resize(260, 120);
         dialog->show();
+
+        auto* independent = new QDialog(nullptr);
+        independent->setObjectName(QStringLiteral("independent"));
+        independent->setWindowTitle(QStringLiteral("Independent"));
+        auto* independentLayout = new QVBoxLayout(independent);
+        auto* independentButton =
+            new QPushButton(QStringLiteral("Independent"), independent);
+        independentButton->setObjectName(QStringLiteral("btnIndependent"));
+        independentLayout->addWidget(independentButton);
+        independent->resize(240, 100);
+        independent->move(700, 200);
+        independent->show();
+    } else if (mode == QStringLiteral("modal")) {
+        auto* open = new QPushButton(QStringLiteral("Open modal"), central);
+        open->setObjectName(QStringLiteral("btnOpenModal"));
+        layout->addWidget(open);
+        auto* dialog = new QDialog(&window);
+        dialog->setObjectName(QStringLiteral("modalDialog"));
+        dialog->setWindowTitle(QStringLiteral("Modal"));
+        dialog->setModal(true);
+        auto* dialogLayout = new QVBoxLayout(dialog);
+        auto* close = new QPushButton(QStringLiteral("Close"), dialog);
+        close->setObjectName(QStringLiteral("btnCloseModal"));
+        dialogLayout->addWidget(close);
+        QObject::connect(close, &QPushButton::clicked, dialog, &QDialog::accept);
+        QObject::connect(open, &QPushButton::clicked, dialog, &QDialog::exec);
+        dialog->resize(220, 100);
+        QTimer::singleShot(0, dialog, &QDialog::exec);
+    } else if (mode == QStringLiteral("popup")) {
+        auto* button = new QPushButton(QStringLiteral("Popup"), central);
+        button->setObjectName(QStringLiteral("btnPopup"));
+        layout->addWidget(button);
+        auto* status = new QLabel(QStringLiteral("idle"), central);
+        status->setObjectName(QStringLiteral("popupStatus"));
+        layout->addWidget(status);
+        auto* menu = new QMenu(&window);
+        menu->setObjectName(QStringLiteral("popupMenu"));
+        auto* action = menu->addAction(QStringLiteral("Popup action"));
+        action->setObjectName(QStringLiteral("menuAction"));
+        QObject::connect(action, &QAction::triggered, status,
+                         [status]() { status->setText(QStringLiteral("triggered")); });
+        QObject::connect(button, &QPushButton::clicked, menu,
+                         [button, menu]() {
+                             menu->popup(button->mapToGlobal(
+                                 QPoint(0, button->height())));
+                         });
+        QTimer::singleShot(0, menu, [button, menu]() {
+            menu->popup(button->mapToGlobal(QPoint(0, button->height())));
+        });
     } else if (mode == QStringLiteral("occlusion")) {
         auto* top = new QPushButton(QStringLiteral("Top"), central);
         top->setObjectName(QStringLiteral("btnTop"));

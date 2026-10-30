@@ -21,7 +21,7 @@
 
 ```
 Agent
-  │ stdio, 15 tools
+  │ stdio, 16 tools
   ▼
 Python Orchestrator
   ├─ RPC client：多请求在途、绝对死线、幂等重试、错误归一
@@ -589,7 +589,7 @@ inject：
 
 **矩阵 smoke（`tests/test-apps/matrix`，2026-10-29）**
 
-- 覆盖 `basic`、`complex`、`custom-painted`、`multi-window`、`occlusion`、`qml`、`mixed`。
+- 覆盖 `basic`、`complex`、`custom-painted`、`multi-window`（含独立窗口/父 dialog）、`modal`、`popup`、`occlusion`、`qml`、`mixed`。
 - 每个模式启动真实进程，按 objectName 查询，再截 1024 图。
 - 实测 query 1.4–2.7 ms，screenshot 49–77 ms，全部模式 count=1，PNG < 1 MB。
 - 结果：`docs/benchmarks/matrix.json`。
@@ -666,11 +666,12 @@ inject：
 - 截图 480×320 PNG，二进制帧回传；`read_image` 人工确认状态栏和输入框内容正确。
 - 查询按节点 schema 返回 `id/class/objectName/qml_type/qml_id/rect/child_count/children/props/matched`，根节点带 `screen_pos`。
 
-### MCP 15 工具
+### MCP 16 工具
 
-- `qt_commander/server.py` 注册 15 个工具：`status/environments/build/attach/detach/query/items/act/batch/wait/screenshot/get/set/call/source`。
-- `scripts/mcp_linked_smoke.py` 通过 stdio 实测：`qt_attach` → `qt_query` → `qt_act` → `qt_screenshot` → `qt_detach`；另测 `qt_get`/`qt_set`/`qt_call` 和 `qt_items`。
-- 当前可用：linked/injection attach/detach、query、items、act（click/dblclick/type/focus/key/scroll/hover/drag）、batch/wait、screenshot、get/set/call、source、build、environments。
+- `qt_commander/server.py` 注册 16 个工具：`status/environments/build/attach/detach/windows/query/items/act/batch/wait/screenshot/get/set/call/source`。
+- `scripts/mcp_linked_smoke.py` 通过 stdio 实测：`qt_attach` → `qt_windows`/`qt_query` → `qt_act` → `qt_screenshot` → `qt_detach`；另测 `qt_get`/`qt_set`/`qt_call` 和 `qt_items`。
+- 当前可用：linked/injection attach/detach、windows（top-level id/title/active/modal/screen_pos）、query、items、act（click/dblclick/type/focus/key/scroll/hover/drag）、batch/wait、screenshot、get/set/call、source、build、environments。
+- `qt_windows` 返回每个 top-level 窗口的 `id/class/objectName/title/rect/screen_pos/screen/visible/active/modal/popup/tooltip/child_count`；父窗口下的 dialog 也会在列表中出现。没有 target 的 `qt_screenshot` 在多个可见 top-level 窗口时返回 `E_AMBIGUOUS`，不会静默选 activeWindow。
 - `qt_environments` 扫描显式根/常见 Qt 安装路径/PATH，返回版本、kit、compiler 和可见 C++ 工具链。
 - `qt_source` 先按 objectName 搜索 `.ui`；QQuickWidget 再取 `rootObject()->objectName()` 搜索 `.qml`。搜索根为 `QT_COMMANDER_SOURCE_DIR`、可执行目录、当前目录（各最多 500 个文件）。命中返回 `origin:"ui"|"qml"` + file/line/confidence medium；未命中返回 identity + `E_NO_DEBUGINFO`。实测 `.ui` btnA 与 QML quick 均命中。
 - `qt_items` 已覆盖 QTabWidget/QTabBar、QMenuBar/QMenu、QHeaderView、QTableView、QTreeView、QListView、QComboBox、QScrollBar、QSlider；combo 关闭时返回合成 rect，`qt_act` 直接 `setCurrentIndex`；虚拟节点带 `virtual/kind/class/parent/rect/props/source`。

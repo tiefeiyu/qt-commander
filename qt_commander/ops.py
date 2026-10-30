@@ -136,6 +136,12 @@ async def _poll_expect(
         await asyncio.sleep(0.05)
 
 
+async def windows(session: Session, *, include_hidden: bool = False) -> dict[str, Any]:
+    return await session.call(
+        "windows", {"include_hidden": include_hidden}
+    )
+
+
 async def query(
     session: Session,
     *,
@@ -201,7 +207,7 @@ async def act(
     target: str | Mapping[str, Any],
     action: str,
     *,
-    nth: int = 0,
+    nth: int | None = None,
     position: Mapping[str, float] | None = None,
     button: str = "left",
     modifiers: list[str] | None = None,
@@ -223,7 +229,7 @@ async def act(
     _choice("action", action, ACTIONS)
     _choice("input", input, INPUT_MODES)
     expect_conditions = _expect_conditions(expect) if expect is not None else None
-    if nth < 0:
+    if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
     if timeout_ms < 0:
         raise ValueError("timeout_ms must be >= 0")
@@ -291,8 +297,13 @@ async def get(
     target: str | Mapping[str, Any],
     *,
     props: Any = None,
+    nth: int | None = None,
 ) -> dict[str, Any]:
-    return await session.call("get", _clean({"target": target, "props": props}))
+    if nth is not None and nth < 0:
+        raise ValueError("nth must be >= 0")
+    return await session.call(
+        "get", _clean({"target": target, "props": props, "nth": nth})
+    )
 
 
 async def set_property(
@@ -300,9 +311,12 @@ async def set_property(
     target: str | Mapping[str, Any],
     name: str,
     value: Any,
+    nth: int | None = None,
 ) -> dict[str, Any]:
+    if nth is not None and nth < 0:
+        raise ValueError("nth must be >= 0")
     return await session.call(
-        "set", {"target": target, "name": name, "value": value}
+        "set", _clean({"target": target, "name": name, "value": value, "nth": nth})
     )
 
 
@@ -311,10 +325,13 @@ async def call_method(
     target: str | Mapping[str, Any],
     method: str,
     args: list[Any] | None = None,
+    nth: int | None = None,
 ) -> dict[str, Any]:
+    if nth is not None and nth < 0:
+        raise ValueError("nth must be >= 0")
     return await session.call(
         "call",
-        _clean({"target": target, "method": method, "args": args}),
+        _clean({"target": target, "method": method, "args": args, "nth": nth}),
     )
 
 
@@ -322,7 +339,7 @@ async def screenshot(
     session: Session,
     *,
     target: str | Mapping[str, Any] | None = None,
-    nth: int = 0,
+    nth: int | None = None,
     max_width: int = 1024,
     annotate: str = "none",
     where: Mapping[str, Any] | None = None,
@@ -331,7 +348,7 @@ async def screenshot(
 ) -> FrameResponse:
     _choice("annotate", annotate, ANNOTATE)
     _choice("format", format, IMAGE_FORMATS)
-    if nth < 0:
+    if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
     if max_width < 0:
         raise ValueError("max_width must be >= 0 (0 = native)")
@@ -360,14 +377,18 @@ async def source(
     handler: str | None = None,
     snippet_lines: int = 3,
     max_lines: int = 20,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     if snippet_lines < 0 or max_lines < 1:
         raise ValueError("snippet_lines must be >= 0 and max_lines >= 1")
+    if nth is not None and nth < 0:
+        raise ValueError("nth must be >= 0")
     return await session.call(
         "source",
         _clean(
             {
                 "target": target,
+                "nth": nth,
                 "handler": handler,
                 "snippet_lines": snippet_lines,
                 "max_lines": max_lines,

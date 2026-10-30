@@ -61,6 +61,12 @@ async def main() -> int:
             assert info and info.get("ok") is True
             sid = info["session_id"]
 
+            windows = first_json(await session.call_tool("qt_windows", {
+                "session_id": sid,
+            }))
+            print("windows:", windows["count"])
+            assert windows["count"] >= 1
+
             found = first_json(await session.call_tool("qt_query", {
                 "session_id": sid,
                 "where": {"object_name": "btnA"},
@@ -152,6 +158,19 @@ async def main() -> int:
             }))
             print("ambiguous get:", ambiguous)
             assert ambiguous["error"]["code"] == "E_AMBIGUOUS"
+
+            first_twin = first_json(await session.call_tool("qt_get", {
+                "session_id": sid,
+                "target": {"object_name": "twinBtn"},
+                "nth": 0,
+            }))
+            assert first_twin.get("id")
+            second_twin = first_json(await session.call_tool("qt_get", {
+                "session_id": sid,
+                "target": {"object_name": "twinBtn"},
+                "nth": 1,
+            }))
+            assert second_twin.get("id") != first_twin.get("id")
 
             nth = first_json(await session.call_tool("qt_act", {
                 "session_id": sid,

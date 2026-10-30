@@ -73,7 +73,8 @@ QJsonObject helloResult(const QString& tag)
                   QJsonArray{QStringLiteral("query"), QStringLiteral("act"),
                              QStringLiteral("screenshot"),
                              QStringLiteral("get"), QStringLiteral("set"),
-                             QStringLiteral("call"), QStringLiteral("items"), QStringLiteral("source")});
+                             QStringLiteral("call"), QStringLiteral("items"),
+                             QStringLiteral("source"), QStringLiteral("windows")});
     result.insert(QStringLiteral("session_tag"), tag);
     result.insert(QStringLiteral("limits"), limits);
     return result;
@@ -345,6 +346,11 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
         sendResult(socket, id, result);
         return;
     }
+    if (method == QStringLiteral("windows")) {
+        QJsonObject result = windows(params);
+        sendResult(socket, id, result);
+        return;
+    }
     if (method == QStringLiteral("query")) {
         QJsonObject result = query(params);
         if (result.contains(QStringLiteral("error"))) {
@@ -433,6 +439,61 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     }
     sendError(socket, id, QStringLiteral("E_PROTOCOL"),
               QStringLiteral("unknown method: %1").arg(method));
+}
+
+QJsonObject Server::windows(const QJsonObject& params)
+{
+    const bool includeHidden =
+        params.value(QStringLiteral("include_hidden")).toBool(false);
+    QList<QWidget*> roots = QApplication::topLevelWidgets();
+    std::sort(roots.begin(), roots.end(), [](QWidget* left, QWidget* right) {
+        return left->winId() < right->winId();
+    });
+
+    QJsonArray list;
+    for (QWidget* root : roots) {
+        if (!root || !root->isWindow())
+            continue;
+        if (!includeHidden && !root->isVisible())
+            continue;
+        const QPoint global = root->mapToGlobal(QPoint(0, 0));
+        QJsonObject screenPos;
+        screenPos.insert(QStringLiteral("x"), global.x());
+        screenPos.insert(QStringLiteral("y"), global.y());
+        QJsonObject size;
+        size.insert(QStringLiteral("w"), root->width());
+        size.insert(QStringLiteral("h"), root->height());
+        QJsonObject window;
+        window.insert(QStringLiteral("id"), idFor(root));
+        window.insert(QStringLiteral("class"),
+                      QString::fromLatin1(root->metaObject()->className()));
+        window.insert(QStringLiteral("objectName"), root->objectName());
+        window.insert(QStringLiteral("title"), root->windowTitle());
+        window.insert(QStringLiteral("rect"), size);
+        window.insert(QStringLiteral("screen_pos"), screenPos);
+        window.insert(QStringLiteral("visible"), root->isVisible());
+        window.insert(QStringLiteral("active"),
+                      QApplication::activeWindow() == root);
+        window.insert(QStringLiteral("modal"),
+                      root->isModal() ||
+                          QApplication::activeModalWidget() == root);
+        const Qt::WindowFlags flags = root->windowFlags();
+        window.insert(QStringLiteral("popup"), flags.testFlag(Qt::Popup));
+        window.insert(QStringLiteral("tooltip"), flags.testFlag(Qt::ToolTip));
+        if (QScreen* screen = root->screen())
+            window.insert(QStringLiteral("screen"), screen->name());
+        window.insert(
+            QStringLiteral("child_count"),
+            root->findChildren<QWidget*>(QString(),
+                                         Qt::FindDirectChildrenOnly)
+                .size());
+        list.append(window);
+    }
+
+    QJsonObject result;
+    result.insert(QStringLiteral("windows"), list);
+    result.insert(QStringLiteral("count"), list.size());
+    return result;
 }
 
 QJsonObject Server::query(const QJsonObject& params)
@@ -579,11 +640,18 @@ QJsonObject Server::query(const QJsonObject& params)
 QJsonObject Server::act(const QJsonObject& params)
 {
     const QJsonValue targetValue = params.value(QStringLiteral("target"));
-    if (targetValue.isString() && virtuals_.contains(targetValue.toString()))
-        return actVirtual(params, targetValue.toString());
+    QString virtualId;
+    if (targetValue.isString()) {
+        virtualId = targetValue.toString();
+    } else if (targetValue.isObject()) {
+        virtualId =
+            targetValue.toObject().value(QStringLiteral("id")).toString();
+    }
+    if (!virtualId.isEmpty() && virtuals_.contains(virtualId))
+        return actVirtual(params, virtualId);
 
     QString error;
-    const int nth = params.value(QStringLiteral("nth")).toInt(0);
+    const int nth = params.value(QStringLiteral("nth")).toInt(-1);
     QWidget* widget =
         resolveTarget(params.value(QStringLiteral("target")), &error, nth);
     if (!widget) {
@@ -846,13 +914,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         return result;
     }
 
-    const int nth = params.value(QStringLiteral("nth")).toInt(0);
-    if (nth < 0) {
-        QJsonObject result;
-        result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
-        result.insert(QStringLiteral("message"), QStringLiteral("nth must be >= 0"));
-        return result;
-    }
+    const int nth = params.value(QStringLiteral("nth")).toInt(-1);
     const bool explicitTarget = params.contains(QStringLiteral("target"));
     QWidget* widget = nullptr;
     QRect virtualCrop;
@@ -896,16 +958,42 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             return result;
         }
     } else {
-        widget = QApplication::activeWindow();
-        if (!widget) {
-            const auto roots = QApplication::topLevelWidgets();
-            for (QWidget* root : roots) {
-                if (root->isVisible()) {
-                    widget = root;
-                    break;
-                }
-            }
+        QList<QWidget*> visibleWindows;
+        const auto roots = QApplication::topLevelWidgets();
+        for (QWidget* root : roots) {
+            if (!root || !root->isVisible() || !root->isWindow())
+                continue;
+            const Qt::WindowFlags flags = root->windowFlags();
+            if (flags.testFlag(Qt::Popup) || flags.testFlag(Qt::ToolTip))
+                continue;
+            visibleWindows.append(root);
         }
+        if (visibleWindows.isEmpty()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_NOT_FOUND"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("no visible window"));
+            return result;
+        }
+        if (visibleWindows.size() > 1) {
+            QStringList names;
+            for (QWidget* root : visibleWindows) {
+                names.append(QStringLiteral("%1(%2)")
+                                 .arg(root->windowTitle())
+                                 .arg(static_cast<qlonglong>(root->winId())));
+            }
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_AMBIGUOUS"));
+            result.insert(
+                QStringLiteral("message"),
+                QStringLiteral("multiple visible windows (%1); pass target "
+                               "or call windows")
+                    .arg(names.join(QStringLiteral(", "))));
+            return result;
+        }
+        widget = visibleWindows.first();
     }
     if (!widget) {
         QJsonObject result;
@@ -1025,7 +1113,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         QPainter painter(&canvas);
         painter.setRenderHint(QPainter::Antialiasing, false);
         QFont font = painter.font();
-        font.setPixelSize(qMax(9, qRound(10 * dpr)));
+        font.setPixelSize(qMax(8, qRound(9 * dpr)));
         painter.setFont(font);
         QPen boxPen(QColor(220, 40, 40));
         boxPen.setWidth(qMax(1, qRound(2 * dpr)));
@@ -1095,8 +1183,10 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         QList<QRect> badgeRects;
         for (const BadgeTarget& target : badgeTargets) {
             const QRect& drawRect = target.rect;
-            const int badgeW = qMin(drawRect.width(), qRound(24 * dpr));
-            const int badgeH = qMin(drawRect.height(), qRound(15 * dpr));
+            const int badgeW =
+                qMin(drawRect.width(), qRound(20 * dpr));
+            const int badgeH =
+                qMin(drawRect.height(), qRound(14 * dpr));
             const QPoint gap(qRound(2 * dpr), qRound(2 * dpr));
             const QPoint positions[] = {
                 drawRect.topLeft() + gap,
@@ -1189,6 +1279,17 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     image.insert(QStringLiteral("format"), QStringLiteral("png"));
     result.insert(QStringLiteral("image"), image);
     result.insert(QStringLiteral("legend"), legend);
+    if (QWidget* top = widget->window()) {
+        QJsonObject window;
+        window.insert(QStringLiteral("id"), idFor(top));
+        window.insert(QStringLiteral("title"), top->windowTitle());
+        window.insert(QStringLiteral("class"),
+                      QString::fromLatin1(top->metaObject()->className()));
+        window.insert(QStringLiteral("objectName"), top->objectName());
+        window.insert(QStringLiteral("active"),
+                      QApplication::activeWindow() == top);
+        result.insert(QStringLiteral("window"), window);
+    }
     if (annotate != QStringLiteral("none")) {
         result.insert(QStringLiteral("annotate_total"), annotateTotal);
         result.insert(QStringLiteral("annotate_shown"), annotateShown);
@@ -1208,7 +1309,8 @@ QJsonObject Server::get(const QJsonObject& params)
         return virtualItem(targetValue.toString());
 
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error);
+    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
+                                    params.value(QStringLiteral("nth")).toInt(-1));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -1221,7 +1323,8 @@ QJsonObject Server::get(const QJsonObject& params)
 QJsonObject Server::setProperty(const QJsonObject& params)
 {
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error);
+    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
+                                    params.value(QStringLiteral("nth")).toInt(-1));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -1275,7 +1378,8 @@ QJsonObject Server::setProperty(const QJsonObject& params)
 QJsonObject Server::call(const QJsonObject& params)
 {
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error);
+    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
+                                    params.value(QStringLiteral("nth")).toInt(-1));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -1376,7 +1480,9 @@ QJsonObject Server::items(const QJsonObject& params)
         params.contains(QStringLiteral("owner"))
             ? params.value(QStringLiteral("owner"))
             : params.value(QStringLiteral("target"));
-    QWidget* owner = resolveTarget(ownerTarget, &error);
+    QWidget* owner = resolveTarget(
+        ownerTarget, &error,
+        params.value(QStringLiteral("nth")).toInt(-1));
     if (!owner) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -2013,7 +2119,7 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
                       QStringLiteral("virtual items only support plain left clicks"));
         return result;
     }
-    if (params.value(QStringLiteral("nth")).toInt(0) != 0) {
+    if (params.value(QStringLiteral("nth")).toInt(-1) >= 0) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
@@ -2105,7 +2211,8 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
 QJsonObject Server::source(const QJsonObject& params)
 {
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error);
+    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
+                                    params.value(QStringLiteral("nth")).toInt(-1));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -2281,14 +2388,18 @@ QWidget* Server::resolveTarget(const QJsonValue& target, QString* error,
             *error = QStringLiteral("no widget matches target");
         return nullptr;
     }
-    if (matches.size() > 1 && nth == 0) {
-        lastResolveCode_ = QStringLiteral("E_AMBIGUOUS");
-        if (error)
-            *error = QStringLiteral("%1 widgets match; provide nth")
-                         .arg(matches.size());
-        return nullptr;
+    if (nth < 0) {
+        if (matches.size() > 1) {
+            lastResolveCode_ = QStringLiteral("E_AMBIGUOUS");
+            if (error)
+                *error = QStringLiteral("%1 widgets match; provide nth (0-based)")
+                             .arg(matches.size());
+            return nullptr;
+        }
+        lastResolveCode_ = QStringLiteral("E_OK");
+        return matches.first();
     }
-    if (nth < 0 || nth >= matches.size()) {
+    if (nth >= matches.size()) {
         lastResolveCode_ = QStringLiteral("E_AMBIGUOUS");
         if (error)
             *error = QStringLiteral("nth %1 out of range (0..%2)")
@@ -2402,8 +2513,9 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
     node.insert(QStringLiteral("objectName"), widget->objectName());
     node.insert(QStringLiteral("qml_id"), QStringLiteral(""));
 
+    const bool window = widget->isWindow();
     QJsonObject rect;
-    if (isRoot) {
+    if (isRoot || window) {
         rect.insert(QStringLiteral("x"), 0);
         rect.insert(QStringLiteral("y"), 0);
     } else {
@@ -2413,8 +2525,9 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
     rect.insert(QStringLiteral("w"), widget->width());
     rect.insert(QStringLiteral("h"), widget->height());
     node.insert(QStringLiteral("rect"), rect);
+    node.insert(QStringLiteral("window"), window);
 
-    if (isRoot) {
+    if (isRoot || window) {
         const QPoint screen = widget->mapToGlobal(QPoint(0, 0));
         QJsonObject screenPos;
         screenPos.insert(QStringLiteral("x"), screen.x());

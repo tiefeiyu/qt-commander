@@ -113,7 +113,7 @@ async def test_act_builds_documented_params_and_omits_unset():
     assert params["action"] == "click"
     assert params["position"] == {"x": 1, "y": 2}
     assert "expect" not in params
-    assert params["nth"] == 0
+    assert "nth" not in params
     assert params["input"] == "auto"
     assert params["observe"] is True
     assert "text" not in params
