@@ -70,11 +70,11 @@ $env:QT_COMMANDER_RENDEZVOUS = "$PWD\.test-workspace\rendezvous"
 
 ```bash
 uv sync
-uv run --project . --no-sync python -m qt_commander.server
+uv run --project . qt-commander-mcp
 ```
 
-`--no-sync` 避免在已有 MCP 进程占用 `qt-commander-mcp.exe` 时替换 launcher；
-更新依赖时先停掉 MCP 客户端，再执行 `uv sync`。
+如果 Windows 报 `qt-commander-mcp.exe` 被占用，先停掉正在运行的
+Claude/MCP 进程，再重新执行 `uv run`。
 
 客户端用 `qt_attach(descriptor=...)` 指向 descriptor，或在启动 server 前
 设置 `QT_COMMANDER_RENDEZVOUS`。对已运行的 Windows Qt 应用，使用
