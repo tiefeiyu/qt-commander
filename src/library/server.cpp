@@ -1,5 +1,6 @@
 #include "server.h"
 
+#include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
@@ -11,6 +12,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
+#include <QDockWidget>
 #include <QHeaderView>
 #include <QHoverEvent>
 #include <QImageWriter>
@@ -35,6 +37,8 @@
 #include <QScrollBar>
 #include <QSlider>
 #include <QSpinBox>
+#include <QSplitter>
+#include <QSplitterHandle>
 #include <QStyle>
 #include <QStyleOptionGroupBox>
 #include <QStyleOptionSlider>
@@ -42,6 +46,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
+#include <QToolButton>
 #include <QTcpSocket>
 #include <QTreeView>
 #include <QThread>
@@ -2073,6 +2078,43 @@ QJsonObject Server::items(const QJsonObject& params)
         props.insert(QStringLiteral("enabled"), group->isEnabled());
         consider(QStringLiteral("groupbox_check"),
                  QStringLiteral("QGroupBox::check"), 0, rect, props);
+    } else if (auto* dock = qobject_cast<QDockWidget*>(owner)) {
+        const QList<QAbstractButton*> buttons =
+            dock->findChildren<QAbstractButton*>();
+        total = buttons.size();
+        for (int i = 0; i < buttons.size(); ++i) {
+            QAbstractButton* button = buttons.at(i);
+            if (!button || !button->isVisible())
+                continue;
+            const QRect rect(button->mapTo(dock, QPoint(0, 0)),
+                             button->size());
+            QJsonObject props;
+            props.insert(QStringLiteral("text"), button->text());
+            props.insert(QStringLiteral("tooltip"), button->toolTip());
+            props.insert(QStringLiteral("enabled"), button->isEnabled());
+            props.insert(QStringLiteral("floating"), dock->isFloating());
+            consider(QStringLiteral("dock_button"),
+                     QStringLiteral("QDockWidget::button"), i, rect, props,
+                     QPersistentModelIndex(), nullptr, button);
+        }
+    } else if (auto* splitter = qobject_cast<QSplitter*>(owner)) {
+        total = qMax(0, splitter->count() - 1);
+        for (int i = 0; i < total; ++i) {
+            QSplitterHandle* handle = splitter->handle(i);
+            if (!handle)
+                continue;
+            const QRect rect(handle->mapTo(splitter, QPoint(0, 0)),
+                             handle->size());
+            QJsonObject props;
+            props.insert(QStringLiteral("index"), i);
+            props.insert(QStringLiteral("orientation"),
+                         splitter->orientation() == Qt::Horizontal
+                             ? QStringLiteral("horizontal")
+                             : QStringLiteral("vertical"));
+            consider(QStringLiteral("splitter_handle"),
+                     QStringLiteral("QSplitterHandle"), i, rect, props,
+                     QPersistentModelIndex(), nullptr, handle);
+        }
     } else {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NO_ITEMS"));
@@ -2275,6 +2317,12 @@ QJsonObject Server::virtualItem(const QString& id)
             props.insert(QStringLiteral("checked"), group->isChecked());
             props.insert(QStringLiteral("enabled"), group->isEnabled());
         }
+    } else if (ref.kind == QStringLiteral("dock_button")) {
+        if (auto* dock = qobject_cast<QDockWidget*>(ref.owner.data())) {
+            props.insert(QStringLiteral("text"), dock->windowTitle());
+            props.insert(QStringLiteral("enabled"), dock->isEnabled());
+            props.insert(QStringLiteral("floating"), dock->isFloating());
+        }
     } else if (ref.kind == QStringLiteral("menu_item") &&
                !ref.action.isNull()) {
         props.insert(QStringLiteral("text"), ref.action->text());
@@ -2411,6 +2459,21 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         result.insert(QStringLiteral("observed"), resolved);
         return result;
     }
+    if (ref.kind == QStringLiteral("dock_button")) {
+        if (auto* button = qobject_cast<QAbstractButton*>(ref.page.data()))
+            button->click();
+        QJsonObject resolved;
+        resolved.insert(QStringLiteral("id"), id);
+        resolved.insert(QStringLiteral("class"), ref.className);
+        resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("action"), action);
+        result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("resolved"), resolved);
+        result.insert(QStringLiteral("observed"), resolved);
+        return result;
+    }
     if (ref.kind == QStringLiteral("groupbox_check")) {
         if (auto* group = qobject_cast<QGroupBox*>(ref.owner.data()))
             group->setChecked(!group->isChecked());
@@ -2450,6 +2513,9 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         if (auto* tabs = qobject_cast<QTabWidget*>(target))
             target = tabs->tabBar();
     } else if (ref.kind == QStringLiteral("combo_item") &&
+               !ref.page.isNull()) {
+        target = ref.page.data();
+    } else if (ref.kind == QStringLiteral("splitter_handle") &&
                !ref.page.isNull()) {
         target = ref.page.data();
     }

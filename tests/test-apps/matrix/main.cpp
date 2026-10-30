@@ -1,7 +1,9 @@
+#include <QAbstractTableModel>
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
+#include <QDockWidget>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -13,7 +15,9 @@
 #include <QPushButton>
 #include <QQuickWidget>
 #include <QSlider>
+#include <QSplitter>
 #include <QTabWidget>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTimer>
 #include <QTreeWidget>
@@ -23,6 +27,30 @@
 #include "qt_commander/agent.h"
 
 namespace {
+
+class TableModel : public QAbstractTableModel {
+public:
+    explicit TableModel(QObject* parent = nullptr) : QAbstractTableModel(parent)
+    {
+    }
+
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : 3;
+    }
+
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : 2;
+    }
+
+    QVariant data(const QModelIndex& index, int role) const override
+    {
+        if (!index.isValid() || role != Qt::DisplayRole)
+            return {};
+        return QStringLiteral("m%1%2").arg(index.row()).arg(index.column());
+    }
+};
 
 class PaintedWidget : public QWidget {
 public:
@@ -206,6 +234,24 @@ int main(int argc, char** argv)
         QTimer::singleShot(0, menu, [button, menu]() {
             menu->popup(button->mapToGlobal(QPoint(0, button->height())));
         });
+    } else if (mode == QStringLiteral("custom-model")) {
+        auto* table = new QTableView(central);
+        table->setObjectName(QStringLiteral("customTable"));
+        table->setModel(new TableModel(table));
+        layout->addWidget(table);
+        auto* splitter = new QSplitter(Qt::Horizontal, central);
+        splitter->setObjectName(QStringLiteral("splitter"));
+        splitter->addWidget(new QLabel(QStringLiteral("left"), splitter));
+        splitter->addWidget(new QLabel(QStringLiteral("right"), splitter));
+        layout->addWidget(splitter);
+    } else if (mode == QStringLiteral("dock")) {
+        auto* button = new QPushButton(QStringLiteral("Dock main"), central);
+        button->setObjectName(QStringLiteral("btnDockMain"));
+        layout->addWidget(button);
+        auto* dock = new QDockWidget(QStringLiteral("Dock"), &window);
+        dock->setObjectName(QStringLiteral("dock"));
+        dock->setWidget(new QLabel(QStringLiteral("Dock content"), dock));
+        window.addDockWidget(Qt::LeftDockWidgetArea, dock);
     } else if (mode == QStringLiteral("occlusion")) {
         auto* top = new QPushButton(QStringLiteral("Top"), central);
         top->setObjectName(QStringLiteral("btnTop"));

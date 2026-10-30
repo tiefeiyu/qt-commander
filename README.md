@@ -29,8 +29,9 @@ are no snapshot files and no stale index of the UI.
   identity with `E_NO_DEBUGINFO`.
 - `items` covers `QTabWidget`/`QTabBar`, `QMenuBar`/`QMenu`, `QHeaderView`,
   `QTableView`, `QTreeView`, `QListView`, `QComboBox`, `QScrollBar`,
-  `QSlider`, `QSpinBox` and checkable `QGroupBox`; broader custom-model
-  providers are not covered yet.
+  `QSlider`, `QSpinBox`, checkable `QGroupBox`, `QDockWidget` title buttons
+  and `QSplitter` handles; custom/proxy models work through the item-view
+  adapter.
 - QML deep objects under `QQuickWidget` are returned by `query` with
   `qml_type`/`qml_id`/`objectName`/local rect; use their `vqml` IDs with
   `qt_get`, `qt_act`, `qt_screenshot` and `qt_source`.
