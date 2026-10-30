@@ -24,6 +24,9 @@ set(QTC_BUILD_ID
 target_compile_definitions(qt_commander PRIVATE
     QT_COMMANDER_BUILD_ID="${QTC_BUILD_ID}"
 )
+if(MSVC)
+    target_compile_options(qt_commander PRIVATE /utf-8)
+endif()
 
 target_link_libraries(qt_commander
     PUBLIC Qt${QT_MAJOR_VERSION}::Core Qt${QT_MAJOR_VERSION}::Gui Qt${QT_MAJOR_VERSION}::Widgets Qt${QT_MAJOR_VERSION}::Network Qt${QT_MAJOR_VERSION}::Quick Qt${QT_MAJOR_VERSION}::QuickWidgets

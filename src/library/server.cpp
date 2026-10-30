@@ -524,16 +524,20 @@ QJsonObject Server::query(const QJsonObject& params)
     context.hasWhere = !context.where.isEmpty();
     static const QSet<QString> allowedWhere{
         QStringLiteral("id"), QStringLiteral("class"),
-        QStringLiteral("object_name"), QStringLiteral("qml_id"),
+        QStringLiteral("object_name"), QStringLiteral("objectName"),
+        QStringLiteral("qml_id"), QStringLiteral("qml_type"),
         QStringLiteral("text"), QStringLiteral("props")};
     for (auto it = context.where.begin(); it != context.where.end(); ++it) {
         if (!allowedWhere.contains(it.key())) {
             QJsonObject error;
             error.insert(QStringLiteral("error"),
                          QStringLiteral("E_INVALID_FILTER"));
-            error.insert(QStringLiteral("message"),
-                         QStringLiteral("unsupported locator key: %1")
-                             .arg(it.key()));
+            error.insert(
+                QStringLiteral("message"),
+                QStringLiteral(
+                    "unsupported locator key: %1 (supported: id, class, "
+                    "object_name/objectName, qml_id, qml_type, text, props)")
+                    .arg(it.key()));
             return error;
         }
     }
@@ -555,14 +559,19 @@ QJsonObject Server::query(const QJsonObject& params)
                      QStringLiteral("only parent coordinates are implemented"));
         return error;
     }
-    if (params.contains(QStringLiteral("scope")) &&
-        !params.value(QStringLiteral("scope")).toObject().isEmpty()) {
-        QJsonObject error;
-        error.insert(QStringLiteral("error"),
-                     QStringLiteral("E_NOT_IMPLEMENTED"));
-        error.insert(QStringLiteral("message"),
-                     QStringLiteral("scope is not implemented by the linked engine"));
-        return error;
+    QWidget* scopeRoot = nullptr;
+    if (params.contains(QStringLiteral("scope"))) {
+        const QJsonValue scope = params.value(QStringLiteral("scope"));
+        if (!scope.isNull() && !scope.isUndefined()) {
+            QString scopeError;
+            scopeRoot = resolveTarget(scope, &scopeError);
+            if (!scopeRoot) {
+                QJsonObject error;
+                error.insert(QStringLiteral("error"), resolveErrorCode());
+                error.insert(QStringLiteral("message"), scopeError);
+                return error;
+            }
+        }
     }
     if (params.value(QStringLiteral("occlusion")).toBool(false)) {
         QJsonObject error;
@@ -582,7 +591,9 @@ QJsonObject Server::query(const QJsonObject& params)
     }
 
     QList<QWidget*> roots;
-    {
+    if (scopeRoot) {
+        roots.append(scopeRoot);
+    } else {
         const QList<QWidget*> topLevels = QApplication::topLevelWidgets();
         QSet<QWidget*> topLevelSet;
         for (QWidget* root : topLevels)
@@ -1354,19 +1365,40 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             const int badgeH =
                 qMin(drawRect.height(), qRound(14 * dpr));
             const QPoint gap(qRound(2 * dpr), qRound(2 * dpr));
-            const QPoint positions[] = {
-                drawRect.topLeft() + gap,
-                QPoint(drawRect.right() - badgeW - gap.x(),
-                       drawRect.top() + gap.y()),
-                QPoint(drawRect.left() + gap.x(),
-                       drawRect.bottom() - badgeH - gap.y()),
-                QPoint(drawRect.right() - badgeW - gap.x(),
-                       drawRect.bottom() - badgeH - gap.y()),
-            };
+            const bool smallTarget =
+                drawRect.width() < qRound(40 * dpr) ||
+                drawRect.height() < qRound(28 * dpr);
+            QList<QPoint> positions;
+            if (smallTarget) {
+                positions.append(
+                    QPoint(drawRect.left(), drawRect.top() - badgeH - gap.y()));
+                positions.append(
+                    QPoint(drawRect.left(), drawRect.bottom() + gap.y()));
+            }
+            positions.append(drawRect.topLeft() + gap);
+            positions.append(QPoint(drawRect.right() - badgeW - gap.x(),
+                                    drawRect.top() + gap.y()));
+            positions.append(QPoint(drawRect.left() + gap.x(),
+                                    drawRect.bottom() - badgeH - gap.y()));
+            positions.append(QPoint(drawRect.right() - badgeW - gap.x(),
+                                    drawRect.bottom() - badgeH - gap.y()));
+            if (!smallTarget) {
+                positions.append(
+                    QPoint(drawRect.left(), drawRect.top() - badgeH - gap.y()));
+                positions.append(
+                    QPoint(drawRect.left(), drawRect.bottom() + gap.y()));
+            }
+            const QRect canvasRect(0, 0, canvas.width(), canvas.height());
             QRect badge;
-            for (const QPoint& position : positions) {
-                QRect candidateBadge(position, QSize(badgeW, badgeH));
-                candidateBadge = candidateBadge.intersected(drawRect);
+            for (int positionIndex = 0;
+                 positionIndex < positions.size(); ++positionIndex) {
+                const bool outside =
+                    smallTarget ? positionIndex < 2
+                                : positionIndex >= 4;
+                QRect candidateBadge(positions.at(positionIndex),
+                                     QSize(badgeW, badgeH));
+                candidateBadge = candidateBadge.intersected(
+                    outside ? canvasRect : drawRect);
                 if (candidateBadge.isEmpty())
                     continue;
                 bool overlaps = false;
@@ -1743,7 +1775,10 @@ QJsonObject Server::items(const QJsonObject& params)
         addTabs(bar, nullptr);
     } else if (auto* menuBar = qobject_cast<QMenuBar*>(owner)) {
         const auto actions = menuBar->actions();
-        total = actions.size();
+        total = 0;
+        for (QAction* action : actions)
+            if (action && !action->isSeparator())
+                ++total;
         for (int i = 0; i < actions.size(); ++i) {
             QAction* action = actions.at(i);
             if (!includeHidden && !action->isVisible())
@@ -1762,7 +1797,10 @@ QJsonObject Server::items(const QJsonObject& params)
         }
     } else if (auto* menu = qobject_cast<QMenu*>(owner)) {
         const auto actions = menu->actions();
-        total = actions.size();
+        total = 0;
+        for (QAction* action : actions)
+            if (action && !action->isSeparator())
+                ++total;
         for (int i = 0; i < actions.size(); ++i) {
             QAction* action = actions.at(i);
             if (!includeHidden && !action->isVisible())
@@ -2834,12 +2872,15 @@ QWidget* Server::resolveTarget(const QJsonValue& target, QString* error,
 
     static const QSet<QString> allowed{
         QStringLiteral("class"), QStringLiteral("object_name"),
-        QStringLiteral("text"), QStringLiteral("props")};
+        QStringLiteral("objectName"), QStringLiteral("text"),
+        QStringLiteral("props")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key())) {
             lastResolveCode_ = QStringLiteral("E_INVALID_FILTER");
             if (error)
-                *error = QStringLiteral("unsupported locator key: %1")
+                *error = QStringLiteral(
+                             "unsupported locator key: %1 (supported: id, "
+                             "class, object_name/objectName, text, props)")
                              .arg(it.key());
             return nullptr;
         }
@@ -2959,7 +3000,8 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
 {
     static const QSet<QString> allowed{
         QStringLiteral("class"), QStringLiteral("object_name"),
-        QStringLiteral("qml_id"), QStringLiteral("text"),
+        QStringLiteral("objectName"), QStringLiteral("qml_id"),
+        QStringLiteral("qml_type"), QStringLiteral("text"),
         QStringLiteral("props")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key()))
@@ -2970,12 +3012,19 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
     if (where.contains(QStringLiteral("class")) &&
         where.value(QStringLiteral("class")).toString() != className)
         return false;
-    if (where.contains(QStringLiteral("object_name")) &&
-        where.value(QStringLiteral("object_name")).toString() !=
-            item->objectName())
+    const QString requestedObjectName =
+        where.contains(QStringLiteral("object_name"))
+            ? where.value(QStringLiteral("object_name")).toString()
+            : where.value(QStringLiteral("objectName")).toString();
+    if ((where.contains(QStringLiteral("object_name")) ||
+         where.contains(QStringLiteral("objectName"))) &&
+        requestedObjectName != item->objectName())
         return false;
     if (where.contains(QStringLiteral("qml_id")) &&
         where.value(QStringLiteral("qml_id")).toString() != qmlIdName(item))
+        return false;
+    if (where.contains(QStringLiteral("qml_type")) &&
+        where.value(QStringLiteral("qml_type")).toString() != qmlTypeName(item))
         return false;
     if (where.contains(QStringLiteral("text")) &&
         where.value(QStringLiteral("text")).toString() !=
@@ -3236,8 +3285,9 @@ bool Server::matches(QWidget* widget, const QJsonObject& where) const
 {
     static const QSet<QString> allowed{
         QStringLiteral("id"), QStringLiteral("class"),
-        QStringLiteral("object_name"), QStringLiteral("text"),
-        QStringLiteral("props")};
+        QStringLiteral("object_name"), QStringLiteral("objectName"),
+        QStringLiteral("qml_id"), QStringLiteral("qml_type"),
+        QStringLiteral("text"), QStringLiteral("props")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key()))
             return false;
@@ -3253,9 +3303,16 @@ bool Server::matches(QWidget* widget, const QJsonObject& where) const
     if (where.contains(QStringLiteral("class")) &&
         where.value(QStringLiteral("class")).toString() != className)
         return false;
-    if (where.contains(QStringLiteral("object_name")) &&
-        where.value(QStringLiteral("object_name")).toString() !=
-            widget->objectName())
+    const QString requestedObjectName =
+        where.contains(QStringLiteral("object_name"))
+            ? where.value(QStringLiteral("object_name")).toString()
+            : where.value(QStringLiteral("objectName")).toString();
+    if ((where.contains(QStringLiteral("object_name")) ||
+         where.contains(QStringLiteral("objectName"))) &&
+        requestedObjectName != widget->objectName())
+        return false;
+    if (where.contains(QStringLiteral("qml_id")) ||
+        where.contains(QStringLiteral("qml_type")))
         return false;
     if (where.contains(QStringLiteral("text"))) {
         const QString text =

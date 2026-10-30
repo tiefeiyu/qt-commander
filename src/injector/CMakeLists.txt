@@ -1,5 +1,9 @@
 add_executable(qtc-inject main_native.cpp)
 
+if(MSVC)
+    target_compile_options(qtc-inject PRIVATE /utf-8)
+endif()
+
 if(WIN32)
     target_sources(qtc-inject PRIVATE injector_win_native.cpp)
     if(MINGW)

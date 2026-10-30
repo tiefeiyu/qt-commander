@@ -77,6 +77,8 @@ uv run --project . qt-commander-mcp
 
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
 且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个。
+`qt_query(scope=...)` 可以限定到单个窗口/控件子树；`where` 同时接受
+`object_name` 和 `objectName` 别名。
 
 ## 测试
 

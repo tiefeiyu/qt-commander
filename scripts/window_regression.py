@@ -89,6 +89,16 @@ async def run_mode(mode: str) -> None:
                        for w in windows["windows"])
             second = next(w for w in windows["windows"]
                           if w["objectName"] == "windowB")
+            scoped = await session.call("query", {
+                "scope": {"id": second["id"]},
+                "props": ["text"],
+            })
+            assert len(scoped["tree"]) == 1
+            assert scoped["tree"][0]["class"] == "QMainWindow"
+            alias = await session.call("query", {
+                "where": {"objectName": "btnMainA"},
+            })
+            assert alias["count"] == 1
             frame = await session.call_frame("screenshot", {
                 "target": {"id": second["id"]},
                 "annotate": "all",
