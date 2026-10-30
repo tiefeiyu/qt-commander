@@ -1059,6 +1059,47 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             QWidget* node = nullptr;
             QRect rect;
         };
+        struct VirtualAnnotation {
+            QString id;
+            QRect rect;
+            QString className;
+            QString text;
+            bool enabled = true;
+        };
+        QList<VirtualAnnotation> virtualAnnotations;
+        auto addVirtualActions = [&](const QList<QAction*>& actions,
+                                     const std::function<QRect(QAction*)>& geometry) {
+            for (int i = 0; i < actions.size(); ++i) {
+                QAction* action = actions.at(i);
+                if (!action || !action->isVisible() || action->isSeparator())
+                    continue;
+                const QRect rect = geometry(action);
+                if (rect.isEmpty())
+                    continue;
+                QJsonObject props;
+                props.insert(QStringLiteral("text"), action->text());
+                props.insert(QStringLiteral("enabled"), action->isEnabled());
+                props.insert(QStringLiteral("checked"), action->isChecked());
+                const QString id = registerVirtual(
+                    widget, QStringLiteral("menu_item"),
+                    QStringLiteral("QAction"), i, rect, props,
+                    QPersistentModelIndex(), action);
+                virtualAnnotations.append(
+                    {id, rect, QStringLiteral("QAction"),
+                     action->text(), action->isEnabled()});
+            }
+        };
+        if (annotate != QStringLiteral("matched")) {
+            if (auto* menu = qobject_cast<QMenu*>(widget)) {
+                addVirtualActions(menu->actions(), [menu](QAction* action) {
+                    return menu->actionGeometry(action);
+                });
+            } else if (auto* bar = qobject_cast<QMenuBar*>(widget)) {
+                addVirtualActions(bar->actions(), [bar](QAction* action) {
+                    return bar->actionGeometry(action);
+                });
+            }
+        }
         QList<Candidate> candidates;
         for (QWidget* node : nodes) {
             if (node == widget || !widget->isAncestorOf(node))
@@ -1097,11 +1138,14 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                           return left.rect.top() < right.rect.top();
                       return left.rect.left() < right.rect.left();
                   });
-        annotateTotal = candidates.size();
-        annotateTruncated = candidates.size() > maxLabels;
-        if (annotateTruncated)
+        annotateTotal = candidates.size() + virtualAnnotations.size();
+        annotateTruncated = annotateTotal > maxLabels;
+        if (candidates.size() > maxLabels)
             candidates = candidates.mid(0, maxLabels);
-        annotateShown = candidates.size();
+        const int remaining = qMax(0, maxLabels - candidates.size());
+        if (virtualAnnotations.size() > remaining)
+            virtualAnnotations = virtualAnnotations.mid(0, remaining);
+        annotateShown = candidates.size() + virtualAnnotations.size();
 
         const int originalWidth = canvas.width();
         const int logicalImageWidth = qRound(originalWidth / dpr);
@@ -1173,6 +1217,50 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("parent_id"),
                          idFor(candidate.node->parentWidget()));
             entry.insert(QStringLiteral("virtual"), false);
+            entry.insert(QStringLiteral("rect"), rect);
+            entry.insert(QStringLiteral("image_rect"), imageRect);
+            legend.append(entry);
+        }
+
+        for (const VirtualAnnotation& annotation : virtualAnnotations) {
+            ++number;
+            const QRect drawRect =
+                QRect(qRound(annotation.rect.x() * deviceScale),
+                      qRound(annotation.rect.y() * deviceScale),
+                      qRound(annotation.rect.width() * deviceScale),
+                      qRound(annotation.rect.height() * deviceScale))
+                    .intersected(QRect(0, 0, originalWidth, canvas.height()));
+            if (drawRect.isEmpty())
+                continue;
+            painter.setPen(boxPen);
+            painter.drawRect(drawRect);
+            badgeTargets.append({drawRect, number});
+
+            QJsonObject rect;
+            rect.insert(QStringLiteral("x"), annotation.rect.x());
+            rect.insert(QStringLiteral("y"), annotation.rect.y());
+            rect.insert(QStringLiteral("w"), annotation.rect.width());
+            rect.insert(QStringLiteral("h"), annotation.rect.height());
+            QJsonObject imageRect;
+            imageRect.insert(QStringLiteral("x"),
+                             qRound(annotation.rect.x() * logicalScale));
+            imageRect.insert(QStringLiteral("y"),
+                             qRound(annotation.rect.y() * logicalScale));
+            imageRect.insert(QStringLiteral("w"),
+                             qRound(annotation.rect.width() * logicalScale));
+            imageRect.insert(QStringLiteral("h"),
+                             qRound(annotation.rect.height() * logicalScale));
+            QJsonObject entry;
+            entry.insert(QStringLiteral("n"), number);
+            entry.insert(QStringLiteral("id"), annotation.id);
+            entry.insert(QStringLiteral("objectName"), QString());
+            entry.insert(QStringLiteral("class"), annotation.className);
+            entry.insert(QStringLiteral("text"), annotation.text);
+            entry.insert(QStringLiteral("enabled"), annotation.enabled);
+            entry.insert(QStringLiteral("focusable"), false);
+            entry.insert(QStringLiteral("depth"), 0);
+            entry.insert(QStringLiteral("parent_id"), idFor(widget));
+            entry.insert(QStringLiteral("virtual"), true);
             entry.insert(QStringLiteral("rect"), rect);
             entry.insert(QStringLiteral("image_rect"), imageRect);
             legend.append(entry);

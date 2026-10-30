@@ -140,6 +140,9 @@ async def run_mode(mode: str) -> None:
                 "annotate": "all",
             })
             assert frame.result["width"] > 0
+            assert len(frame.result["legend"]) >= 1
+            print(mode, "popup legend:", frame.result["legend"][0]["id"],
+                  frame.result["legend"][0]["text"])
             items = await session.call("items", {"owner": popup["id"]})
             print(mode, "popup items:", json.dumps(items, ensure_ascii=False)[:1000])
             action = next(item for item in items["items"]
