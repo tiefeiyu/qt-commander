@@ -171,7 +171,7 @@ props: { ...过滤器... }
 
 - `where`：locator，字段 `class`、`inherits`、`object_name`、`qml_id`、`props`、`within`、`window`；全部 AND。
 - `scope`：`{id}` 或 `{window}`；缺省所有顶层窗口；已支持限定到任意 widget 子树。
-- `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；`text` 是精确匹配，不是子串/正则；非字符串值返回 `E_INVALID_FILTER` 并列出支持键。
+- `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；字符串默认精确匹配，支持 `*`/`?` 通配和 `{contains/startsWith/regex/equals: "..."}`；无效值返回 `E_INVALID_FILTER` 并列出支持键。
 - `coords:"screen"` 为每个节点增加 `screen_rect`；`coords:"parent"`（默认）只给局部 rect。截图 legend 也带 `screen_rect`。
 - 输出嵌套树；根是顶层窗口（或 scope 节点）。
 - `where` 存在时返回剪枝树：命中节点带 `matched:true`，祖先保留结构。

@@ -79,6 +79,53 @@ QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner);
 
 constexpr const char* kLibraryVersion = "2.0.0";
 
+bool validMatcher(const QJsonValue& spec)
+{
+    if (spec.isString())
+        return true;
+    if (!spec.isObject())
+        return false;
+    const QJsonObject object = spec.toObject();
+    if (object.size() != 1)
+        return false;
+    static const QSet<QString> operators{
+        QStringLiteral("contains"), QStringLiteral("startsWith"),
+        QStringLiteral("regex"), QStringLiteral("equals")};
+    return operators.contains(object.begin().key());
+}
+
+bool matchText(const QJsonValue& spec, const QString& actual)
+{
+    if (spec.isString()) {
+        const QString pattern = spec.toString();
+        if (pattern.contains(QLatin1Char('*')) ||
+            pattern.contains(QLatin1Char('?'))) {
+            return QRegularExpression(
+                       QRegularExpression::wildcardToRegularExpression(pattern),
+                       QRegularExpression::CaseInsensitiveOption)
+                .match(actual)
+                .hasMatch();
+        }
+        return actual == pattern;
+    }
+    if (!spec.isObject())
+        return false;
+    const QJsonObject object = spec.toObject();
+    if (object.size() != 1)
+        return false;
+    const auto it = object.begin();
+    const QString value = it.value().toString();
+    if (it.key() == QStringLiteral("equals"))
+        return actual == value;
+    if (it.key() == QStringLiteral("contains"))
+        return actual.contains(value);
+    if (it.key() == QStringLiteral("startsWith"))
+        return actual.startsWith(value);
+    if (it.key() == QStringLiteral("regex"))
+        return QRegularExpression(value).match(actual).hasMatch();
+    return false;
+}
+
 QJsonObject helloResult(const QString& tag)
 {
     QJsonObject limits;
@@ -552,13 +599,14 @@ QJsonObject Server::query(const QJsonObject& params)
                              QStringLiteral("props filter must be an object"));
                 return error;
             }
-        } else if (!it.value().isString()) {
+        } else if (!validMatcher(it.value())) {
             QJsonObject error;
             error.insert(QStringLiteral("error"),
                          QStringLiteral("E_INVALID_FILTER"));
             error.insert(
                 QStringLiteral("message"),
-                QStringLiteral("locator value for %1 must be a string")
+                QStringLiteral("invalid matcher for %1 (use string, wildcard, "
+                               "or contains/startsWith/regex/equals)")
                     .arg(it.key()));
             return error;
         }
@@ -3032,10 +3080,12 @@ QWidget* Server::resolveTarget(const QJsonValue& target, QString* error,
                     *error = QStringLiteral("props filter must be an object");
                 return nullptr;
             }
-        } else if (!it.value().isString()) {
+        } else if (!validMatcher(it.value())) {
             lastResolveCode_ = QStringLiteral("E_INVALID_FILTER");
             if (error)
-                *error = QStringLiteral("locator value for %1 must be a string")
+                *error = QStringLiteral(
+                             "invalid matcher for %1 (use string, wildcard, "
+                             "or contains/startsWith/regex/equals)")
                              .arg(it.key());
             return nullptr;
         }
@@ -3167,25 +3217,25 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
     const QString className =
         QString::fromLatin1(item->metaObject()->className());
     if (where.contains(QStringLiteral("class")) &&
-        where.value(QStringLiteral("class")).toString() != className)
+        !matchText(where.value(QStringLiteral("class")), className))
         return false;
-    const QString requestedObjectName =
+    const QJsonValue objectNameSpec =
         where.contains(QStringLiteral("object_name"))
-            ? where.value(QStringLiteral("object_name")).toString()
-            : where.value(QStringLiteral("objectName")).toString();
+            ? where.value(QStringLiteral("object_name"))
+            : where.value(QStringLiteral("objectName"));
     if ((where.contains(QStringLiteral("object_name")) ||
          where.contains(QStringLiteral("objectName"))) &&
-        requestedObjectName != item->objectName())
+        !matchText(objectNameSpec, item->objectName()))
         return false;
     if (where.contains(QStringLiteral("qml_id")) &&
-        where.value(QStringLiteral("qml_id")).toString() != qmlIdName(item))
+        !matchText(where.value(QStringLiteral("qml_id")), qmlIdName(item)))
         return false;
     if (where.contains(QStringLiteral("qml_type")) &&
-        where.value(QStringLiteral("qml_type")).toString() != qmlTypeName(item))
+        !matchText(where.value(QStringLiteral("qml_type")), qmlTypeName(item)))
         return false;
     if (where.contains(QStringLiteral("text")) &&
-        where.value(QStringLiteral("text")).toString() !=
-            item->property("text").toString())
+        !matchText(where.value(QStringLiteral("text")),
+                   item->property("text").toString()))
         return false;
     if (where.contains(QStringLiteral("props"))) {
         const QJsonObject props = where.value(QStringLiteral("props")).toObject();
@@ -3476,25 +3526,23 @@ bool Server::matches(QWidget* widget, const QJsonObject& where) const
     const QString className =
         QString::fromLatin1(widget->metaObject()->className());
     if (where.contains(QStringLiteral("class")) &&
-        where.value(QStringLiteral("class")).toString() != className)
+        !matchText(where.value(QStringLiteral("class")), className))
         return false;
-    const QString requestedObjectName =
+    const QJsonValue objectNameSpec =
         where.contains(QStringLiteral("object_name"))
-            ? where.value(QStringLiteral("object_name")).toString()
-            : where.value(QStringLiteral("objectName")).toString();
+            ? where.value(QStringLiteral("object_name"))
+            : where.value(QStringLiteral("objectName"));
     if ((where.contains(QStringLiteral("object_name")) ||
          where.contains(QStringLiteral("objectName"))) &&
-        requestedObjectName != widget->objectName())
+        !matchText(objectNameSpec, widget->objectName()))
         return false;
     if (where.contains(QStringLiteral("qml_id")) ||
         where.contains(QStringLiteral("qml_type")))
         return false;
-    if (where.contains(QStringLiteral("text"))) {
-        const QString text =
-            widget->property("text").toString();
-        if (where.value(QStringLiteral("text")).toString() != text)
-            return false;
-    }
+    if (where.contains(QStringLiteral("text")) &&
+        !matchText(where.value(QStringLiteral("text")),
+                   widget->property("text").toString()))
+        return false;
     if (where.contains(QStringLiteral("props"))) {
         const QJsonObject props =
             where.value(QStringLiteral("props")).toObject();

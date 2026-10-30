@@ -106,6 +106,14 @@ async def run_mode(mode: str) -> None:
                 "where": {"objectName": "btnMainA"},
             })
             assert alias["count"] == 1
+            contains = await session.call("query", {
+                "where": {"class": {"contains": "QMainWindow"}},
+            })
+            assert contains["count"] >= 1
+            wildcard = await session.call("query", {
+                "where": {"class": "*MainWindow"},
+            })
+            assert wildcard["count"] >= 1
             frame = await session.call_frame("screenshot", {
                 "target": {"id": second["id"]},
                 "annotate": "all",

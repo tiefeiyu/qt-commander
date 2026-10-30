@@ -90,7 +90,8 @@ For multiple windows, call `qt_windows` first and pass that window's `id` to
 `qt_screenshot`. Without a target, a screenshot is refused when more than one
 visible top-level window exists; it never silently picks one. `qt_query(scope=...)`
 can limit a query to one window/widget subtree; `where` accepts both
-`object_name` and the `objectName` alias.
+`object_name` and the `objectName` alias, and strings support wildcards or
+`contains/startsWith/regex/equals` matchers.
 
 ## Test
 
