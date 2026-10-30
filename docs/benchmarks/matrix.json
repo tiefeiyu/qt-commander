@@ -4,56 +4,56 @@
     {
       "mode": "basic",
       "target": "btnBasic",
-      "query_ms": 1.32,
-      "screenshot_ms": 51.4,
+      "query_ms": 1.77,
+      "screenshot_ms": 56.73,
       "count": 1,
       "png_bytes": 808200
     },
     {
       "mode": "complex",
       "target": "tabs",
-      "query_ms": 1.36,
-      "screenshot_ms": 72.77,
+      "query_ms": 0.86,
+      "screenshot_ms": 66.54,
       "count": 1,
       "png_bytes": 808200
     },
     {
       "mode": "custom-painted",
       "target": "customPainted",
-      "query_ms": 1.51,
-      "screenshot_ms": 58.77,
+      "query_ms": 1.56,
+      "screenshot_ms": 82.04,
       "count": 1,
       "png_bytes": 808200
     },
     {
       "mode": "multi-window",
       "target": "btnMain",
-      "query_ms": 1.2,
-      "screenshot_ms": 35.45,
+      "query_ms": 0.89,
+      "screenshot_ms": 23.21,
       "count": 1,
       "png_bytes": 57413
     },
     {
       "mode": "occlusion",
       "target": "btnTop",
-      "query_ms": 2.04,
-      "screenshot_ms": 63.23,
+      "query_ms": 1.19,
+      "screenshot_ms": 53.36,
       "count": 1,
       "png_bytes": 808200
     },
     {
       "mode": "qml",
       "target": "quick",
-      "query_ms": 1.93,
-      "screenshot_ms": 64.16,
+      "query_ms": 1.54,
+      "screenshot_ms": 75.44,
       "count": 1,
       "png_bytes": 808200
     },
     {
       "mode": "mixed",
       "target": "quick",
-      "query_ms": 1.56,
-      "screenshot_ms": 80.25,
+      "query_ms": 1.49,
+      "screenshot_ms": 58.88,
       "count": 1,
       "png_bytes": 808200
     }
