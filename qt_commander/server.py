@@ -873,13 +873,15 @@ async def qt_get(
     target: str | dict[str, Any],
     props: Any = None,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Read one node/virtual node ."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.get(session, target, props=props, nth=nth)
+        return await ops.get(session, target, props=props, nth=nth,
+                             include_hidden=include_hidden)
     except Exception as exc:
         return _map_error(exc)
 
@@ -891,13 +893,15 @@ async def qt_set(
     name: str,
     value: Any,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Set a property (destructive)."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.set_property(session, target, name, value, nth=nth)
+        return await ops.set_property(session, target, name, value, nth=nth,
+                                      include_hidden=include_hidden)
     except Exception as exc:
         return _map_error(exc)
 
@@ -909,13 +913,15 @@ async def qt_call(
     method: str,
     args: list[Any] | None = None,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Invoke a method (destructive)."""
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.call_method(session, target, method, args=args, nth=nth)
+        return await ops.call_method(session, target, method, args=args, nth=nth,
+                                     include_hidden=include_hidden)
     except Exception as exc:
         return _map_error(exc)
 
@@ -928,6 +934,7 @@ async def qt_source(
     snippet_lines: int = 3,
     max_lines: int = 20,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Return source location (engine support pending)."""
     session = _session(session_id)
@@ -941,6 +948,7 @@ async def qt_source(
             snippet_lines=snippet_lines,
             max_lines=max_lines,
             nth=nth,
+            include_hidden=include_hidden,
         )
     except Exception as exc:
         return _map_error(exc)

@@ -46,6 +46,8 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTcpSocket>
@@ -540,6 +542,25 @@ QJsonObject Server::query(const QJsonObject& params)
                     .arg(it.key()));
             return error;
         }
+        if (it.key() == QStringLiteral("props")) {
+            if (!it.value().isObject()) {
+                QJsonObject error;
+                error.insert(QStringLiteral("error"),
+                             QStringLiteral("E_INVALID_FILTER"));
+                error.insert(QStringLiteral("message"),
+                             QStringLiteral("props filter must be an object"));
+                return error;
+            }
+        } else if (!it.value().isString()) {
+            QJsonObject error;
+            error.insert(QStringLiteral("error"),
+                         QStringLiteral("E_INVALID_FILTER"));
+            error.insert(
+                QStringLiteral("message"),
+                QStringLiteral("locator value for %1 must be a string")
+                    .arg(it.key()));
+            return error;
+        }
     }
     context.props = params.value(QStringLiteral("props"));
     context.includeHidden =
@@ -564,7 +585,8 @@ QJsonObject Server::query(const QJsonObject& params)
         const QJsonValue scope = params.value(QStringLiteral("scope"));
         if (!scope.isNull() && !scope.isUndefined()) {
             QString scopeError;
-            scopeRoot = resolveTarget(scope, &scopeError);
+            scopeRoot = resolveTarget(scope, &scopeError, -1,
+                                      context.includeHidden);
             if (!scopeRoot) {
                 QJsonObject error;
                 error.insert(QStringLiteral("error"), resolveErrorCode());
@@ -782,6 +804,29 @@ QJsonObject Server::act(const QJsonObject& params)
             return result;
         }
         QWidget* current = guard.data();
+        auto isEditable = [](QWidget* candidate) {
+            return qobject_cast<QLineEdit*>(candidate) ||
+                   qobject_cast<QTextEdit*>(candidate) ||
+                   qobject_cast<QPlainTextEdit*>(candidate);
+        };
+        if (!isEditable(current)) {
+            for (QWidget* child :
+                 current->findChildren<QWidget*>(QString(),
+                                                 Qt::FindChildrenRecursively)) {
+                if (child && child->isVisible() && isEditable(child)) {
+                    current = child;
+                    break;
+                }
+            }
+        }
+        if (!isEditable(current)) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_NOT_EDITABLE"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("target has no editable child"));
+            return result;
+        }
         current->setFocus(Qt::OtherFocusReason);
         if (params.value(QStringLiteral("clear")).toBool(false))
             QMetaObject::invokeMethod(current, "clear", Qt::DirectConnection);
@@ -1060,12 +1105,11 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     QPixmap pixmap;
     if (virtualTarget) {
         pixmap = widget->grab(virtualCrop);
-    } else if (!explicitTarget && widget->isWindow()) {
-        if (QScreen* screen = widget->screen())
-            pixmap = screen->grabWindow(widget->winId());
-    }
-    if (pixmap.isNull() && !virtualTarget)
+    } else {
+        // Grab the widget, not the native window. grabWindow() includes the
+        // native frame/title bar on Windows, which offsets every annotation.
         pixmap = widget->grab();
+    }
     if (pixmap.isNull()) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
@@ -1354,6 +1398,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("image_rect"), imageRect);
             legend.append(entry);
         }
+        annotateShown = legend.size();
 
         // Draw all boxes first, then all badges. Otherwise a later box can
         // paint over an earlier badge in nested/overlapping layouts.
@@ -1507,8 +1552,10 @@ QJsonObject Server::get(const QJsonObject& params)
         return virtualItem(targetValue.toString());
 
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
-                                    params.value(QStringLiteral("nth")).toInt(-1));
+    QWidget* widget = resolveTarget(
+        params.value(QStringLiteral("target")), &error,
+        params.value(QStringLiteral("nth")).toInt(-1),
+        params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -1521,8 +1568,10 @@ QJsonObject Server::get(const QJsonObject& params)
 QJsonObject Server::setProperty(const QJsonObject& params)
 {
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
-                                    params.value(QStringLiteral("nth")).toInt(-1));
+    QWidget* widget = resolveTarget(
+        params.value(QStringLiteral("target")), &error,
+        params.value(QStringLiteral("nth")).toInt(-1),
+        params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -1576,8 +1625,10 @@ QJsonObject Server::setProperty(const QJsonObject& params)
 QJsonObject Server::call(const QJsonObject& params)
 {
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
-                                    params.value(QStringLiteral("nth")).toInt(-1));
+    QWidget* widget = resolveTarget(
+        params.value(QStringLiteral("target")), &error,
+        params.value(QStringLiteral("nth")).toInt(-1),
+        params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -1680,7 +1731,8 @@ QJsonObject Server::items(const QJsonObject& params)
             : params.value(QStringLiteral("target"));
     QWidget* owner = resolveTarget(
         ownerTarget, &error,
-        params.value(QStringLiteral("nth")).toInt(-1));
+        params.value(QStringLiteral("nth")).toInt(-1),
+        params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!owner) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -2012,6 +2064,45 @@ QJsonObject Server::items(const QJsonObject& params)
                      local.translated(list->viewport()->pos()), props,
                      QPersistentModelIndex(index));
         }
+    } else if (auto* view = qobject_cast<QAbstractItemView*>(owner)) {
+        auto* model = view->model();
+        if (!model) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_NO_ITEMS"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("abstract item view has no model"));
+            return result;
+        }
+        total = model->rowCount() * qMax(1, model->columnCount());
+        const QRect viewportRect = view->viewport()->rect();
+        int firstRow = view->indexAt(viewportRect.topLeft()).row();
+        int lastRow = view->indexAt(viewportRect.bottomRight()).row();
+        if (firstRow < 0)
+            firstRow = 0;
+        if (lastRow < 0)
+            lastRow = model->rowCount() - 1;
+        for (int row = qMax(0, firstRow);
+             row <= qMin(model->rowCount() - 1, lastRow); ++row) {
+            for (int column = 0; column < model->columnCount(); ++column) {
+                const QModelIndex index = model->index(row, column);
+                const QRect local = view->visualRect(index);
+                if (local.isEmpty() || !viewportRect.intersects(local))
+                    continue;
+                QJsonObject props;
+                props.insert(QStringLiteral("text"),
+                             model->data(index, Qt::DisplayRole).toString());
+                props.insert(QStringLiteral("row"), row);
+                props.insert(QStringLiteral("column"), column);
+                props.insert(QStringLiteral("selected"),
+                             view->selectionModel() &&
+                                 view->selectionModel()->isSelected(index));
+                consider(QStringLiteral("cell"),
+                         QStringLiteral("QAbstractItemView::cell"), row *
+                             qMax(1, model->columnCount()) + column,
+                         local.translated(viewportRect.topLeft()), props,
+                         QPersistentModelIndex(index));
+            }
+        }
     } else if (auto* bar = qobject_cast<QScrollBar*>(owner)) {
         total = 1;
         QStyleOptionSlider option;
@@ -2141,10 +2232,13 @@ QJsonObject Server::items(const QJsonObject& params)
         total = actions.size();
         for (int i = 0; i < actions.size(); ++i) {
             QAction* action = actions.at(i);
-            if (!action || action->isSeparator() || !action->isVisible())
+            if (!action || action->isSeparator() ||
+                (!includeHidden && !action->isVisible()))
                 continue;
             QWidget* actionWidget = toolbar->widgetForAction(action);
-            if (!actionWidget || !actionWidget->isVisible())
+            if (!actionWidget)
+                continue;
+            if (!includeHidden && !actionWidget->isVisible())
                 continue;
             const QRect rect(actionWidget->mapTo(toolbar, QPoint(0, 0)),
                              actionWidget->size());
@@ -2712,8 +2806,10 @@ QJsonObject Server::source(const QJsonObject& params)
     }
 
     QString error;
-    QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
-                                    params.value(QStringLiteral("nth")).toInt(-1));
+    QWidget* widget = resolveTarget(
+        params.value(QStringLiteral("target")), &error,
+        params.value(QStringLiteral("nth")).toInt(-1),
+        params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), resolveErrorCode());
@@ -2831,7 +2927,7 @@ QJsonObject Server::nodeFor(QWidget* widget, const QJsonValue& props)
 }
 
 QWidget* Server::resolveTarget(const QJsonValue& target, QString* error,
-                               int nth)
+                               int nth, bool includeHidden)
 {
     lastResolveCode_ = QStringLiteral("E_NOT_FOUND");
     auto byId = [&](const QString& id) -> QWidget* {
@@ -2884,9 +2980,23 @@ QWidget* Server::resolveTarget(const QJsonValue& target, QString* error,
                              .arg(it.key());
             return nullptr;
         }
+        if (it.key() == QStringLiteral("props")) {
+            if (!it.value().isObject()) {
+                lastResolveCode_ = QStringLiteral("E_INVALID_FILTER");
+                if (error)
+                    *error = QStringLiteral("props filter must be an object");
+                return nullptr;
+            }
+        } else if (!it.value().isString()) {
+            lastResolveCode_ = QStringLiteral("E_INVALID_FILTER");
+            if (error)
+                *error = QStringLiteral("locator value for %1 must be a string")
+                             .arg(it.key());
+            return nullptr;
+        }
     }
 
-    const QList<QWidget*> matches = collectMatches(where);
+    const QList<QWidget*> matches = collectMatches(where, includeHidden);
     if (matches.isEmpty()) {
         if (error)
             *error = QStringLiteral("no widget matches target");
@@ -2921,7 +3031,8 @@ QString Server::resolveErrorCode() const
                                       : lastResolveCode_;
 }
 
-QList<QWidget*> Server::collectMatches(const QJsonObject& where) const
+QList<QWidget*> Server::collectMatches(const QJsonObject& where,
+                                        bool includeHidden) const
 {
     QList<QWidget*> roots = QApplication::topLevelWidgets();
     std::sort(roots.begin(), roots.end(), [](QWidget* left, QWidget* right) {
@@ -2930,7 +3041,8 @@ QList<QWidget*> Server::collectMatches(const QJsonObject& where) const
     QList<QWidget*> found;
     QSet<QWidget*> visited;
     std::function<void(QWidget*)> walk = [&](QWidget* widget) {
-        if (!widget || !widget->isVisible() || visited.contains(widget))
+        if (!widget || (!includeHidden && !widget->isVisible()) ||
+            visited.contains(widget))
             return;
         visited.insert(widget);
         if (matches(widget, where))
@@ -3341,9 +3453,16 @@ void Server::addProps(QJsonObject* node, QWidget* widget,
     if (!spec.isArray() && !spec.isString())
         return;
     QStringList names;
+    if (spec.isString() && spec.toString() != QStringLiteral("*")) {
+        names = spec.toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
+        for (const QString& name : names) {
+            const QVariant value = widget->property(name.toUtf8().constData());
+            if (value.isValid())
+                node->insert(name, QJsonValue::fromVariant(value));
+        }
+        return;
+    }
     if (spec.isString()) {
-        if (spec.toString() != QStringLiteral("*"))
-            return;
         QSet<QString> seen;
         const QMetaObject* meta = widget->metaObject();
         for (int i = 0; i < meta->propertyCount(); ++i) {

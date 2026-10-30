@@ -19,6 +19,7 @@ ACTIONS = frozenset(
 )
 COORDS = frozenset({"parent", "screen"})
 ANNOTATE = frozenset({"none", "interactive", "matched", "all", "layers"})
+SCREENSHOT_MAX_BYTES = 6 * 1024 * 1024
 IMAGE_FORMATS = frozenset({"png"})
 INPUT_MODES = frozenset({"auto", "pointer", "api"})
 # The RPC deadline must outlive the action's own expect/settle budget;
@@ -298,12 +299,14 @@ async def get(
     *,
     props: Any = None,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
-    return await session.call(
-        "get", _clean({"target": target, "props": props, "nth": nth})
-    )
+    params = _clean({"target": target, "props": props, "nth": nth})
+    if include_hidden:
+        params["include_hidden"] = True
+    return await session.call("get", params)
 
 
 async def set_property(
@@ -312,12 +315,15 @@ async def set_property(
     name: str,
     value: Any,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
-    return await session.call(
-        "set", _clean({"target": target, "name": name, "value": value, "nth": nth})
-    )
+    params = _clean({"target": target, "name": name, "value": value,
+                     "nth": nth})
+    if include_hidden:
+        params["include_hidden"] = True
+    return await session.call("set", params)
 
 
 async def call_method(
@@ -326,13 +332,15 @@ async def call_method(
     method: str,
     args: list[Any] | None = None,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
-    return await session.call(
-        "call",
-        _clean({"target": target, "method": method, "args": args, "nth": nth}),
-    )
+    params = _clean({"target": target, "method": method, "args": args,
+                     "nth": nth})
+    if include_hidden:
+        params["include_hidden"] = True
+    return await session.call("call", params)
 
 
 async def screenshot(
@@ -354,20 +362,30 @@ async def screenshot(
         raise ValueError("max_width must be >= 0 (0 = native)")
     if max_labels < 0:
         raise ValueError("max_labels must be >= 0")
-    return await session.call_frame(
-        "screenshot",
-        _clean(
-            {
-                "target": target,
-                "nth": nth,
-                "max_width": max_width,
-                "annotate": annotate,
-                "where": where,
-                "max_labels": max_labels,
-                "format": format,
-            }
-        ),
+    params = _clean(
+        {
+            "target": target,
+            "nth": nth,
+            "max_width": max_width,
+            "annotate": annotate,
+            "where": where,
+            "max_labels": max_labels,
+            "format": format,
+        }
     )
+    frame = await session.call_frame("screenshot", params)
+    if max_width > 0 and len(frame.binary) > SCREENSHOT_MAX_BYTES:
+        requested = max_width
+        width = max_width
+        while width > 256:
+            width = max(256, int(width * 0.75))
+            params["max_width"] = width
+            frame = await session.call_frame("screenshot", params)
+            if len(frame.binary) <= SCREENSHOT_MAX_BYTES:
+                break
+        frame.result["requested_max_width"] = requested
+        frame.result["auto_downscaled"] = True
+    return frame
 
 
 async def source(
@@ -378,23 +396,24 @@ async def source(
     snippet_lines: int = 3,
     max_lines: int = 20,
     nth: int | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     if snippet_lines < 0 or max_lines < 1:
         raise ValueError("snippet_lines must be >= 0 and max_lines >= 1")
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
-    return await session.call(
-        "source",
-        _clean(
-            {
-                "target": target,
-                "nth": nth,
-                "handler": handler,
-                "snippet_lines": snippet_lines,
-                "max_lines": max_lines,
-            }
-        ),
+    params = _clean(
+        {
+            "target": target,
+            "nth": nth,
+            "handler": handler,
+            "snippet_lines": snippet_lines,
+            "max_lines": max_lines,
+        }
     )
+    if include_hidden:
+        params["include_hidden"] = True
+    return await session.call("source", params)
 
 
 def _wait_where(condition: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:

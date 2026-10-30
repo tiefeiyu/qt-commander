@@ -33,7 +33,10 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   `qml_type`/`qml_id`/`objectName`/局部 rect；其 `vqml` ID 可用于
   `qt_get`、`qt_act`、`qt_screenshot` 裁剪和 `qt_source`。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
-  `expect`（where/props/gone）；虚拟 item 支持 click/dblclick。
+  `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
+  找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。
+- MCP 层截图 PNG 限制约 6 MiB；超限会自动降低宽度重截并返回
+  `auto_downscaled`，避免大图导致连接断开。
 
 ## 构建 linked 运行时
 

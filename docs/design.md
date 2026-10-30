@@ -171,7 +171,7 @@ props: { ...过滤器... }
 
 - `where`：locator，字段 `class`、`inherits`、`object_name`、`qml_id`、`props`、`within`、`window`；全部 AND。
 - `scope`：`{id}` 或 `{window}`；缺省所有顶层窗口；已支持限定到任意 widget 子树。
-- `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；`text` 是精确匹配，不是子串/正则。
+- `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；`text` 是精确匹配，不是子串/正则；非字符串值返回 `E_INVALID_FILTER` 并列出支持键。
 - 输出嵌套树；根是顶层窗口（或 scope 节点）。
 - `where` 存在时返回剪枝树：命中节点带 `matched:true`，祖先保留结构。
 - `count_only:true` 只返回 `{count}`，不建树、不序列化；expect 轮询用它。
@@ -669,16 +669,18 @@ inject：
 
 ### MCP 16 工具
 
+- `qt_screenshot` 在 MCP 层限制单张 PNG 约 6 MiB；超限会自动降低 `max_width` 重截并返回 `auto_downscaled/requested_max_width`，避免大图导致 MCP 连接断开。截图使用 widget grab（而不是原生窗口 grabWindow），避免 Windows 标题栏造成 annotation 偏移。
 - `qt_commander/server.py` 注册 16 个工具：`status/environments/build/attach/detach/windows/query/items/act/batch/wait/screenshot/get/set/call/source`。
 - `scripts/mcp_linked_smoke.py` 通过 stdio 实测：`qt_attach` → `qt_windows`/`qt_query` → `qt_act` → `qt_screenshot` → `qt_detach`；另测 `qt_get`/`qt_set`/`qt_call` 和 `qt_items`。
 - 当前可用：linked/injection attach/detach、windows（top-level id/title/active/modal/screen_pos）、query、items、act（click/dblclick/type/focus/key/scroll/hover/drag）、batch/wait、screenshot、get/set/call、source、build、environments。
 - `qt_windows` 返回每个 top-level 窗口的 `id/class/objectName/title/rect/screen_pos/screen/visible/minimized/active/modal/popup/tooltip/child_count`；父窗口下的 dialog 也会在列表中出现。没有 target 的 `qt_screenshot` 在多个可见 top-level 窗口时返回 `E_AMBIGUOUS`，不会静默选 activeWindow；最小化窗口的 screenshot/act 明确返回 `E_HIDDEN`。
 - `qt_environments` 扫描显式根/常见 Qt 安装路径/PATH，返回版本、kit、compiler 和可见 C++ 工具链。
 - `qt_source` 先按 objectName 搜索 `.ui`；QQuickWidget 再取 `rootObject()->objectName()` 搜索 `.qml`。搜索根为 `QT_COMMANDER_SOURCE_DIR`、可执行目录、当前目录（各最多 500 个文件）。命中返回 `origin:"ui"|"qml"` + file/line/confidence medium；未命中返回 identity + `E_NO_DEBUGINFO`。实测 `.ui` btnA 与 QML quick 均命中。
-- `qt_items` 已覆盖 QTabWidget/QTabBar、QMenuBar/QMenu、QHeaderView、QTableView、QTreeView、QListView、QComboBox、QScrollBar、QSlider、QSpinBox 上下按钮、可勾选 QGroupBox checkbox、QDockWidget 标题栏按钮、QSplitter handle、QToolBar action；combo 关闭时返回合成 rect，`qt_act` 直接 `setCurrentIndex`；spin/groupbox 的虚拟 action 走 stepUp/stepDown、setChecked；虚拟节点带 `virtual/kind/class/parent/rect/props/source`。
+- `qt_items` 已覆盖 QTabWidget/QTabBar、QMenuBar/QMenu、QHeaderView、QTableView、QTreeView、QListView、泛化 QAbstractItemView fallback、QComboBox、QScrollBar、QSlider、QSpinBox 上下按钮、可勾选 QGroupBox checkbox、QDockWidget 标题栏按钮、QSplitter handle、QToolBar action；combo 关闭时返回合成 rect，`qt_act` 直接 `setCurrentIndex`；spin/groupbox 的虚拟 action 走 stepUp/stepDown、setChecked；虚拟节点带 `virtual/kind/class/parent/rect/props/source`。
 - QML 深层对象：QQuickWidget 的 rootObject 及其 childItems 递归进入 query 树，节点带 `qml:true`、`qml_type`、`qml_id`、`objectName`、局部 rect，ID 形如 `tag.vqml.<ownerId>.<n>`；`qml_id` 通过 `QQmlEngine::contextForObject()->nameForObject()` 取得。`qt_get`/`qt_screenshot` 可直接用该 ID，screenshot 会裁剪 QML item；`qt_act` 对 QML MouseArea 发送点击，实测把 `qmlStatus.text` 从 `idle` 改为 `clicked`；QML Controls `Button` 也实测可点击，状态改为 `button`。`qt_source(qml_id)` 支持深层 QML 节点，按 objectName 或 `id:` 搜索 `.qml` 并返回 file/line；`screenshot` 对 QQuickWidget 的 annotate 也会把 QML item 作为虚拟区域，legend 带 `qml/qml_id`。实测 matrix `--mode qml` 返回 `qmlRoot` → `qmlText`/`qmlMouse`/`qmlStatus` 深层节点，`qt_get`、QML MouseArea/Button 点击、132×24 crop screenshot 和 8 条 QML annotate legend 通过。
 - `props:"*"` 枚举 metaObject 可读属性 + dynamic properties，最多 64 个；超出返回 `props_truncated/props_total`。E2E 按钮返回 62 个属性。
 - `qt_call` 支持最多 4 个带类型参数（`QMetaMethod` 解析），实测 `setText(QString)`。
+- `qt_act(type)` 对容器目标会递归寻找可见的 QLineEdit/QTextEdit/QPlainTextEdit；找不到返回 `E_NOT_EDITABLE`，不再静默成功。`get/set/call/source` 支持 `include_hidden`。
 - `qt_act` 支持声明式 `expect`（`where/props/gone`，可数组）；Python 轮询 `count_only`/`get`，超时返回 `cause:"expect_not_met"`、`dispatched:true`。E2E：点击 `btnA` 后 `statusLabel.text=="clicked"` 在 1ms 内匹配。
 - 严格定位：多候选 `E_AMBIGUOUS`、`nth`、未知键 `E_INVALID_FILTER`、stale id `E_STALE_ID`。
 - query 增加 2000 节点 / 2MiB 硬上限；count_only 不受 limit 限制。

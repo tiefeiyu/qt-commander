@@ -99,8 +99,9 @@ private:
                      const QString& cls, const QJsonObject& where) const;
     QJsonObject nodeFor(QWidget* widget, const QJsonValue& props);
     QWidget* resolveTarget(const QJsonValue& target, QString* error,
-                           int nth = -1);
-    QList<QWidget*> collectMatches(const QJsonObject& where) const;
+                           int nth = -1, bool includeHidden = false);
+    QList<QWidget*> collectMatches(const QJsonObject& where,
+                                   bool includeHidden = false) const;
     QString resolveErrorCode() const;
     QWidget* findByWhere(const QJsonObject& where) const;
     QWidget* findIn(QWidget* root, const QJsonObject& where) const;

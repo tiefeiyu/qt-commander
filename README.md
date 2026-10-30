@@ -36,7 +36,11 @@ are no snapshot files and no stale index of the UI.
   `qml_type`/`qml_id`/`objectName`/local rect; use their `vqml` IDs with
   `qt_get`, `qt_act`, `qt_screenshot` and `qt_source`.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
-  declarative `expect` (where/props/gone). Virtual items support click/dblclick.
+  declarative `expect` (where/props/gone). `type` finds the first editable
+  child for container targets and returns `E_NOT_EDITABLE` when none exists.
+  Virtual items support click/dblclick.
+- Screenshots are capped at about 6 MiB at the MCP layer; oversized images are
+  automatically re-captured at a smaller width (`auto_downscaled`).
 
 ## Build the linked runtime
 
