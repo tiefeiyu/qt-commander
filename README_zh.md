@@ -32,6 +32,10 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 - `QQuickWidget` 下的 QML 深层对象会出现在 `query` 树中，带
   `qml_type`/`qml_id`/`objectName`/局部 rect；其 `vqml` ID 可用于
   `qt_get`、`qt_act`、`qt_screenshot` 裁剪和 `qt_source`。
+- 纯 QML 应用（QQuickWindow，无 QWidget 顶层）也可直接使用：
+  `qt_windows/qt_query/qt_items/qt_get/qt_act`（QML 点击）和 `qt_screenshot`。
+- `qt_query` 的 `limit` 是软截断：返回部分树并附带
+  `count/total/limit/truncated`，不再直接报错。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。

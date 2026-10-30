@@ -1233,6 +1233,24 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             visibleWindows.append(root);
         }
         if (visibleWindows.isEmpty()) {
+            QList<QQuickWindow*> quickWindows;
+            for (QWindow* window : QGuiApplication::topLevelWindows()) {
+                if (auto* quick = qobject_cast<QQuickWindow*>(window)) {
+                    if (quick->isVisible())
+                        quickWindows.append(quick);
+                }
+            }
+            if (quickWindows.size() == 1)
+                return quickScreenshot(quickWindows.first(), params, binary);
+            if (quickWindows.size() > 1) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"),
+                              QStringLiteral("E_AMBIGUOUS"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("multiple visible QQuickWindows; "
+                                             "pass target"));
+                return result;
+            }
             QJsonObject result;
             result.insert(QStringLiteral("error"),
                           QStringLiteral("E_NOT_FOUND"));

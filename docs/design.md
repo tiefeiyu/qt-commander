@@ -173,6 +173,8 @@ props: { ...过滤器... }
 - `scope`：`{id}` 或 `{window}`；缺省所有顶层窗口；已支持限定到任意 widget 子树。
 - `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；字符串默认精确匹配，支持 `*`/`?` 通配和 `{contains/startsWith/regex/equals: "..."}`；无效值返回 `E_INVALID_FILTER` 并列出支持键。
 - `coords:"screen"` 为每个节点增加 `screen_rect`；`coords:"parent"`（默认）只给局部 rect。截图 legend 也带 `screen_rect`。
+- QML-only 应用（QQuickWindow/QQuickView，没有 QWidget 顶层）也作为顶层根：`qt_windows` 返回 `QQuickWindow`，`qt_query`/`qt_items`/`qt_get`/`qt_act`/`qt_screenshot` 走通用 QML item 路径；QML 虚拟 id 形如 `<tag>.vqml.<window>.<ptr>`。
+- `limit` 是软截断：超出时返回部分树并置 `count/total/limit/truncated`，不再用 `E_RESULT_TOO_LARGE` 直接拒绝；硬上限仍是 2000。
 - 输出嵌套树；根是顶层窗口（或 scope 节点）。
 - `where` 存在时返回剪枝树：命中节点带 `matched:true`，祖先保留结构。
 - `count_only:true` 只返回 `{count}`，不建树、不序列化；expect 轮询用它。

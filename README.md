@@ -35,6 +35,10 @@ are no snapshot files and no stale index of the UI.
 - QML deep objects under `QQuickWidget` are returned by `query` with
   `qml_type`/`qml_id`/`objectName`/local rect; use their `vqml` IDs with
   `qt_get`, `qt_act`, `qt_screenshot` and `qt_source`.
+- QML-only apps are first-class too: `QQuickWindow` roots work in `qt_windows`,
+  `qt_query`, `qt_items`, `qt_get`, `qt_act` (QML click) and `qt_screenshot`.
+- `qt_query` `limit` is a soft truncation: partial tree plus
+  `count/total/limit/truncated` instead of a hard error.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.
