@@ -81,7 +81,8 @@ private:
     QJsonObject screenshot(const QJsonObject& params, QByteArray* binary);
     QJsonObject quickScreenshot(QQuickWindow* window,
                                 const QJsonObject& params,
-                                QByteArray* binary);
+                                QByteArray* binary,
+                                const QRect& crop = QRect());
     QJsonObject get(const QJsonObject& params);
     QJsonObject setProperty(const QJsonObject& params);
     QJsonObject call(const QJsonObject& params);

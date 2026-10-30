@@ -1185,7 +1185,12 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                 return quickScreenshot(quickWindow, params, binary);
         }
     }
-    if (targetValue.isString() && virtuals_.contains(targetValue.toString())) {
+    const QString requestedVirtualId =
+        targetValue.isString()
+            ? targetValue.toString()
+            : targetValue.toObject().value(QStringLiteral("id")).toString();
+    if (!requestedVirtualId.isEmpty() &&
+        virtuals_.contains(requestedVirtualId)) {
         if (annotate != QStringLiteral("none")) {
             QJsonObject result;
             result.insert(QStringLiteral("error"),
@@ -1194,8 +1199,19 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                           QStringLiteral("annotate is not supported for virtual items"));
             return result;
         }
-        virtualId = targetValue.toString();
+        virtualId = requestedVirtualId;
         const VirtualRef ref = virtuals_.value(virtualId);
+        if (ref.kind == QStringLiteral("qml_item") &&
+            !ref.windowOwner.isNull()) {
+            auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+            auto* window =
+                qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+            if (item && window) {
+                const QRect sceneRect =
+                    item->mapRectToScene(item->boundingRect()).toAlignedRect();
+                return quickScreenshot(window, params, binary, sceneRect);
+            }
+        }
         if (ref.owner.isNull() || !virtualRect(ref, &virtualCrop)) {
             QJsonObject result;
             result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
@@ -1760,7 +1776,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
 
 QJsonObject Server::quickScreenshot(QQuickWindow* window,
                                      const QJsonObject& params,
-                                     QByteArray* binary)
+                                     QByteArray* binary, const QRect& crop)
 {
     if (!window) {
         QJsonObject result;
@@ -1781,6 +1797,21 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
     const double dpr = image.devicePixelRatio() > 0
                            ? image.devicePixelRatio()
                            : window->devicePixelRatio();
+    if (!crop.isEmpty()) {
+        QRect deviceCrop(qRound(crop.x() * dpr), qRound(crop.y() * dpr),
+                         qRound(crop.width() * dpr),
+                         qRound(crop.height() * dpr));
+        deviceCrop = deviceCrop.intersected(image.rect());
+        if (deviceCrop.isEmpty()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML item is outside the window"));
+            return result;
+        }
+        image = image.copy(deviceCrop);
+        image.setDevicePixelRatio(dpr);
+    }
     const int maxWidth = params.value(QStringLiteral("max_width")).toInt(1024);
     if (maxWidth > 0 && qRound(image.width() / dpr) > maxWidth) {
         image = image.scaledToWidth(qRound(maxWidth * dpr),
@@ -1792,7 +1823,7 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
     QJsonArray legend;
     int shown = 0;
     int total = 0;
-    if (annotate != QStringLiteral("none")) {
+    if (annotate != QStringLiteral("none") && crop.isEmpty()) {
         const QJsonObject where =
             params.value(QStringLiteral("where")).toObject();
         const int maxLabels =
@@ -1992,6 +2023,58 @@ QJsonObject Server::get(const QJsonObject& params)
 
 QJsonObject Server::setProperty(const QJsonObject& params)
 {
+    const QJsonValue targetValue = params.value(QStringLiteral("target"));
+    const QString virtualId =
+        targetValue.isString()
+            ? targetValue.toString()
+            : targetValue.toObject().value(QStringLiteral("id")).toString();
+    if (!virtualId.isEmpty() && virtuals_.contains(virtualId)) {
+        const VirtualRef ref = virtuals_.value(virtualId);
+        auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        if (ref.kind == QStringLiteral("qml_item") && item) {
+            const QString name =
+                params.value(QStringLiteral("name")).toString();
+            const int index =
+                item->metaObject()->indexOfProperty(name.toUtf8().constData());
+            if (index < 0) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"),
+                              QStringLiteral("E_INVALID_ARGUMENT"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("no such QML property: %1").arg(name));
+                return result;
+            }
+            const QMetaProperty property = item->metaObject()->property(index);
+            if (!property.isWritable()) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"), QStringLiteral("E_DISABLED"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("QML property is not writable: %1")
+                                  .arg(name));
+                return result;
+            }
+            const QVariant oldValue = property.read(item);
+            const QVariant newValue =
+                params.value(QStringLiteral("value")).toVariant();
+            if (!item->setProperty(name.toUtf8().constData(), newValue)) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"),
+                              QStringLiteral("E_INVALID_ARGUMENT"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("setting QML property failed: %1")
+                                  .arg(name));
+                return result;
+            }
+            QJsonObject result;
+            result.insert(QStringLiteral("ok"), true);
+            result.insert(QStringLiteral("name"), name);
+            result.insert(QStringLiteral("old"), QJsonValue::fromVariant(oldValue));
+            result.insert(QStringLiteral("new"),
+                          QJsonValue::fromVariant(property.read(item)));
+            return result;
+        }
+    }
+
     QString error;
     QWidget* widget = resolveTarget(
         params.value(QStringLiteral("target")), &error,
