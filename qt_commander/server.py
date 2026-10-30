@@ -818,7 +818,12 @@ async def qt_screenshot(
     max_labels: int = 50,
     format: str = "png",
 ) -> list[Any]:
-    """Capture a PNG; returns the image plus a small metadata block."""
+    """Capture a PNG plus metadata.
+
+    With ``annotate`` enabled, ``legend`` lists the numbered regions
+    (``n``, ``id``, ``rect``, ``image_rect``). The number is only a
+    screenshot-local visual marker; use ``id`` from the legend to act.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return [json.dumps(session, ensure_ascii=False)]

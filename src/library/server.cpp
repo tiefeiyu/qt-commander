@@ -997,44 +997,19 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         const double deviceScale =
             widget->width() > 0 ? double(originalWidth) / widget->width() : 1.0;
 
-        const int digits =
-            QString::number(qMax(1, candidates.size())).size();
-        const int rowHeight = qRound(16 * dpr);
-        const int baseGutter = qMax(qRound(44 * dpr),
-                                    qRound((digits * 8 + 18) * dpr));
-        const int maxRows = qMax(1, canvas.height() / rowHeight);
-        const int columns =
-            qMax(1, (candidates.size() + maxRows - 1) / maxRows);
-        const int rowsPerColumn =
-            qMax(1, (candidates.size() + columns - 1) / columns);
-        const int gutterWidth = baseGutter * columns;
-
-        QImage expanded(originalWidth + gutterWidth, canvas.height(),
-                        canvas.format());
-        expanded.fill(QColor(255, 255, 255));
-        {
-            QPainter background(&expanded);
-            background.drawImage(0, 0, canvas);
-        }
-        canvas = expanded;
-
         QPainter painter(&canvas);
         painter.setRenderHint(QPainter::Antialiasing, false);
         QFont font = painter.font();
         font.setPixelSize(qMax(9, qRound(10 * dpr)));
         painter.setFont(font);
-        painter.fillRect(QRect(originalWidth, 0, gutterWidth, canvas.height()),
-                         QColor(248, 248, 248));
-        painter.setPen(QColor(180, 180, 180));
-        painter.drawLine(originalWidth, 0, originalWidth, canvas.height());
+        QPen boxPen(QColor(220, 40, 40));
+        boxPen.setWidth(qMax(1, qRound(2 * dpr)));
+        painter.setPen(boxPen);
 
         int number = 0;
         QList<QRect> badgeRects;
         for (const Candidate& candidate : candidates) {
             ++number;
-            const QColor color = QColor::fromHsv((number * 47) % 360, 175, 190);
-            QPen boxPen(color);
-            boxPen.setWidth(qMax(1, qRound(2 * dpr)));
             painter.setPen(boxPen);
             QRect drawRect(
                 qRound(candidate.rect.x() * deviceScale),
@@ -1049,15 +1024,20 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
 
             const int badgeW = qMin(drawRect.width(), qRound(24 * dpr));
             const int badgeH = qMin(drawRect.height(), qRound(15 * dpr));
+            const QPoint gap(qRound(2 * dpr), qRound(2 * dpr));
+            const QPoint positions[] = {
+                drawRect.topLeft() + gap,
+                QPoint(drawRect.right() - badgeW - gap.x(),
+                       drawRect.top() + gap.y()),
+                QPoint(drawRect.left() + gap.x(),
+                       drawRect.bottom() - badgeH - gap.y()),
+                QPoint(drawRect.right() - badgeW - gap.x(),
+                       drawRect.bottom() - badgeH - gap.y()),
+            };
             QRect badge;
-            for (const QPoint& offset : {
-                     QPoint(qRound(2 * dpr), qRound(2 * dpr)),
-                     QPoint(qRound(28 * dpr), qRound(2 * dpr)),
-                     QPoint(qRound(2 * dpr), qRound(18 * dpr))}) {
-                QRect candidateBadge(
-                    drawRect.topLeft() + offset, QSize(badgeW, badgeH));
-                candidateBadge =
-                    candidateBadge.intersected(drawRect);
+            for (const QPoint& position : positions) {
+                QRect candidateBadge(position, QSize(badgeW, badgeH));
+                candidateBadge = candidateBadge.intersected(drawRect);
                 if (candidateBadge.isEmpty())
                     continue;
                 bool overlaps = false;
@@ -1073,29 +1053,13 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                 }
             }
             if (badge.isEmpty())
-                badge = QRect(drawRect.topLeft(),
-                              QSize(badgeW, badgeH)).intersected(drawRect);
+                badge = QRect(drawRect.topLeft(), QSize(badgeW, badgeH))
+                            .intersected(drawRect);
             badgeRects.append(badge);
-            painter.fillRect(badge, QColor(255, 255, 255, 235));
-            painter.setPen(QPen(color, 1));
+            painter.fillRect(badge, QColor(255, 255, 255, 230));
+            painter.setPen(QPen(QColor(220, 40, 40), 1));
             painter.drawRect(badge);
             painter.drawText(badge, Qt::AlignCenter, QString::number(number));
-
-            const int column = (number - 1) / rowsPerColumn;
-            const int row = (number - 1) % rowsPerColumn;
-            const QRect labelRect(
-                originalWidth + column * baseGutter + qRound(4 * dpr),
-                qRound(4 * dpr) + row * rowHeight,
-                baseGutter - qRound(8 * dpr), rowHeight - qRound(2 * dpr));
-            painter.fillRect(labelRect, QColor(255, 255, 255));
-            painter.fillRect(
-                QRect(labelRect.left() + qRound(2 * dpr),
-                      labelRect.center().y() - qRound(3 * dpr),
-                      qRound(6 * dpr), qRound(6 * dpr)), color);
-            painter.setPen(color);
-            painter.drawText(labelRect.adjusted(qRound(10 * dpr), 0, 0, 0),
-                             Qt::AlignVCenter | Qt::AlignLeft,
-                             QString::number(number));
 
             QJsonObject rect;
             rect.insert(QStringLiteral("x"), candidate.rect.x());
@@ -1107,9 +1071,12 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             imageRect.insert(QStringLiteral("y"), qRound(candidate.rect.y() * logicalScale));
             imageRect.insert(QStringLiteral("w"), qRound(candidate.rect.width() * logicalScale));
             imageRect.insert(QStringLiteral("h"), qRound(candidate.rect.height() * logicalScale));
+            int depth = 0;
+            for (QWidget* parent = candidate.node->parentWidget();
+                 parent && parent != widget; parent = parent->parentWidget())
+                ++depth;
             QJsonObject entry;
             entry.insert(QStringLiteral("n"), number);
-            entry.insert(QStringLiteral("color"), color.name());
             entry.insert(QStringLiteral("id"), idFor(candidate.node));
             entry.insert(QStringLiteral("objectName"), candidate.node->objectName());
             entry.insert(QStringLiteral("class"),
@@ -1123,6 +1090,9 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("enabled"), candidate.node->isEnabled());
             entry.insert(QStringLiteral("focusable"),
                          candidate.node->focusPolicy() != Qt::NoFocus);
+            entry.insert(QStringLiteral("depth"), depth);
+            entry.insert(QStringLiteral("parent_id"),
+                         idFor(candidate.node->parentWidget()));
             entry.insert(QStringLiteral("virtual"), false);
             entry.insert(QStringLiteral("rect"), rect);
             entry.insert(QStringLiteral("image_rect"), imageRect);

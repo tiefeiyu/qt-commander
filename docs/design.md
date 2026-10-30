@@ -686,7 +686,7 @@ inject：
 - `qt_wait` 用剩余 deadline 作为每次 query 的超时；query 超时返回 `matched:false`。
 - `qt_batch` 先校验全部 step 再执行，传输异常保留已完成 steps。
 - `qt_build` 已可用：选择发现的 Qt kit，`cmake` configure + build，返回 `build_id/build_dir/output`；MinGW 自动定位编译器；MSVC 通过 `vswhere` 自动发现 VS2022/2026 的 `vcvars64.bat`，也接受显式 `vcvars_path`。实测 Qt5.15.2 msvc2019_64 构建 linked app 成功，并用该二进制度过 MCP attach/query/virtual get/act E2E。
-- screenshot 的 `max_width` 按逻辑像素计算，返回 `dpr/pixel_width/pixel_height`；`annotate` 支持 none/interactive/matched/all，返回 `legend`（n/color/id/objectName/class/text/enabled/focusable/virtual/rect/image_rect）。每个框内画编号 badge，右侧 gutter 用同色数字对应（无引线、无标签重叠）；按视觉位置排序，all 只标叶子控件；密码类 QLineEdit 的 text 记为 `***`；返回 annotate_total/shown/truncated；`format` 仅 png。
+- screenshot 的 `max_width` 按逻辑像素计算，返回 `dpr/pixel_width/pixel_height`；`annotate` 支持 none/interactive/matched/all，返回 `legend`（n/id/objectName/class/text/enabled/focusable/depth/parent_id/virtual/rect/image_rect）。编号直接画在框内 badge，图像不增加右侧 gutter；`n` 是本次截图内的临时编号，agent 用 legend 里的 `id`/`rect` 操作，`n` 仅用于看图。按视觉位置排序，all 只标叶子控件；密码类 QLineEdit 的 text 记为 `***`；返回 annotate_total/shown/truncated；`format` 仅 png。
 - 虚拟 item 可 `qt_screenshot(target=virtual_id)`：按注册 rect 裁剪 owner；返回 `virtual:true/target`。
 - `qt_status` 的 `descriptor_info` 列出 `pid_alive/session_id/started_at/build_id`。
 - Session 记录 `disconnected_at`，`qt_status`/`SessionInfo` 返回 `grace_remaining_ms`；断开后有 60s 重连窗口。
