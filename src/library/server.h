@@ -40,6 +40,7 @@ private:
         bool hasWhere = false;
         QJsonValue props;
         bool includeHidden = false;
+        bool screenCoords = false;
         int maxDepth = -1;
         int matched = 0;
         int total = 0;

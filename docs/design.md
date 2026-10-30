@@ -172,6 +172,7 @@ props: { ...过滤器... }
 - `where`：locator，字段 `class`、`inherits`、`object_name`、`qml_id`、`props`、`within`、`window`；全部 AND。
 - `scope`：`{id}` 或 `{window}`；缺省所有顶层窗口；已支持限定到任意 widget 子树。
 - `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；`text` 是精确匹配，不是子串/正则；非字符串值返回 `E_INVALID_FILTER` 并列出支持键。
+- `coords:"screen"` 为每个节点增加 `screen_rect`；`coords:"parent"`（默认）只给局部 rect。截图 legend 也带 `screen_rect`。
 - 输出嵌套树；根是顶层窗口（或 scope 节点）。
 - `where` 存在时返回剪枝树：命中节点带 `matched:true`，祖先保留结构。
 - `count_only:true` 只返回 `{count}`，不建树、不序列化；expect 轮询用它。
@@ -676,7 +677,7 @@ inject：
 - `qt_windows` 返回每个 top-level 窗口的 `id/class/objectName/title/rect/screen_pos/screen/visible/minimized/active/modal/popup/tooltip/child_count`；父窗口下的 dialog 也会在列表中出现。没有 target 的 `qt_screenshot` 在多个可见 top-level 窗口时返回 `E_AMBIGUOUS`，不会静默选 activeWindow；最小化窗口的 screenshot/act 明确返回 `E_HIDDEN`。
 - `qt_environments` 扫描显式根/常见 Qt 安装路径/PATH，返回版本、kit、compiler 和可见 C++ 工具链。
 - `qt_source` 先按 objectName 搜索 `.ui`；QQuickWidget 再取 `rootObject()->objectName()` 搜索 `.qml`。搜索根为 `QT_COMMANDER_SOURCE_DIR`、可执行目录、当前目录（各最多 500 个文件）。命中返回 `origin:"ui"|"qml"` + file/line/confidence medium；未命中返回 identity + `E_NO_DEBUGINFO`。实测 `.ui` btnA 与 QML quick 均命中。
-- `qt_items` 已覆盖 QTabWidget/QTabBar、QMenuBar/QMenu、QHeaderView、QTableView、QTreeView、QListView、泛化 QAbstractItemView fallback、QComboBox、QScrollBar、QSlider、QSpinBox 上下按钮、可勾选 QGroupBox checkbox、QDockWidget 标题栏按钮、QSplitter handle、QToolBar action；combo 关闭时返回合成 rect，`qt_act` 直接 `setCurrentIndex`；spin/groupbox 的虚拟 action 走 stepUp/stepDown、setChecked；虚拟节点带 `virtual/kind/class/parent/rect/props/source`。
+- `qt_items` 已覆盖 QTabWidget/QTabBar、QMenuBar/QMenu、QHeaderView、QTableView、QTreeView、QListView、泛化 QAbstractItemView fallback、QComboBox、QScrollBar、QSlider、QSpinBox 上下按钮、可勾选 QGroupBox checkbox、QDockWidget 标题栏按钮、QSplitter handle、QToolBar action；无 adapter 时最后回退 QAccessible 子节点（role/name/rect），用于自绘控件。combo 关闭时返回合成 rect，`qt_act` 直接 `setCurrentIndex`；spin/groupbox 的虚拟 action 走 stepUp/stepDown、setChecked；虚拟节点带 `virtual/kind/class/parent/rect/props/source`。
 - QML 深层对象：QQuickWidget 的 rootObject 及其 childItems 递归进入 query 树，节点带 `qml:true`、`qml_type`、`qml_id`、`objectName`、局部 rect，ID 形如 `tag.vqml.<ownerId>.<n>`；`qml_id` 通过 `QQmlEngine::contextForObject()->nameForObject()` 取得。`qt_get`/`qt_screenshot` 可直接用该 ID，screenshot 会裁剪 QML item；`qt_act` 对 QML MouseArea 发送点击，实测把 `qmlStatus.text` 从 `idle` 改为 `clicked`；QML Controls `Button` 也实测可点击，状态改为 `button`。`qt_source(qml_id)` 支持深层 QML 节点，按 objectName 或 `id:` 搜索 `.qml` 并返回 file/line；`screenshot` 对 QQuickWidget 的 annotate 也会把 QML item 作为虚拟区域，legend 带 `qml/qml_id`。实测 matrix `--mode qml` 返回 `qmlRoot` → `qmlText`/`qmlMouse`/`qmlStatus` 深层节点，`qt_get`、QML MouseArea/Button 点击、132×24 crop screenshot 和 8 条 QML annotate legend 通过。
 - `props:"*"` 枚举 metaObject 可读属性 + dynamic properties，最多 64 个；超出返回 `props_truncated/props_total`。E2E 按钮返回 62 个属性。
 - `qt_call` 支持最多 4 个带类型参数（`QMetaMethod` 解析），实测 `setText(QString)`。

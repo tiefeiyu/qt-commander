@@ -92,9 +92,16 @@ async def run_mode(mode: str) -> None:
             scoped = await session.call("query", {
                 "scope": {"id": second["id"]},
                 "props": ["text"],
+                "coords": "screen",
             })
             assert len(scoped["tree"]) == 1
             assert scoped["tree"][0]["class"] == "QMainWindow"
+            assert scoped["tree"][0]["screen_rect"] == {
+                "x": second["screen_pos"]["x"],
+                "y": second["screen_pos"]["y"],
+                "w": second["rect"]["w"],
+                "h": second["rect"]["h"],
+            }
             alias = await session.call("query", {
                 "where": {"objectName": "btnMainA"},
             })

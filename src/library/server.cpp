@@ -2,6 +2,7 @@
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
+#include <QAccessible>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -572,14 +573,15 @@ QJsonObject Server::query(const QJsonObject& params)
 
     const QString coords =
         params.value(QStringLiteral("coords")).toString(QStringLiteral("parent"));
-    if (coords != QStringLiteral("parent")) {
+    if (coords != QStringLiteral("parent") &&
+        coords != QStringLiteral("screen")) {
         QJsonObject error;
-        error.insert(QStringLiteral("error"),
-                     QStringLiteral("E_COORDS_UNAVAILABLE"));
+        error.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         error.insert(QStringLiteral("message"),
-                     QStringLiteral("only parent coordinates are implemented"));
+                     QStringLiteral("coords must be parent or screen"));
         return error;
     }
+    context.screenCoords = coords == QStringLiteral("screen");
     QWidget* scopeRoot = nullptr;
     if (params.contains(QStringLiteral("scope"))) {
         const QJsonValue scope = params.value(QStringLiteral("scope"));
@@ -1350,6 +1352,14 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("virtual"), false);
             entry.insert(QStringLiteral("rect"), rect);
             entry.insert(QStringLiteral("image_rect"), imageRect);
+            const QPoint screen =
+                candidate.node->mapToGlobal(QPoint(0, 0));
+            QJsonObject screenRect;
+            screenRect.insert(QStringLiteral("x"), screen.x());
+            screenRect.insert(QStringLiteral("y"), screen.y());
+            screenRect.insert(QStringLiteral("w"), candidate.rect.width());
+            screenRect.insert(QStringLiteral("h"), candidate.rect.height());
+            entry.insert(QStringLiteral("screen_rect"), screenRect);
             legend.append(entry);
         }
 
@@ -1396,6 +1406,14 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             entry.insert(QStringLiteral("virtual"), true);
             entry.insert(QStringLiteral("rect"), rect);
             entry.insert(QStringLiteral("image_rect"), imageRect);
+            const QPoint screen =
+                widget->mapToGlobal(annotation.rect.topLeft());
+            QJsonObject screenRect;
+            screenRect.insert(QStringLiteral("x"), screen.x());
+            screenRect.insert(QStringLiteral("y"), screen.y());
+            screenRect.insert(QStringLiteral("w"), annotation.rect.width());
+            screenRect.insert(QStringLiteral("h"), annotation.rect.height());
+            entry.insert(QStringLiteral("screen_rect"), screenRect);
             legend.append(entry);
         }
         annotateShown = legend.size();
@@ -2267,6 +2285,33 @@ QJsonObject Server::items(const QJsonObject& params)
             consider(QStringLiteral("splitter_handle"),
                      QStringLiteral("QSplitterHandle"), i, rect, props,
                      QPersistentModelIndex(), nullptr, handle);
+        }
+    } else if (QAccessibleInterface* iface =
+                   QAccessible::queryAccessibleInterface(owner)) {
+        total = iface->childCount();
+        for (int i = 0; i < total; ++i) {
+            QAccessibleInterface* child = iface->child(i);
+            if (!child)
+                continue;
+            const QRect screenRect = child->rect();
+            if (screenRect.isEmpty())
+                continue;
+            const QRect rect(owner->mapFromGlobal(screenRect.topLeft()),
+                             screenRect.size());
+            QJsonObject props;
+            props.insert(QStringLiteral("text"),
+                         child->text(QAccessible::Name));
+            props.insert(QStringLiteral("role"),
+                         static_cast<int>(child->role()));
+            consider(QStringLiteral("accessible_item"),
+                     QStringLiteral("QAccessible::item"), i, rect, props);
+        }
+        if (total == 0) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_NO_ITEMS"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("accessible provider found no children"));
+            return result;
         }
     } else {
         QJsonObject result;
@@ -3255,6 +3300,15 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
     rectObject.insert(QStringLiteral("w"), rect.width());
     rectObject.insert(QStringLiteral("h"), rect.height());
     node.insert(QStringLiteral("rect"), rectObject);
+    if (context.screenCoords) {
+        const QPoint screen = owner->mapToGlobal(rect.topLeft());
+        QJsonObject screenRect;
+        screenRect.insert(QStringLiteral("x"), screen.x());
+        screenRect.insert(QStringLiteral("y"), screen.y());
+        screenRect.insert(QStringLiteral("w"), rect.width());
+        screenRect.insert(QStringLiteral("h"), rect.height());
+        node.insert(QStringLiteral("screen_rect"), screenRect);
+    }
     node.insert(QStringLiteral("child_count"), childCount);
     node.insert(QStringLiteral("children"), children);
     node.insert(QStringLiteral("props"), props);
@@ -3349,6 +3403,15 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
         screenPos.insert(QStringLiteral("x"), screen.x());
         screenPos.insert(QStringLiteral("y"), screen.y());
         node.insert(QStringLiteral("screen_pos"), screenPos);
+    }
+    if (context.screenCoords) {
+        const QPoint screen = widget->mapToGlobal(QPoint(0, 0));
+        QJsonObject screenRect;
+        screenRect.insert(QStringLiteral("x"), screen.x());
+        screenRect.insert(QStringLiteral("y"), screen.y());
+        screenRect.insert(QStringLiteral("w"), widget->width());
+        screenRect.insert(QStringLiteral("h"), widget->height());
+        node.insert(QStringLiteral("screen_rect"), screenRect);
     }
 
     if (context.hasWhere)
