@@ -2452,6 +2452,76 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
 
 QJsonObject Server::source(const QJsonObject& params)
 {
+    const QJsonValue sourceTarget = params.value(QStringLiteral("target"));
+    QString sourceVirtualId;
+    if (sourceTarget.isString()) {
+        sourceVirtualId = sourceTarget.toString();
+    } else if (sourceTarget.isObject()) {
+        sourceVirtualId =
+            sourceTarget.toObject().value(QStringLiteral("id")).toString();
+    }
+    if (!sourceVirtualId.isEmpty() && virtuals_.contains(sourceVirtualId)) {
+        const VirtualRef ref = virtuals_.value(sourceVirtualId);
+        auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        if (ref.kind == QStringLiteral("qml_item") && item) {
+            UiHit hit;
+            const QString queryName = item->objectName().isEmpty()
+                                          ? QString()
+                                          : item->objectName();
+            const bool located =
+                !queryName.isEmpty() && findQmlLocation(queryName, &hit);
+            QJsonObject target;
+            target.insert(QStringLiteral("id"), sourceVirtualId);
+            target.insert(QStringLiteral("class"), ref.className);
+            target.insert(QStringLiteral("objectName"), item->objectName());
+            target.insert(QStringLiteral("qml_id"),
+                          QQmlEngine::contextForObject(item)
+                              ? QQmlEngine::contextForObject(item)
+                                    ->nameForObject(item)
+                              : QString());
+            QJsonObject location;
+            location.insert(
+                QStringLiteral("url"),
+                located ? QUrl::fromLocalFile(hit.file).toString()
+                        : QJsonValue(QJsonValue::Null));
+            location.insert(
+                QStringLiteral("file"),
+                located ? QJsonValue(hit.file) : QJsonValue(QJsonValue::Null));
+            location.insert(QStringLiteral("line"), located ? hit.line : 0);
+            location.insert(QStringLiteral("column"), 0);
+            location.insert(QStringLiteral("origin"),
+                            located ? QStringLiteral("qml")
+                                    : QStringLiteral("none"));
+            location.insert(QStringLiteral("confidence"),
+                            located ? QStringLiteral("medium")
+                                    : QStringLiteral("low"));
+            location.insert(QStringLiteral("stale"), false);
+            QJsonObject qml;
+            qml.insert(QStringLiteral("type"), ref.className);
+            qml.insert(QStringLiteral("objectName"), item->objectName());
+            qml.insert(QStringLiteral("id"),
+                       QQmlEngine::contextForObject(item)
+                           ? QQmlEngine::contextForObject(item)
+                                 ->nameForObject(item)
+                           : QString());
+            QJsonArray diagnostics;
+            if (!located)
+                diagnostics.append(QStringLiteral(
+                    "No .qml source with this QML objectName was found."));
+            QJsonObject result;
+            result.insert(QStringLiteral("available"), located);
+            if (!located)
+                result.insert(QStringLiteral("code"),
+                              QStringLiteral("E_NO_DEBUGINFO"));
+            result.insert(QStringLiteral("kind"), QStringLiteral("qml"));
+            result.insert(QStringLiteral("target"), target);
+            result.insert(QStringLiteral("location"), location);
+            result.insert(QStringLiteral("qml"), qml);
+            result.insert(QStringLiteral("diagnostics"), diagnostics);
+            return result;
+        }
+    }
+
     QString error;
     QWidget* widget = resolveTarget(params.value(QStringLiteral("target")), &error,
                                     params.value(QStringLiteral("nth")).toInt(-1));
@@ -2801,8 +2871,10 @@ QJsonObject qmlProps(const QQuickItem* item, const QJsonValue& requested)
 QString Server::registerQml(QWidget* owner, QQuickItem* item, int index,
                             const QRect& rect, const QJsonObject& props)
 {
-    const QString id = tag_ + QStringLiteral(".vqml.") + idFor(owner) +
-                       QStringLiteral(".") + QString::number(index);
+    const QString id =
+        tag_ + QStringLiteral(".vqml.") + idFor(owner) +
+        QStringLiteral(".") +
+        QString::number(reinterpret_cast<quintptr>(item), 16);
     VirtualRef ref;
     ref.owner = owner;
     ref.kind = QStringLiteral("qml_item");
