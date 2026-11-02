@@ -416,6 +416,7 @@ async def source(
     max_lines: int = 20,
     nth: int | None = None,
     include_hidden: bool = False,
+    source_dir: str | None = None,
 ) -> dict[str, Any]:
     if snippet_lines < 0 or max_lines < 1:
         raise ValueError("snippet_lines must be >= 0 and max_lines >= 1")
@@ -428,6 +429,7 @@ async def source(
             "handler": handler,
             "snippet_lines": snippet_lines,
             "max_lines": max_lines,
+            "source_dir": source_dir,
         }
     )
     if include_hidden:

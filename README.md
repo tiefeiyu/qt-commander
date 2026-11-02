@@ -45,6 +45,10 @@ are no snapshot files and no stale index of the UI.
   not methods — use `qt_set` instead. Non-void return values are returned in
   `result`; object returns use `{class, id}` so they can be reused as targets.
   `qt_methods` lists invokable methods, parameter types and return types.
+  Pass `signature` to disambiguate overloads; enum arguments accept their
+  integer values.
+- `qt_source` accepts `source_dir` for qrc/embedded QML whose source tree is
+  not next to the executable; it returns `file/line/url` when found.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.

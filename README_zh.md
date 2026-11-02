@@ -40,7 +40,10 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 - `qt_call` 只调用 Qt 元对象方法（slot / `Q_INVOKABLE`），QWidget 和 QML item
   都支持；`QPushButton::setText` 这类属性 setter 不是方法，请用 `qt_set`。
   非 void 返回值放在 `result`；对象返回值是 `{class, id}`，可直接复用为 target；
-  `qt_methods` 可列出方法、参数类型和返回类型。
+  `qt_methods` 可列出方法、参数类型和返回类型；用 `signature` 消歧重载，
+  枚举参数可传整数。
+- `qt_source` 支持 `source_dir`，用于 qrc/嵌入式 QML 源码不在可执行文件附近的情况；
+  找到时返回 `file/line/url`。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。

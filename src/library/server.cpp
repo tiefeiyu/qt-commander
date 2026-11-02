@@ -470,6 +470,15 @@ bool findUiLocation(const QString& objectName, UiHit* hit)
     return false;
 }
 
+bool lineDeclaresName(const QString& line, const QString& name)
+{
+    const QString escaped = QRegularExpression::escape(name);
+    const QRegularExpression pattern(
+        QStringLiteral("\\b(?:id|objectName)\\s*:\\s*[\"']?%1[\"']?\\b")
+            .arg(escaped));
+    return pattern.match(line).hasMatch();
+}
+
 bool findQmlLocationInFile(const QString& path, const QString& name,
                            UiHit* hit)
 {
@@ -486,13 +495,7 @@ bool findQmlLocationInFile(const QString& path, const QString& name,
     while (!file.atEnd()) {
         const QString text = QString::fromUtf8(file.readLine());
         ++line;
-        if (!text.contains(QStringLiteral("objectName")) &&
-            !text.contains(QStringLiteral("id:")))
-            continue;
-        if (text.contains(QStringLiteral("\"%1\"").arg(name)) ||
-            text.contains(QStringLiteral("'%1'").arg(name)) ||
-            text.contains(QStringLiteral("id: %1").arg(name)) ||
-            text.contains(QStringLiteral("id:%1").arg(name))) {
+        if (lineDeclaresName(text, name)) {
             hit->file = canonical;
             hit->line = line;
             return true;
@@ -550,13 +553,7 @@ bool findQmlLocation(const QString& objectName, UiHit* hit)
             while (!file.atEnd()) {
                 const QString text = QString::fromUtf8(file.readLine());
                 ++line;
-                if (!text.contains(QStringLiteral("objectName")) &&
-                    !text.contains(QStringLiteral("id:")))
-                    continue;
-                if (text.contains(QStringLiteral("\"%1\"").arg(objectName)) ||
-                    text.contains(QStringLiteral("'%1'").arg(objectName)) ||
-                    text.contains(QStringLiteral("id: %1").arg(objectName)) ||
-                    text.contains(QStringLiteral("id:%1").arg(objectName))) {
+                if (lineDeclaresName(text, objectName)) {
                     hit->file = canonical;
                     hit->line = line;
                     return true;
@@ -4519,6 +4516,23 @@ QJsonObject Server::quickItems(QWindow* window, QQuickItem* root,
 
 QJsonObject Server::source(const QJsonObject& params)
 {
+    const QString sourceDir =
+        params.value(QStringLiteral("source_dir")).toString();
+    const QByteArray previousSourceDir =
+        qgetenv("QT_COMMANDER_SOURCE_DIR");
+    if (!sourceDir.isEmpty())
+        qputenv("QT_COMMANDER_SOURCE_DIR", sourceDir.toLocal8Bit());
+    struct RestoreSourceDir {
+        QByteArray previous;
+        ~RestoreSourceDir()
+        {
+            if (previous.isEmpty())
+                qunsetenv("QT_COMMANDER_SOURCE_DIR");
+            else
+                qputenv("QT_COMMANDER_SOURCE_DIR", previous);
+        }
+    } restoreSourceDir{previousSourceDir};
+
     const QJsonValue sourceTarget = params.value(QStringLiteral("target"));
     QString sourceVirtualId;
     if (sourceTarget.isString()) {

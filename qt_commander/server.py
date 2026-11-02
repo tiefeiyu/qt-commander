@@ -975,6 +975,7 @@ async def qt_source(
     max_lines: int = 20,
     nth: int | None = None,
     include_hidden: bool = False,
+    source_dir: str | None = None,
 ) -> dict[str, Any]:
     """Return source location (engine support pending)."""
     session = _session(session_id)
@@ -989,6 +990,7 @@ async def qt_source(
             max_lines=max_lines,
             nth=nth,
             include_hidden=include_hidden,
+            source_dir=source_dir,
         )
     except Exception as exc:
         return _map_error(exc)
