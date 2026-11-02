@@ -232,8 +232,17 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
             if (auto* quick = qobject_cast<QQuickWindow*>(window))
                 walk(quick, quick->contentItem());
         }
+        auto interactive = [](QQuickItem* item) {
+            return (item->acceptedMouseButtons() & Qt::LeftButton) ||
+                   item->inherits("QQuickAbstractButton") ||
+                   item->inherits("QQuickMouseArea");
+        };
         std::stable_sort(matches.begin(), matches.end(),
-                         [](const QmlItemMatch& left, const QmlItemMatch& right) {
+                         [&](const QmlItemMatch& left, const QmlItemMatch& right) {
+                             if (left.item->isVisible() != right.item->isVisible())
+                                 return left.item->isVisible();
+                             if (interactive(left.item) != interactive(right.item))
+                                 return interactive(left.item);
                              return left.item->width() * left.item->height() >
                                     right.item->width() * right.item->height();
                          });
@@ -1263,6 +1272,20 @@ QJsonObject Server::act(const QJsonObject& params)
         params.value(QStringLiteral("target"))
             .toObject()
             .contains(QStringLiteral("qml_id"))) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"),
+                      qmlError.contains(QStringLiteral("provide nth"))
+                          ? QStringLiteral("E_AMBIGUOUS")
+                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"), qmlError);
+        if (!qmlCandidateList.isEmpty())
+            result.insert(QStringLiteral("candidates"), qmlCandidateList);
+        return result;
+    }
+    if (params.value(QStringLiteral("target")).isObject() &&
+        params.value(QStringLiteral("target"))
+            .toObject()
+            .contains(QStringLiteral("text"))) {
         QJsonObject result;
         result.insert(QStringLiteral("error"),
                       qmlError.contains(QStringLiteral("provide nth"))
