@@ -1837,10 +1837,21 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
         auto quickMatches = [&](QQuickItem* item) {
             if (where.isEmpty())
                 return true;
+            const QString className =
+                QString::fromLatin1(item->metaObject()->className());
             if (where.contains(QStringLiteral("class")) &&
-                !matchText(where.value(QStringLiteral("class")),
-                           QString::fromLatin1(item->metaObject()->className())))
+                !matchText(where.value(QStringLiteral("class")), className))
                 return false;
+            if (where.contains(QStringLiteral("qml_type")) &&
+                !matchText(where.value(QStringLiteral("qml_type")), className))
+                return false;
+            if (where.contains(QStringLiteral("qml_id"))) {
+                QQmlContext* context = QQmlEngine::contextForObject(item);
+                const QString qmlId =
+                    context ? context->nameForObject(item) : QString();
+                if (!matchText(where.value(QStringLiteral("qml_id")), qmlId))
+                    return false;
+            }
             const QJsonValue objectSpec =
                 where.contains(QStringLiteral("object_name"))
                     ? where.value(QStringLiteral("object_name"))
@@ -1853,6 +1864,17 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
                 !matchText(where.value(QStringLiteral("text")),
                            item->property("text").toString()))
                 return false;
+            if (where.contains(QStringLiteral("props"))) {
+                const QJsonObject props =
+                    where.value(QStringLiteral("props")).toObject();
+                for (auto it = props.begin(); it != props.end(); ++it) {
+                    const QVariant value =
+                        item->property(it.key().toUtf8().constData());
+                    if (!value.isValid() ||
+                        QJsonValue::fromVariant(value) != it.value())
+                        return false;
+                }
+            }
             return true;
         };
         std::function<void(QQuickItem*)> walk = [&](QQuickItem* item) {
@@ -1892,9 +1914,15 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
         total = candidates.size();
         if (annotate == QStringLiteral("interactive")) {
             QList<QmlCandidate> filtered;
-            for (const QmlCandidate& candidate : candidates)
-                if (candidate.item->isEnabled())
+            for (const QmlCandidate& candidate : candidates) {
+                QQuickItem* item = candidate.item;
+                if (!item->isEnabled())
+                    continue;
+                if ((item->acceptedMouseButtons() & Qt::LeftButton) ||
+                    item->inherits("QQuickAbstractButton") ||
+                    item->inherits("QQuickMouseArea"))
                     filtered.append(candidate);
+            }
             candidates = filtered;
         }
         if (candidates.size() > maxLabels)
@@ -1953,6 +1981,13 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
                 {QStringLiteral("y"), drawRect.y()},
                 {QStringLiteral("w"), drawRect.width()},
                 {QStringLiteral("h"), drawRect.height()}});
+            const QPoint screen =
+                window->mapToGlobal(candidate.rect.topLeft());
+            entry.insert(QStringLiteral("screen_rect"), QJsonObject{
+                {QStringLiteral("x"), screen.x()},
+                {QStringLiteral("y"), screen.y()},
+                {QStringLiteral("w"), candidate.rect.width()},
+                {QStringLiteral("h"), candidate.rect.height()}});
             legend.append(entry);
         }
         painter.end();
@@ -3258,17 +3293,20 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         const QPointF point =
             clickTarget->mapToScene(clickTarget->boundingRect().center());
         const int clicks = action == QStringLiteral("dblclick") ? 2 : 1;
+        clickTarget->forceActiveFocus();
         for (int i = 0; i < clicks; ++i) {
-            QMouseEvent move(QEvent::MouseMove, point, Qt::NoButton,
-                             Qt::NoButton, Qt::NoModifier);
+            QMouseEvent move(QEvent::MouseMove, point, point,
+                             Qt::NoButton, Qt::NoButton, Qt::NoModifier);
             QCoreApplication::sendEvent(window, &move);
             QCoreApplication::processEvents();
-            QMouseEvent press(QEvent::MouseButtonPress, point, Qt::LeftButton,
-                              Qt::LeftButton, Qt::NoModifier);
+            QMouseEvent press(QEvent::MouseButtonPress, point, point,
+                              Qt::LeftButton, Qt::LeftButton,
+                              Qt::NoModifier);
             QCoreApplication::sendEvent(window, &press);
             QCoreApplication::processEvents();
-            QMouseEvent release(QEvent::MouseButtonRelease, point,
-                                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QMouseEvent release(QEvent::MouseButtonRelease, point, point,
+                                Qt::LeftButton, Qt::NoButton,
+                                Qt::NoModifier);
             QCoreApplication::sendEvent(window, &release);
             QCoreApplication::processEvents();
         }
@@ -3280,6 +3318,7 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         result.insert(QStringLiteral("ok"), true);
         result.insert(QStringLiteral("action"), action);
         result.insert(QStringLiteral("dispatched"), true);
+        result.insert(QStringLiteral("input"), QStringLiteral("mouse"));
         result.insert(QStringLiteral("resolved"), resolved);
         result.insert(QStringLiteral("observed"), resolved);
         return result;
