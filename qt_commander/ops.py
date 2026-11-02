@@ -23,6 +23,7 @@ ACTIONS = frozenset(
         "key",
         "focus",
         "restore",
+        "minimize",
         "scroll",
         "drag",
     }

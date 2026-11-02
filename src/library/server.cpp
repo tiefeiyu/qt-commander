@@ -1341,10 +1341,33 @@ QJsonObject Server::act(const QJsonObject& params)
         if (QWindow* window = windowForId(virtualId)) {
             const QString windowAction =
                 params.value(QStringLiteral("action")).toString();
+            if (windowAction == QStringLiteral("minimize")) {
+                window->showMinimized();
+                QJsonObject resolved;
+                resolved.insert(QStringLiteral("id"), virtualId);
+                resolved.insert(
+                    QStringLiteral("class"),
+                    QString::fromLatin1(window->metaObject()->className()));
+                resolved.insert(QStringLiteral("minimized"),
+                                window->windowState() == Qt::WindowMinimized);
+                const QRect geometry = window->geometry();
+                resolved.insert(QStringLiteral("rect"), QJsonObject{
+                    {QStringLiteral("x"), geometry.x()},
+                    {QStringLiteral("y"), geometry.y()},
+                    {QStringLiteral("w"), geometry.width()},
+                    {QStringLiteral("h"), geometry.height()}});
+                QJsonObject result;
+                result.insert(QStringLiteral("ok"), true);
+                result.insert(QStringLiteral("resolved"), resolved);
+                return result;
+            }
             if (windowAction == QStringLiteral("restore")) {
+                const QRect savedGeometry = window->geometry();
                 if (window->windowState() == Qt::WindowMinimized)
                     window->setWindowState(Qt::WindowNoState);
                 window->show();
+                if (savedGeometry.isValid())
+                    window->setGeometry(savedGeometry);
                 window->raise();
                 window->requestActivate();
                 QJsonObject resolved;
@@ -1356,6 +1379,12 @@ QJsonObject Server::act(const QJsonObject& params)
                 resolved.insert(
                     QStringLiteral("minimized"),
                     window->windowState() == Qt::WindowMinimized);
+                const QRect geometry = window->geometry();
+                resolved.insert(QStringLiteral("rect"), QJsonObject{
+                    {QStringLiteral("x"), geometry.x()},
+                    {QStringLiteral("y"), geometry.y()},
+                    {QStringLiteral("w"), geometry.width()},
+                    {QStringLiteral("h"), geometry.height()}});
                 QJsonObject result;
                 result.insert(QStringLiteral("ok"), true);
                 result.insert(QStringLiteral("resolved"), resolved);
