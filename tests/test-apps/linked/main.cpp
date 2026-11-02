@@ -21,6 +21,15 @@
 
 #include "qt_commander/agent.h"
 
+class CallProbe : public QPushButton {
+    Q_OBJECT
+public:
+    using QPushButton::QPushButton;
+    Q_INVOKABLE int add(int left, int right) { return left + right; }
+    Q_INVOKABLE QString echo(const QString& text) { return text; }
+    Q_INVOKABLE QWidget* self() { return this; }
+};
+
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
@@ -115,6 +124,10 @@ int main(int argc, char* argv[])
     boxLayout->addWidget(edit);
     layout->addWidget(box);
 
+    auto* callProbe = new CallProbe(QStringLiteral("Call Probe"), central);
+    callProbe->setObjectName(QStringLiteral("callProbe"));
+    layout->addWidget(callProbe);
+
     QObject::connect(top, &QPushButton::clicked, status, [status]() {
         status->setText(QStringLiteral("clicked"));
     });
@@ -143,3 +156,5 @@ int main(int argc, char* argv[])
 
     return app.exec();
 }
+
+#include "main.moc"

@@ -8,6 +8,7 @@
 #include <QPersistentModelIndex>
 #include <QPointer>
 #include <QRect>
+#include <QVariant>
 #include <QSet>
 #include <QTcpServer>
 
@@ -88,6 +89,7 @@ private:
     QJsonObject setProperty(const QJsonObject& params);
     QJsonObject call(const QJsonObject& params);
     QJsonObject methods(const QJsonObject& params);
+    QJsonValue returnValueToJson(const QVariant& value);
     QJsonObject items(const QJsonObject& params);
     QJsonObject quickItems(QWindow* window, QQuickItem* root,
                            const QJsonObject& params,

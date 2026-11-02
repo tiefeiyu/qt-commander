@@ -2876,7 +2876,7 @@ QJsonObject Server::call(const QJsonObject& params)
                               qmlItem->metaObject()->className()));
             if (returnData) {
                 result.insert(QStringLiteral("result"),
-                              QJsonValue::fromVariant(
+                              returnValueToJson(
                                   QVariant(returnType, returnData)));
                 QMetaType::destroy(returnType, returnData);
             }
@@ -3016,11 +3016,44 @@ QJsonObject Server::call(const QJsonObject& params)
     result.insert(QStringLiteral("method"), method);
     if (returnData) {
         result.insert(QStringLiteral("result"),
-                      QJsonValue::fromVariant(
-                          QVariant(returnType, returnData)));
+                      returnValueToJson(QVariant(returnType, returnData)));
         QMetaType::destroy(returnType, returnData);
     }
     return result;
+}
+
+QJsonValue Server::returnValueToJson(const QVariant& value)
+{
+    if (!value.isValid())
+        return QJsonValue(QJsonValue::Null);
+    const int type = value.userType();
+    const bool objectPointer =
+        type == QMetaType::QObjectStar ||
+        (QMetaType::typeFlags(type) & QMetaType::PointerToQObject);
+    if (!objectPointer)
+        return QJsonValue::fromVariant(value);
+
+    QObject* object = value.value<QObject*>();
+    if (!object)
+        return QJsonValue(QJsonValue::Null);
+    QJsonObject info;
+    info.insert(QStringLiteral("class"),
+                QString::fromLatin1(object->metaObject()->className()));
+    if (auto* item = qobject_cast<QQuickItem*>(object)) {
+        QQuickWindow* window = item->window();
+        if (window) {
+            const QRect rect =
+                item->mapRectToScene(item->boundingRect()).toAlignedRect();
+            info.insert(QStringLiteral("id"),
+                        registerQuickQml(window, item, 0, rect,
+                                         QJsonObject{}));
+        }
+    } else if (auto* widget = qobject_cast<QWidget*>(object)) {
+        info.insert(QStringLiteral("id"), idFor(widget));
+    } else if (auto* window = qobject_cast<QWindow*>(object)) {
+        info.insert(QStringLiteral("id"), idForWindow(window));
+    }
+    return info;
 }
 
 QJsonObject Server::methods(const QJsonObject& params)
