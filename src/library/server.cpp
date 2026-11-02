@@ -225,6 +225,16 @@ bool qmlActionable(QQuickItem* item)
     return false;
 }
 
+QQuickItem* qmlActionableAncestor(QQuickItem* item)
+{
+    for (QQuickItem* parent = item ? item->parentItem() : nullptr; parent;
+         parent = parent->parentItem()) {
+        if (qmlActionable(parent))
+            return parent;
+    }
+    return nullptr;
+}
+
 bool qmlContainsItem(QQuickItem* ancestor, QQuickItem* item)
 {
     for (QQuickItem* parent = item ? item->parentItem() : nullptr; parent;
@@ -375,19 +385,25 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
             if (!hasAncestorMatch)
                 folded.append(match);
         }
-        if (folded.size() == 1) {
-            selectable = folded;
-        } else {
-            QList<QmlItemMatch> actionable;
-            for (const QmlItemMatch& match : folded) {
-                if (qmlActionable(match.item))
-                    actionable.append(match);
-            }
-            if (actionable.size() == 1)
-                selectable = actionable;
-            else
-                selectable = folded;
+        QList<QmlItemMatch> actionable;
+        for (const QmlItemMatch& match : folded) {
+            if (qmlActionable(match.item))
+                actionable.append(match);
         }
+        if (actionable.isEmpty()) {
+            QSet<QQuickItem*> seenAncestors;
+            for (const QmlItemMatch& match : folded) {
+                QQuickItem* ancestor = qmlActionableAncestor(match.item);
+                if (!ancestor || seenAncestors.contains(ancestor))
+                    continue;
+                seenAncestors.insert(ancestor);
+                actionable.append({match.window, ancestor});
+            }
+        }
+        if (actionable.size() == 1)
+            selectable = actionable;
+        else
+            selectable = folded;
         matches = selectable;
     } else {
         matches = selectable;
