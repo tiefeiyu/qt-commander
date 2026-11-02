@@ -50,6 +50,8 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   `{"get": ...}` 之一，可原子完成写入/读取/恢复。
 - `qt_act(target=<窗口 id>, action="minimize"|"restore")` 可最小化/恢复
   QWindow/QQuickWindow；restore 保持原几何。
+  `action="set_geometry"` + `geometry={x,y,w,h}` 返回实际 `resolved.rect`
+  和 `applied`。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。

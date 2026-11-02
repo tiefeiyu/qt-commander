@@ -57,6 +57,8 @@ are no snapshot files and no stale index of the UI.
   sequence.
 - `qt_act(target=<window id>, action="minimize"|"restore")` controls a
   QWindow/QQuickWindow; restore preserves the pre-minimize geometry.
+  `action="set_geometry"` with `geometry={x,y,w,h}` reports the actual
+  `resolved.rect` and an `applied` flag.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.

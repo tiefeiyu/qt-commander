@@ -1419,6 +1419,53 @@ QJsonObject Server::act(const QJsonObject& params)
         if (QWindow* window = windowForId(virtualId)) {
             const QString windowAction =
                 params.value(QStringLiteral("action")).toString();
+            if (windowAction == QStringLiteral("set_geometry")) {
+                const QJsonObject geometry =
+                    params.value(QStringLiteral("geometry")).toObject();
+                const int x = geometry.value(QStringLiteral("x")).toInt(0);
+                const int y = geometry.value(QStringLiteral("y")).toInt(0);
+                const int w = geometry.value(QStringLiteral("w")).toInt(0);
+                const int h = geometry.value(QStringLiteral("h")).toInt(0);
+                if (w <= 0 || h <= 0) {
+                    QJsonObject result;
+                    result.insert(QStringLiteral("error"),
+                                  QStringLiteral("E_INVALID_ARGUMENT"));
+                    result.insert(QStringLiteral("message"),
+                                  QStringLiteral("geometry requires positive "
+                                                 "w and h"));
+                    return result;
+                }
+                window->setGeometry(QRect(x, y, w, h));
+                window->show();
+                window->raise();
+                window->requestActivate();
+                QCoreApplication::processEvents(
+                    QEventLoop::ExcludeUserInputEvents);
+                const QRect actual = window->geometry();
+                QJsonObject requested;
+                requested.insert(QStringLiteral("x"), x);
+                requested.insert(QStringLiteral("y"), y);
+                requested.insert(QStringLiteral("w"), w);
+                requested.insert(QStringLiteral("h"), h);
+                QJsonObject rect;
+                rect.insert(QStringLiteral("x"), actual.x());
+                rect.insert(QStringLiteral("y"), actual.y());
+                rect.insert(QStringLiteral("w"), actual.width());
+                rect.insert(QStringLiteral("h"), actual.height());
+                QJsonObject resolved;
+                resolved.insert(QStringLiteral("id"), virtualId);
+                resolved.insert(
+                    QStringLiteral("class"),
+                    QString::fromLatin1(window->metaObject()->className()));
+                resolved.insert(QStringLiteral("visible"), window->isVisible());
+                resolved.insert(QStringLiteral("rect"), rect);
+                QJsonObject result;
+                result.insert(QStringLiteral("ok"), true);
+                result.insert(QStringLiteral("requested"), requested);
+                result.insert(QStringLiteral("applied"), actual == QRect(x, y, w, h));
+                result.insert(QStringLiteral("resolved"), resolved);
+                return result;
+            }
             if (windowAction == QStringLiteral("minimize")) {
                 window->showMinimized();
                 QJsonObject resolved;

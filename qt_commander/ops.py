@@ -24,6 +24,7 @@ ACTIONS = frozenset(
         "focus",
         "restore",
         "minimize",
+        "set_geometry",
         "scroll",
         "drag",
     }
@@ -236,6 +237,7 @@ async def act(
     *,
     nth: int | None = None,
     position: Mapping[str, float] | None = None,
+    geometry: Mapping[str, float] | None = None,
     button: str = "left",
     modifiers: list[str] | None = None,
     text: str | None = None,
@@ -271,6 +273,7 @@ async def act(
             "action": action,
             "nth": nth,
             "position": position,
+            "geometry": geometry,
             "button": button,
             "modifiers": modifiers,
             "text": text,
