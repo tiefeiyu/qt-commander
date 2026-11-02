@@ -158,9 +158,35 @@ QJsonArray qmlCandidates(const QList<QmlItemMatch>& matches)
 
 bool matchText(const QJsonValue& spec, const QString& actual);
 
+bool qmlActionable(QQuickItem* item)
+{
+    if (!item)
+        return false;
+    if ((item->acceptedMouseButtons() & Qt::LeftButton) ||
+        item->inherits("QQuickAbstractButton") ||
+        item->inherits("QQuickMouseArea"))
+        return true;
+    for (QQuickItem* child : item->childItems()) {
+        if (qmlActionable(child))
+            return true;
+    }
+    return false;
+}
+
+bool qmlContainsItem(QQuickItem* ancestor, QQuickItem* item)
+{
+    for (QQuickItem* parent = item ? item->parentItem() : nullptr; parent;
+         parent = parent->parentItem()) {
+        if (parent == ancestor)
+            return true;
+    }
+    return false;
+}
+
 bool resolveQmlTarget(const QJsonValue& target, int nth,
                       QQuickWindow** window, QQuickItem** item,
-                      QString* error, QJsonArray* candidates = nullptr)
+                      QString* error, QJsonArray* candidates = nullptr,
+                      bool includeHidden = false)
 {
     if (!target.isObject())
         return false;
@@ -255,6 +281,52 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
                          ? QStringLiteral("no QML item matches target")
                          : QStringLiteral("no QML item has qml_id: %1").arg(qmlId);
         return false;
+    }
+
+    QList<QmlItemMatch> selectable;
+    for (const QmlItemMatch& match : matches) {
+        if (includeHidden || match.item->isVisible())
+            selectable.append(match);
+    }
+    if (selectable.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("%1 QML items match but all are hidden; "
+                                    "pass include_hidden=true")
+                         .arg(matches.size());
+        return false;
+    }
+    if (nth < 0 && qmlId.isEmpty() && selectable.size() > 1) {
+        // A label and its clickable ancestor often share the same text.
+        // Fold descendants into the ancestor before choosing a target.
+        QList<QmlItemMatch> folded;
+        for (const QmlItemMatch& match : selectable) {
+            bool hasAncestorMatch = false;
+            for (const QmlItemMatch& other : selectable) {
+                if (other.item != match.item &&
+                    qmlContainsItem(other.item, match.item)) {
+                    hasAncestorMatch = true;
+                    break;
+                }
+            }
+            if (!hasAncestorMatch)
+                folded.append(match);
+        }
+        if (folded.size() == 1) {
+            selectable = folded;
+        } else {
+            QList<QmlItemMatch> actionable;
+            for (const QmlItemMatch& match : folded) {
+                if (qmlActionable(match.item))
+                    actionable.append(match);
+            }
+            if (actionable.size() == 1)
+                selectable = actionable;
+            else
+                selectable = folded;
+        }
+        matches = selectable;
+    } else {
+        matches = selectable;
     }
     if (matches.size() > 1 && nth < 0) {
         if (error)
@@ -1313,7 +1385,9 @@ QJsonObject Server::act(const QJsonObject& params)
     QJsonArray qmlCandidateList;
     if (resolveQmlTarget(params.value(QStringLiteral("target")), nth,
                          &qmlWindow, &qmlItem, &qmlError,
-                         &qmlCandidateList)) {
+                         &qmlCandidateList,
+                         params.value(QStringLiteral("include_hidden"))
+                             .toBool(false))) {
         if (!qmlItem->isVisible() &&
             !params.value(QStringLiteral("include_hidden")).toBool(false)) {
             QJsonObject result;
@@ -1334,10 +1408,13 @@ QJsonObject Server::act(const QJsonObject& params)
             .toObject()
             .contains(QStringLiteral("qml_id"))) {
         QJsonObject result;
-        result.insert(QStringLiteral("error"),
-                      qmlError.contains(QStringLiteral("provide nth"))
-                          ? QStringLiteral("E_AMBIGUOUS")
-                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(
+            QStringLiteral("error"),
+            qmlError.contains(QStringLiteral("all are hidden"))
+                ? QStringLiteral("E_HIDDEN")
+                : (qmlError.contains(QStringLiteral("provide nth"))
+                       ? QStringLiteral("E_AMBIGUOUS")
+                       : QStringLiteral("E_NOT_FOUND")));
         result.insert(QStringLiteral("message"), qmlError);
         if (!qmlCandidateList.isEmpty())
             result.insert(QStringLiteral("candidates"), qmlCandidateList);
@@ -1348,10 +1425,13 @@ QJsonObject Server::act(const QJsonObject& params)
             .toObject()
             .contains(QStringLiteral("text"))) {
         QJsonObject result;
-        result.insert(QStringLiteral("error"),
-                      qmlError.contains(QStringLiteral("provide nth"))
-                          ? QStringLiteral("E_AMBIGUOUS")
-                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(
+            QStringLiteral("error"),
+            qmlError.contains(QStringLiteral("all are hidden"))
+                ? QStringLiteral("E_HIDDEN")
+                : (qmlError.contains(QStringLiteral("provide nth"))
+                       ? QStringLiteral("E_AMBIGUOUS")
+                       : QStringLiteral("E_NOT_FOUND")));
         result.insert(QStringLiteral("message"), qmlError);
         if (!qmlCandidateList.isEmpty())
             result.insert(QStringLiteral("candidates"), qmlCandidateList);
@@ -2592,7 +2672,9 @@ QJsonObject Server::get(const QJsonObject& params)
     QJsonArray qmlCandidateList;
     if (resolveQmlTarget(targetValue, requestNth(params),
                          &qmlWindow, &qmlItem, &qmlError,
-                         &qmlCandidateList)) {
+                         &qmlCandidateList,
+                         params.value(QStringLiteral("include_hidden"))
+                             .toBool(false))) {
         const QRect rect =
             qmlItem->mapRectToScene(qmlItem->boundingRect()).toAlignedRect();
         const QString id =
@@ -2602,10 +2684,13 @@ QJsonObject Server::get(const QJsonObject& params)
     if (targetValue.isObject() &&
         targetValue.toObject().contains(QStringLiteral("qml_id"))) {
         QJsonObject result;
-        result.insert(QStringLiteral("error"),
-                      qmlError.contains(QStringLiteral("provide nth"))
-                          ? QStringLiteral("E_AMBIGUOUS")
-                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(
+            QStringLiteral("error"),
+            qmlError.contains(QStringLiteral("all are hidden"))
+                ? QStringLiteral("E_HIDDEN")
+                : (qmlError.contains(QStringLiteral("provide nth"))
+                       ? QStringLiteral("E_AMBIGUOUS")
+                       : QStringLiteral("E_NOT_FOUND")));
         result.insert(QStringLiteral("message"), qmlError);
         if (!qmlCandidateList.isEmpty())
             result.insert(QStringLiteral("candidates"), qmlCandidateList);
@@ -2695,7 +2780,9 @@ QJsonObject Server::setProperty(const QJsonObject& params)
     QJsonArray qmlCandidateList;
     if (resolveQmlTarget(targetValue, requestNth(params),
                          &qmlWindow, &qmlItem, &qmlError,
-                         &qmlCandidateList)) {
+                         &qmlCandidateList,
+                         params.value(QStringLiteral("include_hidden"))
+                             .toBool(false))) {
         if (!qmlItem->isVisible() &&
             !params.value(QStringLiteral("include_hidden")).toBool(false)) {
             QJsonObject result;
@@ -2749,10 +2836,13 @@ QJsonObject Server::setProperty(const QJsonObject& params)
     if (targetValue.isObject() &&
         targetValue.toObject().contains(QStringLiteral("qml_id"))) {
         QJsonObject result;
-        result.insert(QStringLiteral("error"),
-                      qmlError.contains(QStringLiteral("provide nth"))
-                          ? QStringLiteral("E_AMBIGUOUS")
-                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(
+            QStringLiteral("error"),
+            qmlError.contains(QStringLiteral("all are hidden"))
+                ? QStringLiteral("E_HIDDEN")
+                : (qmlError.contains(QStringLiteral("provide nth"))
+                       ? QStringLiteral("E_AMBIGUOUS")
+                       : QStringLiteral("E_NOT_FOUND")));
         result.insert(QStringLiteral("message"), qmlError);
         if (!qmlCandidateList.isEmpty())
             result.insert(QStringLiteral("candidates"), qmlCandidateList);
@@ -2828,7 +2918,9 @@ QJsonObject Server::call(const QJsonObject& params)
         bool isQmlTarget =
             resolveQmlTarget(params.value(QStringLiteral("target")),
                              requestNth(params), &qmlWindow, &qmlItem,
-                             &qmlError, &candidates);
+                             &qmlError, &candidates,
+                             params.value(QStringLiteral("include_hidden"))
+                                 .toBool(false));
         if (!isQmlTarget) {
             const QJsonValue target = params.value(QStringLiteral("target"));
             QString virtualId =
@@ -3179,7 +3271,9 @@ QJsonObject Server::methods(const QJsonObject& params)
     QJsonArray candidates;
     if (resolveQmlTarget(params.value(QStringLiteral("target")),
                          requestNth(params), &qmlWindow, &qmlItem, &error,
-                         &candidates)) {
+                         &candidates,
+                         params.value(QStringLiteral("include_hidden"))
+                             .toBool(false))) {
         object = qmlItem;
     } else {
         const QJsonValue target = params.value(QStringLiteral("target"));
