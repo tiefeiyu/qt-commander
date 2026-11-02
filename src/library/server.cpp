@@ -280,6 +280,17 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
     return true;
 }
 
+int requestNth(const QJsonObject& params)
+{
+    int nth = params.value(QStringLiteral("nth")).toInt(-1);
+    if (nth < 0) {
+        const QJsonValue target = params.value(QStringLiteral("target"));
+        if (target.isObject())
+            nth = target.toObject().value(QStringLiteral("nth")).toInt(-1);
+    }
+    return nth;
+}
+
 bool matchText(const QJsonValue& spec, const QString& actual)
 {
     if (spec.isString()) {
@@ -1254,7 +1265,7 @@ QJsonObject Server::act(const QJsonObject& params)
     }
 
     QString error;
-    const int nth = params.value(QStringLiteral("nth")).toInt(-1);
+    const int nth = requestNth(params);
     QQuickWindow* qmlWindow = nullptr;
     QQuickItem* qmlItem = nullptr;
     QString qmlError;
@@ -1604,7 +1615,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
         return result;
     }
 
-    const int nth = params.value(QStringLiteral("nth")).toInt(-1);
+    const int nth = requestNth(params);
     const bool explicitTarget = params.contains(QStringLiteral("target"));
     QWidget* widget = nullptr;
     QRect virtualCrop;
@@ -2504,7 +2515,7 @@ QJsonObject Server::get(const QJsonObject& params)
     QQuickItem* qmlItem = nullptr;
     QString qmlError;
     QJsonArray qmlCandidateList;
-    if (resolveQmlTarget(targetValue, params.value(QStringLiteral("nth")).toInt(-1),
+    if (resolveQmlTarget(targetValue, requestNth(params),
                          &qmlWindow, &qmlItem, &qmlError,
                          &qmlCandidateList)) {
         const QRect rect =
@@ -2529,7 +2540,7 @@ QJsonObject Server::get(const QJsonObject& params)
     QString error;
     QWidget* widget = resolveTarget(
         params.value(QStringLiteral("target")), &error,
-        params.value(QStringLiteral("nth")).toInt(-1),
+        requestNth(params),
         params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
@@ -2598,7 +2609,7 @@ QJsonObject Server::setProperty(const QJsonObject& params)
     QQuickItem* qmlItem = nullptr;
     QString qmlError;
     QJsonArray qmlCandidateList;
-    if (resolveQmlTarget(targetValue, params.value(QStringLiteral("nth")).toInt(-1),
+    if (resolveQmlTarget(targetValue, requestNth(params),
                          &qmlWindow, &qmlItem, &qmlError,
                          &qmlCandidateList)) {
         const QString name =
@@ -2658,7 +2669,7 @@ QJsonObject Server::setProperty(const QJsonObject& params)
     QString error;
     QWidget* widget = resolveTarget(
         params.value(QStringLiteral("target")), &error,
-        params.value(QStringLiteral("nth")).toInt(-1),
+        requestNth(params),
         params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
@@ -2715,7 +2726,7 @@ QJsonObject Server::call(const QJsonObject& params)
     QString error;
     QWidget* widget = resolveTarget(
         params.value(QStringLiteral("target")), &error,
-        params.value(QStringLiteral("nth")).toInt(-1),
+        requestNth(params),
         params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
@@ -2838,7 +2849,7 @@ QJsonObject Server::items(const QJsonObject& params)
     }
     QWidget* owner = resolveTarget(
         ownerTarget, &error,
-        params.value(QStringLiteral("nth")).toInt(-1),
+        requestNth(params),
         params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!owner) {
         QJsonObject result;
@@ -4150,7 +4161,7 @@ QJsonObject Server::source(const QJsonObject& params)
         sourceQmlId.clear();
     if (!sourceQmlId.isEmpty()) {
         const QList<QmlItemMatch> matches = findQmlMatches(sourceQmlId);
-        const int nth = params.value(QStringLiteral("nth")).toInt(-1);
+        const int nth = requestNth(params);
         if (matches.size() > 1 && nth < 0) {
             QJsonObject result;
             result.insert(QStringLiteral("error"), QStringLiteral("E_AMBIGUOUS"));
@@ -4260,7 +4271,7 @@ QJsonObject Server::source(const QJsonObject& params)
     QString error;
     QWidget* widget = resolveTarget(
         params.value(QStringLiteral("target")), &error,
-        params.value(QStringLiteral("nth")).toInt(-1),
+        requestNth(params),
         params.value(QStringLiteral("include_hidden")).toBool(false));
     if (!widget) {
         QJsonObject result;
