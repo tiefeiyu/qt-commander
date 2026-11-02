@@ -37,6 +37,8 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   `qt_screenshot`（窗口或元素裁剪）。
 - `qt_query` 的 `limit` 是软截断：返回部分树并附带
   `count/total/limit/truncated`，不再直接报错。
+- `qt_call` 只调用 Qt 元对象方法（slot / `Q_INVOKABLE`），QWidget 和 QML item
+  都支持；`QPushButton::setText` 这类属性 setter 不是方法，请用 `qt_set`。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。

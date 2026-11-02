@@ -40,6 +40,9 @@ are no snapshot files and no stale index of the UI.
   and `qt_screenshot` (window or element crop).
 - `qt_query` `limit` is a soft truncation: partial tree plus
   `count/total/limit/truncated` instead of a hard error.
+- `qt_call` invokes only Qt metaobject methods (`slots` / `Q_INVOKABLE`) on
+  widgets and QML items; property setters such as `QPushButton::setText` are
+  not methods — use `qt_set` instead.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.
