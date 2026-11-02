@@ -188,9 +188,13 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
                       QString* error, QJsonArray* candidates = nullptr,
                       bool includeHidden = false)
 {
-    if (!target.isObject())
+    QJsonObject object;
+    if (target.isString())
+        object.insert(QStringLiteral("qml_id"), target.toString());
+    else if (target.isObject())
+        object = target.toObject();
+    else
         return false;
-    const QJsonObject object = target.toObject();
     const QString qmlId = object.value(QStringLiteral("qml_id")).toString();
     QList<QmlItemMatch> matches;
     if (!qmlId.isEmpty()) {
