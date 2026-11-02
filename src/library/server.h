@@ -70,7 +70,8 @@ private:
     void sendResult(QTcpSocket* socket, const QJsonValue& id,
                     const QJsonObject& result);
     void sendError(QTcpSocket* socket, const QJsonValue& id,
-                   const QString& code, const QString& message);
+                   const QString& code, const QString& message,
+                   const QJsonObject& details = QJsonObject());
     void sendBinaryResult(QTcpSocket* socket, const QJsonValue& id,
                           const QJsonObject& result,
                           const QByteArray& binary);
@@ -88,7 +89,8 @@ private:
     QJsonObject call(const QJsonObject& params);
     QJsonObject items(const QJsonObject& params);
     QJsonObject quickItems(QWindow* window, QQuickItem* root,
-                           const QJsonObject& params);
+                           const QJsonObject& params,
+                           const QString& ownerId);
     QJsonObject source(const QJsonObject& params);
     QJsonObject actVirtual(const QJsonObject& params, const QString& id);
     QJsonObject buildQmlNode(QWidget* owner, QQuickItem* item,
@@ -113,7 +115,8 @@ private:
                             QAction* action = nullptr,
                             QWidget* page = nullptr,
                             int logicalIndex = -1);
-    QJsonObject virtualItem(const QString& id);
+    QJsonObject virtualItem(const QString& id,
+                            const QJsonValue& requested = QJsonValue());
     bool virtualRect(const struct VirtualRef& ref, QRect* rect) const;
     bool itemMatches(const QJsonObject& props, const QString& kind,
                      const QString& cls, const QJsonObject& where) const;

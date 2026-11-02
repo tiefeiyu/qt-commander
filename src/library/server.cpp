@@ -95,7 +95,180 @@ bool validMatcher(const QJsonValue& spec)
     static const QSet<QString> operators{
         QStringLiteral("contains"), QStringLiteral("startsWith"),
         QStringLiteral("regex"), QStringLiteral("equals")};
-    return operators.contains(object.begin().key());
+    return operators.contains(object.begin().key()) &&
+           object.begin().value().isString();
+}
+
+struct QmlItemMatch {
+    QQuickWindow* window = nullptr;
+    QQuickItem* item = nullptr;
+};
+
+QList<QmlItemMatch> findQmlMatches(const QString& qmlId)
+{
+    QList<QmlItemMatch> matches;
+    if (qmlId.isEmpty())
+        return matches;
+    std::function<void(QQuickWindow*, QQuickItem*)> walk =
+        [&](QQuickWindow* window, QQuickItem* item) {
+            if (!item)
+                return;
+            QQmlContext* context = QQmlEngine::contextForObject(item);
+            if (context && context->nameForObject(item) == qmlId)
+                matches.append({window, item});
+            for (QQuickItem* child : item->childItems())
+                walk(window, child);
+        };
+    for (QWindow* window : QGuiApplication::topLevelWindows()) {
+        if (auto* quick = qobject_cast<QQuickWindow*>(window))
+            walk(quick, quick->contentItem());
+    }
+    std::stable_sort(matches.begin(), matches.end(),
+                     [](const QmlItemMatch& left, const QmlItemMatch& right) {
+                         if (left.item->isVisible() != right.item->isVisible())
+                             return left.item->isVisible();
+                         return left.item->width() * left.item->height() >
+                                right.item->width() * right.item->height();
+                     });
+    return matches;
+}
+
+QJsonArray qmlCandidates(const QList<QmlItemMatch>& matches)
+{
+    QJsonArray candidates;
+    for (int i = 0; i < matches.size(); ++i) {
+        const QmlItemMatch& match = matches.at(i);
+        const QRect rect =
+            match.item->mapRectToScene(match.item->boundingRect()).toAlignedRect();
+        QJsonObject candidate;
+        candidate.insert(QStringLiteral("nth"), i);
+        candidate.insert(QStringLiteral("visible"), match.item->isVisible());
+        candidate.insert(QStringLiteral("class"),
+                         QString::fromLatin1(
+                             match.item->metaObject()->className()));
+        candidate.insert(QStringLiteral("rect"), QJsonObject{
+            {QStringLiteral("x"), rect.x()},
+            {QStringLiteral("y"), rect.y()},
+            {QStringLiteral("w"), rect.width()},
+            {QStringLiteral("h"), rect.height()}});
+        candidates.append(candidate);
+    }
+    return candidates;
+}
+
+bool matchText(const QJsonValue& spec, const QString& actual);
+
+bool resolveQmlTarget(const QJsonValue& target, int nth,
+                      QQuickWindow** window, QQuickItem** item,
+                      QString* error, QJsonArray* candidates = nullptr)
+{
+    if (!target.isObject())
+        return false;
+    const QJsonObject object = target.toObject();
+    const QString qmlId = object.value(QStringLiteral("qml_id")).toString();
+    QList<QmlItemMatch> matches;
+    if (!qmlId.isEmpty()) {
+        matches = findQmlMatches(qmlId);
+    } else {
+        static const QSet<QString> matcherKeys{
+            QStringLiteral("class"), QStringLiteral("object_name"),
+            QStringLiteral("objectName"), QStringLiteral("text"),
+            QStringLiteral("qml_type"), QStringLiteral("props")};
+        bool hasMatcher = false;
+        for (auto it = object.begin(); it != object.end(); ++it) {
+            if (matcherKeys.contains(it.key())) {
+                hasMatcher = true;
+                break;
+            }
+        }
+        if (!hasMatcher)
+            return false;
+        auto textMatches = [&](QQuickItem* candidate) {
+            if (object.contains(QStringLiteral("class")) &&
+                !matchText(object.value(QStringLiteral("class")),
+                           QString::fromLatin1(
+                               candidate->metaObject()->className())))
+                return false;
+            if (object.contains(QStringLiteral("qml_type")) &&
+                !matchText(object.value(QStringLiteral("qml_type")),
+                           QString::fromLatin1(
+                               candidate->metaObject()->className())))
+                return false;
+            const QJsonValue objectSpec =
+                object.contains(QStringLiteral("object_name"))
+                    ? object.value(QStringLiteral("object_name"))
+                    : object.value(QStringLiteral("objectName"));
+            if ((object.contains(QStringLiteral("object_name")) ||
+                 object.contains(QStringLiteral("objectName"))) &&
+                !matchText(objectSpec, candidate->objectName()))
+                return false;
+            if (object.contains(QStringLiteral("text")) &&
+                !matchText(object.value(QStringLiteral("text")),
+                           candidate->property("text").toString()))
+                return false;
+            if (object.contains(QStringLiteral("props"))) {
+                const QJsonObject props =
+                    object.value(QStringLiteral("props")).toObject();
+                for (auto it = props.begin(); it != props.end(); ++it) {
+                    const QVariant value =
+                        candidate->property(it.key().toUtf8().constData());
+                    if (!value.isValid() ||
+                        QJsonValue::fromVariant(value) != it.value())
+                        return false;
+                }
+            }
+            return true;
+        };
+        std::function<void(QQuickWindow*, QQuickItem*)> walk =
+            [&](QQuickWindow* window, QQuickItem* candidate) {
+                if (!candidate)
+                    return;
+                if (textMatches(candidate))
+                    matches.append({window, candidate});
+                for (QQuickItem* child : candidate->childItems())
+                    walk(window, child);
+            };
+        for (QWindow* window : QGuiApplication::topLevelWindows()) {
+            if (auto* quick = qobject_cast<QQuickWindow*>(window))
+                walk(quick, quick->contentItem());
+        }
+        std::stable_sort(matches.begin(), matches.end(),
+                         [](const QmlItemMatch& left, const QmlItemMatch& right) {
+                             return left.item->width() * left.item->height() >
+                                    right.item->width() * right.item->height();
+                         });
+    }
+    if (candidates)
+        *candidates = qmlCandidates(matches);
+    if (matches.isEmpty()) {
+        if (error)
+            *error = qmlId.isEmpty()
+                         ? QStringLiteral("no QML item matches target")
+                         : QStringLiteral("no QML item has qml_id: %1").arg(qmlId);
+        return false;
+    }
+    if (matches.size() > 1 && nth < 0) {
+        if (error)
+            *error = QStringLiteral("%1 QML items match%2; provide nth")
+                         .arg(matches.size())
+                         .arg(qmlId.isEmpty()
+                                  ? QString()
+                                  : QStringLiteral(" qml_id %1").arg(qmlId));
+        return false;
+    }
+    if (nth >= matches.size()) {
+        if (error)
+            *error = QStringLiteral("nth %1 out of range (%2)")
+                         .arg(nth)
+                         .arg(matches.size());
+        return false;
+    }
+    const QmlItemMatch match = matches.at(nth < 0 ? 0 : nth);
+    if (window)
+        *window = match.window;
+    if (item)
+        *item = match.item;
+    return true;
 }
 
 bool matchText(const QJsonValue& spec, const QString& actual)
@@ -192,6 +365,20 @@ QStringList sourceRoots()
         roots.append(QString::fromLocal8Bit(configured));
     roots.append(QCoreApplication::applicationDirPath());
     roots.append(QDir::currentPath());
+    // Debug builds often live several levels below the source tree. Keep
+    // this bounded: walking a drive root is far too expensive.
+    QDir ancestor(QCoreApplication::applicationDirPath());
+    for (int i = 0; i < 3; ++i) {
+        if (!ancestor.cdUp())
+            break;
+        const QString path = ancestor.absolutePath();
+        if (path.size() <= 4) // "D:/" or "D:\\"
+            break;
+        roots.append(path);
+        const QString sourceSubdir = path + QStringLiteral("/src");
+        if (QDir(sourceSubdir).exists())
+            roots.append(sourceSubdir);
+    }
     return roots;
 }
 
@@ -228,6 +415,62 @@ bool findUiLocation(const QString& objectName, UiHit* hit)
                     return true;
                 }
             }
+        }
+    }
+    return false;
+}
+
+bool findQmlLocationInFile(const QString& path, const QString& name,
+                           UiHit* hit)
+{
+    if (path.isEmpty() || name.isEmpty())
+        return false;
+    QFileInfo info(path);
+    if (!info.exists() || !info.isFile())
+        return false;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QString canonical = info.canonicalFilePath();
+    int line = 0;
+    while (!file.atEnd()) {
+        const QString text = QString::fromUtf8(file.readLine());
+        ++line;
+        if (!text.contains(QStringLiteral("objectName")) &&
+            !text.contains(QStringLiteral("id:")))
+            continue;
+        if (text.contains(QStringLiteral("\"%1\"").arg(name)) ||
+            text.contains(QStringLiteral("'%1'").arg(name)) ||
+            text.contains(QStringLiteral("id: %1").arg(name)) ||
+            text.contains(QStringLiteral("id:%1").arg(name))) {
+            hit->file = canonical;
+            hit->line = line;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool findQmlLocationByFileName(const QString& fileName, const QString& name,
+                               UiHit* hit)
+{
+    if (fileName.isEmpty() || name.isEmpty())
+        return false;
+    const QStringList roots = sourceRoots();
+    QSet<QString> seen;
+    int scanned = 0;
+    for (const QString& root : roots) {
+        QDirIterator it(root, {fileName}, QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext() && scanned < 2000) {
+            const QString path = it.next();
+            const QString canonical = QFileInfo(path).canonicalFilePath();
+            if (canonical.isEmpty() || seen.contains(canonical))
+                continue;
+            seen.insert(canonical);
+            ++scanned;
+            if (findQmlLocationInFile(canonical, name, hit))
+                return true;
         }
     }
     return false;
@@ -359,12 +602,15 @@ void Server::sendResult(QTcpSocket* socket, const QJsonValue& id,
 }
 
 void Server::sendError(QTcpSocket* socket, const QJsonValue& id,
-                         const QString& code, const QString& message)
+                         const QString& code, const QString& message,
+                         const QJsonObject& details)
 {
     QJsonObject error;
     error.insert(QStringLiteral("code"), code);
     error.insert(QStringLiteral("message"), message);
     error.insert(QStringLiteral("retryable"), false);
+    if (!details.isEmpty())
+        error.insert(QStringLiteral("details"), details);
 
     QJsonObject response;
     response.insert(QStringLiteral("id"), id);
@@ -387,6 +633,14 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     const QJsonValue id = message.value(QStringLiteral("id"));
     const QString method = message.value(QStringLiteral("method")).toString();
     const QJsonObject params = message.value(QStringLiteral("params")).toObject();
+    auto sendOperationError = [&](const QJsonObject& result) {
+        QJsonObject details;
+        if (result.contains(QStringLiteral("candidates")))
+            details.insert(QStringLiteral("candidates"),
+                           result.value(QStringLiteral("candidates")));
+        sendError(socket, id, result.value(QStringLiteral("error")).toString(),
+                  result.value(QStringLiteral("message")).toString(), details);
+    };
 
     if (method == QStringLiteral("hello")) {
         if (params.value(QStringLiteral("protocol")).toInt(0) != 2) {
@@ -428,8 +682,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("query")) {
         QJsonObject result = query(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -438,8 +691,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("act")) {
         QJsonObject result = act(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -449,8 +701,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
         QByteArray binary;
         QJsonObject result = screenshot(params, &binary);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendBinaryResult(socket, id, result, binary);
         }
@@ -459,8 +710,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("get")) {
         QJsonObject result = get(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -469,8 +719,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("set")) {
         QJsonObject result = setProperty(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -479,8 +728,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("call")) {
         QJsonObject result = call(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -489,8 +737,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("items")) {
         QJsonObject result = items(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -499,8 +746,7 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("source")) {
         QJsonObject result = source(params);
         if (result.contains(QStringLiteral("error"))) {
-            sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                      result.value(QStringLiteral("message")).toString());
+            sendOperationError(result);
         } else {
             sendResult(socket, id, result);
         }
@@ -709,6 +955,8 @@ QJsonObject Server::query(const QJsonObject& params)
     context.screenCoords = coords == QStringLiteral("screen");
     QWidget* scopeRoot = nullptr;
     QWindow* scopeWindow = nullptr;
+    QQuickItem* scopeItem = nullptr;
+    QQuickWindow* scopeItemWindow = nullptr;
     if (params.contains(QStringLiteral("scope"))) {
         const QJsonValue scope = params.value(QStringLiteral("scope"));
         if (!scope.isNull() && !scope.isUndefined()) {
@@ -717,8 +965,79 @@ QJsonObject Server::query(const QJsonObject& params)
                                         : scope.toObject()
                                               .value(QStringLiteral("id"))
                                               .toString();
-            scopeWindow = windowForId(scopeId);
-            if (!scopeWindow) {
+            const QString scopeQmlId =
+                scope.isObject()
+                    ? scope.toObject().value(QStringLiteral("qml_id")).toString()
+                    : QString();
+            if (virtuals_.contains(scopeId)) {
+                const VirtualRef ref = virtuals_.value(scopeId);
+                if (ref.kind == QStringLiteral("qml_item")) {
+                    scopeItem =
+                        qobject_cast<QQuickItem*>(ref.qmlObject.data());
+                    scopeItemWindow =
+                        qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+                }
+            }
+            if (!scopeItem && !scopeQmlId.isEmpty()) {
+                const QList<QmlItemMatch> matches =
+                    findQmlMatches(scopeQmlId);
+                const QJsonObject scopeObject = scope.toObject();
+                const int requestedNth =
+                    scopeObject.contains(QStringLiteral("nth"))
+                        ? scopeObject.value(QStringLiteral("nth")).toInt(-1)
+                        : -1;
+                if (matches.size() > 1 && requestedNth < 0) {
+                    QJsonObject error;
+                    error.insert(QStringLiteral("error"),
+                                 QStringLiteral("E_AMBIGUOUS"));
+                    error.insert(QStringLiteral("message"),
+                                 QStringLiteral("%1 QML items have qml_id %2; "
+                                                "provide scope.nth")
+                                     .arg(matches.size())
+                                     .arg(scopeQmlId));
+                    QJsonArray candidates;
+                    for (int i = 0; i < matches.size(); ++i) {
+                        const QmlItemMatch& match = matches.at(i);
+                        const QRect rect =
+                            match.item->mapRectToScene(match.item->boundingRect())
+                                .toAlignedRect();
+                        QJsonObject candidate;
+                        candidate.insert(QStringLiteral("nth"), i);
+                        candidate.insert(QStringLiteral("visible"),
+                                         match.item->isVisible());
+                        candidate.insert(QStringLiteral("class"),
+                                         QString::fromLatin1(
+                                             match.item->metaObject()->className()));
+                        candidate.insert(QStringLiteral("rect"), QJsonObject{
+                            {QStringLiteral("x"), rect.x()},
+                            {QStringLiteral("y"), rect.y()},
+                            {QStringLiteral("w"), rect.width()},
+                            {QStringLiteral("h"), rect.height()}});
+                        candidates.append(candidate);
+                    }
+                    error.insert(QStringLiteral("candidates"), candidates);
+                    return error;
+                }
+                if (requestedNth >= matches.size()) {
+                    QJsonObject error;
+                    error.insert(QStringLiteral("error"),
+                                 QStringLiteral("E_INVALID_ARGUMENT"));
+                    error.insert(QStringLiteral("message"),
+                                 QStringLiteral("scope.nth %1 out of range (%2)")
+                                     .arg(requestedNth)
+                                     .arg(matches.size()));
+                    return error;
+                }
+                if (!matches.isEmpty()) {
+                    const QmlItemMatch match =
+                        matches.at(requestedNth < 0 ? 0 : requestedNth);
+                    scopeItem = match.item;
+                    scopeItemWindow = match.window;
+                }
+            }
+            scopeWindow =
+                scopeItem ? nullptr : windowForId(scopeId);
+            if (!scopeWindow && !scopeItem) {
                 QString scopeError;
                 scopeRoot = resolveTarget(scope, &scopeError, -1,
                                           context.includeHidden);
@@ -770,7 +1089,9 @@ QJsonObject Server::query(const QJsonObject& params)
         }
     }
     QList<QQuickWindow*> quickRoots;
-    if (scopeWindow) {
+    if (scopeItem) {
+        // The QML item itself is the query root.
+    } else if (scopeWindow) {
         if (auto* quick = qobject_cast<QQuickWindow*>(scopeWindow))
             quickRoots.append(quick);
     } else if (!scopeRoot) {
@@ -791,6 +1112,12 @@ QJsonObject Server::query(const QJsonObject& params)
             bool any = false;
             buildQuickWindowNode(root, context, true, &any);
         }
+        if (scopeItem && scopeItemWindow) {
+            bool any = false;
+            int serial = 0;
+            buildQuickItemNode(scopeItemWindow, scopeItem, context, 0, &serial,
+                               &any);
+        }
         QJsonObject result;
         result.insert(QStringLiteral("count"),
                       context.hasWhere ? context.matched : context.total);
@@ -809,6 +1136,15 @@ QJsonObject Server::query(const QJsonObject& params)
     for (QQuickWindow* root : quickRoots) {
         bool any = false;
         const QJsonObject node = buildQuickWindowNode(root, context, true, &any);
+        if (any)
+            tree.append(node);
+    }
+    if (scopeItem && scopeItemWindow) {
+        bool any = false;
+        int serial = 0;
+        const QJsonObject node =
+            buildQuickItemNode(scopeItemWindow, scopeItem, context, 0, &serial,
+                               &any);
         if (any)
             tree.append(node);
     }
@@ -857,8 +1193,86 @@ QJsonObject Server::act(const QJsonObject& params)
     if (!virtualId.isEmpty() && virtuals_.contains(virtualId))
         return actVirtual(params, virtualId);
 
+    if (!virtualId.isEmpty()) {
+        if (QWindow* window = windowForId(virtualId)) {
+            const QString windowAction =
+                params.value(QStringLiteral("action")).toString();
+            if (windowAction != QStringLiteral("key")) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"),
+                              QStringLiteral("E_INVALID_ARGUMENT"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("window targets only support key; "
+                                             "use the item id for click/type"));
+                return result;
+            }
+            QStringList names;
+            const QJsonValue keysValue = params.value(QStringLiteral("keys"));
+            if (keysValue.isArray()) {
+                for (const QJsonValue& value : keysValue.toArray())
+                    names.append(value.toString());
+            } else if (!params.value(QStringLiteral("key")).toString().isEmpty()) {
+                names.append(params.value(QStringLiteral("key")).toString());
+            }
+            for (const QString& name : names) {
+                const QKeySequence sequence(name);
+                if (sequence.isEmpty())
+                    continue;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                const int key = sequence[0].key();
+#else
+                const int key = sequence[0];
+#endif
+                QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+                QCoreApplication::sendEvent(window, &press);
+                QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+                QCoreApplication::sendEvent(window, &release);
+                QCoreApplication::processEvents();
+            }
+            QJsonObject resolved;
+            resolved.insert(QStringLiteral("id"), virtualId);
+            resolved.insert(QStringLiteral("class"),
+                            QString::fromLatin1(
+                                window->metaObject()->className()));
+            QJsonObject result;
+            result.insert(QStringLiteral("ok"), true);
+            result.insert(QStringLiteral("action"), windowAction);
+            result.insert(QStringLiteral("dispatched"), true);
+            result.insert(QStringLiteral("resolved"), resolved);
+            result.insert(QStringLiteral("observed"), resolved);
+            return result;
+        }
+    }
+
     QString error;
     const int nth = params.value(QStringLiteral("nth")).toInt(-1);
+    QQuickWindow* qmlWindow = nullptr;
+    QQuickItem* qmlItem = nullptr;
+    QString qmlError;
+    QJsonArray qmlCandidateList;
+    if (resolveQmlTarget(params.value(QStringLiteral("target")), nth,
+                         &qmlWindow, &qmlItem, &qmlError,
+                         &qmlCandidateList)) {
+        const QRect rect =
+            qmlItem->mapRectToScene(qmlItem->boundingRect()).toAlignedRect();
+        const QString qmlTargetId =
+            registerQuickQml(qmlWindow, qmlItem, 0, rect, QJsonObject{});
+        return actVirtual(params, qmlTargetId);
+    }
+    if (params.value(QStringLiteral("target")).isObject() &&
+        params.value(QStringLiteral("target"))
+            .toObject()
+            .contains(QStringLiteral("qml_id"))) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"),
+                      qmlError.contains(QStringLiteral("provide nth"))
+                          ? QStringLiteral("E_AMBIGUOUS")
+                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"), qmlError);
+        if (!qmlCandidateList.isEmpty())
+            result.insert(QStringLiteral("candidates"), qmlCandidateList);
+        return result;
+    }
     QWidget* widget =
         resolveTarget(params.value(QStringLiteral("target")), &error, nth);
     if (!widget) {
@@ -1911,6 +2325,22 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
             if (!leaves.isEmpty())
                 candidates = leaves;
         }
+        auto qmlPriority = [](QQuickItem* item) {
+            QQmlContext* context = QQmlEngine::contextForObject(item);
+            const bool named =
+                context && !context->nameForObject(item).isEmpty();
+            const bool interactive =
+                (item->acceptedMouseButtons() & Qt::LeftButton) ||
+                item->inherits("QQuickAbstractButton") ||
+                item->inherits("QQuickMouseArea");
+            return (named ? 0 : 2) + (interactive ? 0 : 1);
+        };
+        std::stable_sort(candidates.begin(), candidates.end(),
+                         [&](const QmlCandidate& left,
+                             const QmlCandidate& right) {
+                             return qmlPriority(left.item) <
+                                    qmlPriority(right.item);
+                         });
         total = candidates.size();
         if (annotate == QStringLiteral("interactive")) {
             QList<QmlCandidate> filtered;
@@ -1966,7 +2396,11 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
             entry.insert(QStringLiteral("qml_type"),
                          QString::fromLatin1(
                              candidate.item->metaObject()->className()));
-            entry.insert(QStringLiteral("qml_id"), QString());
+            QQmlContext* qmlContext =
+                QQmlEngine::contextForObject(candidate.item);
+            entry.insert(QStringLiteral("qml_id"),
+                         qmlContext ? qmlContext->nameForObject(candidate.item)
+                                    : QString());
             entry.insert(QStringLiteral("objectName"),
                          candidate.item->objectName());
             entry.insert(QStringLiteral("text"),
@@ -2040,7 +2474,34 @@ QJsonObject Server::get(const QJsonObject& params)
             ? targetValue.toString()
             : targetValue.toObject().value(QStringLiteral("id")).toString();
     if (!virtualId.isEmpty() && virtuals_.contains(virtualId))
-        return virtualItem(virtualId);
+        return virtualItem(virtualId,
+                           params.value(QStringLiteral("props")));
+
+    QQuickWindow* qmlWindow = nullptr;
+    QQuickItem* qmlItem = nullptr;
+    QString qmlError;
+    QJsonArray qmlCandidateList;
+    if (resolveQmlTarget(targetValue, params.value(QStringLiteral("nth")).toInt(-1),
+                         &qmlWindow, &qmlItem, &qmlError,
+                         &qmlCandidateList)) {
+        const QRect rect =
+            qmlItem->mapRectToScene(qmlItem->boundingRect()).toAlignedRect();
+        const QString id =
+            registerQuickQml(qmlWindow, qmlItem, 0, rect, QJsonObject{});
+        return virtualItem(id, params.value(QStringLiteral("props")));
+    }
+    if (targetValue.isObject() &&
+        targetValue.toObject().contains(QStringLiteral("qml_id"))) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"),
+                      qmlError.contains(QStringLiteral("provide nth"))
+                          ? QStringLiteral("E_AMBIGUOUS")
+                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"), qmlError);
+        if (!qmlCandidateList.isEmpty())
+            result.insert(QStringLiteral("candidates"), qmlCandidateList);
+        return result;
+    }
 
     QString error;
     QWidget* widget = resolveTarget(
@@ -2108,6 +2569,67 @@ QJsonObject Server::setProperty(const QJsonObject& params)
                           QJsonValue::fromVariant(property.read(item)));
             return result;
         }
+    }
+
+    QQuickWindow* qmlWindow = nullptr;
+    QQuickItem* qmlItem = nullptr;
+    QString qmlError;
+    QJsonArray qmlCandidateList;
+    if (resolveQmlTarget(targetValue, params.value(QStringLiteral("nth")).toInt(-1),
+                         &qmlWindow, &qmlItem, &qmlError,
+                         &qmlCandidateList)) {
+        const QString name =
+            params.value(QStringLiteral("name")).toString();
+        const int index =
+            qmlItem->metaObject()->indexOfProperty(name.toUtf8().constData());
+        if (index < 0) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_INVALID_ARGUMENT"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("no such QML property: %1").arg(name));
+            return result;
+        }
+        const QMetaProperty property = qmlItem->metaObject()->property(index);
+        if (!property.isWritable()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_DISABLED"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML property is not writable: %1")
+                              .arg(name));
+            return result;
+        }
+        const QVariant oldValue = property.read(qmlItem);
+        if (!qmlItem->setProperty(
+                name.toUtf8().constData(),
+                params.value(QStringLiteral("value")).toVariant())) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_INVALID_ARGUMENT"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("setting QML property failed: %1")
+                              .arg(name));
+            return result;
+        }
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), true);
+        result.insert(QStringLiteral("name"), name);
+        result.insert(QStringLiteral("old"), QJsonValue::fromVariant(oldValue));
+        result.insert(QStringLiteral("new"),
+                      QJsonValue::fromVariant(property.read(qmlItem)));
+        return result;
+    }
+    if (targetValue.isObject() &&
+        targetValue.toObject().contains(QStringLiteral("qml_id"))) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"),
+                      qmlError.contains(QStringLiteral("provide nth"))
+                          ? QStringLiteral("E_AMBIGUOUS")
+                          : QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"), qmlError);
+        if (!qmlCandidateList.isEmpty())
+            result.insert(QStringLiteral("candidates"), qmlCandidateList);
+        return result;
     }
 
     QString error;
@@ -2278,7 +2800,8 @@ QJsonObject Server::items(const QJsonObject& params)
             : ownerTarget.toObject().value(QStringLiteral("id")).toString();
     if (QWindow* quickWindow = windowForId(ownerVirtualId)) {
         if (auto* window = qobject_cast<QQuickWindow*>(quickWindow))
-            return quickItems(window, window->contentItem(), params);
+            return quickItems(window, window->contentItem(), params,
+                              ownerVirtualId);
     }
     if (virtuals_.contains(ownerVirtualId)) {
         const VirtualRef ref = virtuals_.value(ownerVirtualId);
@@ -2286,7 +2809,7 @@ QJsonObject Server::items(const QJsonObject& params)
             if (auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data())) {
                 if (auto* window =
                         qobject_cast<QQuickWindow*>(ref.windowOwner.data()))
-                    return quickItems(window, item, params);
+                    return quickItems(window, item, params, ownerVirtualId);
             }
         }
     }
@@ -3002,7 +3525,8 @@ bool Server::virtualRect(const VirtualRef& ref, QRect* rect) const
     return !rect->isEmpty();
 }
 
-QJsonObject Server::virtualItem(const QString& id)
+QJsonObject Server::virtualItem(const QString& id,
+                                const QJsonValue& requested)
 {
     const auto it = virtuals_.constFind(id);
     if (it == virtuals_.constEnd()) {
@@ -3035,6 +3559,32 @@ QJsonObject Server::virtualItem(const QString& id)
         if (auto* qml = qobject_cast<QQuickItem*>(ref.qmlObject.data())) {
             props.insert(QStringLiteral("objectName"), qml->objectName());
             props.insert(QStringLiteral("visible"), qml->isVisible());
+            // ref.props is a registration-time snapshot. Re-read QML
+            // properties so get() observes type/set changes immediately.
+            for (auto it = props.begin(); it != props.end(); ++it) {
+                const QVariant value =
+                    qml->property(it.key().toUtf8().constData());
+                if (value.isValid())
+                    it.value() = QJsonValue::fromVariant(value);
+            }
+            QStringList requestedNames;
+            if (requested.isString() && requested.toString() == QStringLiteral("*")) {
+                const QMetaObject* meta = qml->metaObject();
+                for (int i = 0; i < meta->propertyCount(); ++i)
+                    requestedNames.append(
+                        QString::fromLatin1(meta->property(i).name()));
+            } else if (requested.isString()) {
+                requestedNames.append(requested.toString());
+            } else if (requested.isArray()) {
+                for (const QJsonValue& value : requested.toArray())
+                    requestedNames.append(value.toString());
+            }
+            for (const QString& name : requestedNames) {
+                const QVariant value =
+                    qml->property(name.toUtf8().constData());
+                if (value.isValid())
+                    props.insert(name, QJsonValue::fromVariant(value));
+            }
         }
     } else if (ref.kind == QStringLiteral("tab") && !ref.page.isNull()) {
         if (auto* tabs = qobject_cast<QTabWidget*>(ref.owner.data())) {
@@ -3159,13 +3709,6 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
                       QStringLiteral("virtual items only support plain left clicks"));
-        return result;
-    }
-    if (params.value(QStringLiteral("nth")).toInt(-1) >= 0) {
-        QJsonObject result;
-        result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
-        result.insert(QStringLiteral("message"),
-                      QStringLiteral("nth is not meaningful for a virtual id"));
         return result;
     }
     const QString action = params.value(QStringLiteral("action")).toString();
@@ -3455,7 +3998,8 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
 }
 
 QJsonObject Server::quickItems(QWindow* window, QQuickItem* root,
-                               const QJsonObject& params)
+                               const QJsonObject& params,
+                               const QString& ownerId)
 {
     auto* quickWindow = qobject_cast<QQuickWindow*>(window);
     if (!quickWindow || !root) {
@@ -3554,7 +4098,7 @@ QJsonObject Server::quickItems(QWindow* window, QQuickItem* root,
     for (int i = offset; i < all.size() && i < offset + limit; ++i)
         page.append(all.at(i));
     QJsonObject result;
-    result.insert(QStringLiteral("owner"), idForWindow(quickWindow));
+    result.insert(QStringLiteral("owner"), ownerId);
     result.insert(QStringLiteral("items"), page);
     result.insert(QStringLiteral("total"), total);
     result.insert(QStringLiteral("visible"), visible);
@@ -3573,6 +4117,46 @@ QJsonObject Server::source(const QJsonObject& params)
         sourceVirtualId =
             sourceTarget.toObject().value(QStringLiteral("id")).toString();
     }
+    QString sourceQmlId;
+    if (sourceTarget.isObject())
+        sourceQmlId =
+            sourceTarget.toObject().value(QStringLiteral("qml_id")).toString();
+    if (!sourceVirtualId.isEmpty() && !virtuals_.contains(sourceVirtualId))
+        sourceQmlId = sourceVirtualId;
+    if (!sourceVirtualId.isEmpty() && virtuals_.contains(sourceVirtualId))
+        sourceQmlId.clear();
+    if (!sourceQmlId.isEmpty()) {
+        const QList<QmlItemMatch> matches = findQmlMatches(sourceQmlId);
+        const int nth = params.value(QStringLiteral("nth")).toInt(-1);
+        if (matches.size() > 1 && nth < 0) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_AMBIGUOUS"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("%1 QML items have qml_id %2; "
+                                         "provide nth")
+                              .arg(matches.size())
+                              .arg(sourceQmlId));
+            return result;
+        }
+        if (nth >= matches.size()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_INVALID_ARGUMENT"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("nth %1 out of range (%2)")
+                              .arg(nth)
+                              .arg(matches.size()));
+            return result;
+        }
+        if (!matches.isEmpty()) {
+            const QmlItemMatch match = matches.at(nth < 0 ? 0 : nth);
+            const QRect rect =
+                match.item->mapRectToScene(match.item->boundingRect())
+                    .toAlignedRect();
+            sourceVirtualId = registerQuickQml(
+                match.window, match.item, 0, rect, QJsonObject{});
+        }
+    }
     if (!sourceVirtualId.isEmpty() && virtuals_.contains(sourceVirtualId)) {
         const VirtualRef ref = virtuals_.value(sourceVirtualId);
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
@@ -3585,8 +4169,19 @@ QJsonObject Server::source(const QJsonObject& params)
                            ? QQmlEngine::contextForObject(item)
                                  ->nameForObject(item)
                            : QString());
-            const bool located =
-                !queryName.isEmpty() && findQmlLocation(queryName, &hit);
+            bool located = false;
+            if (!queryName.isEmpty()) {
+                QQmlContext* qmlContext =
+                    QQmlEngine::contextForObject(item);
+                if (qmlContext && qmlContext->baseUrl().isLocalFile())
+                    located = findQmlLocationInFile(
+                        qmlContext->baseUrl().toLocalFile(), queryName, &hit);
+                if (!located && qmlContext)
+                    located = findQmlLocationByFileName(
+                        qmlContext->baseUrl().fileName(), queryName, &hit);
+                if (!located)
+                    located = findQmlLocation(queryName, &hit);
+            }
             QJsonObject target;
             target.insert(QStringLiteral("id"), sourceVirtualId);
             target.insert(QStringLiteral("class"), ref.className);
@@ -3624,7 +4219,7 @@ QJsonObject Server::source(const QJsonObject& params)
             QJsonArray diagnostics;
             if (!located)
                 diagnostics.append(QStringLiteral(
-                    "No .qml source with this QML objectName was found."));
+                    "No .qml source with this QML id/objectName was found."));
             QJsonObject result;
             result.insert(QStringLiteral("available"), located);
             if (!located)

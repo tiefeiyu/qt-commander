@@ -119,8 +119,11 @@ def _error(code: str, message: str, *, retryable: bool = False,
 
 def _map_error(exc: BaseException) -> dict[str, Any]:
     if isinstance(exc, RpcError):
-        return _error(exc.code, exc.message, retryable=exc.retryable,
-                      hint=exc.hint)
+        result = _error(exc.code, exc.message, retryable=exc.retryable,
+                        hint=exc.hint)
+        if exc.details:
+            result["error"]["details"] = exc.details
+        return result
     if isinstance(exc, ClientTimeout):
         return _error(
             ErrorCode.TARGET_TIMEOUT.value,
