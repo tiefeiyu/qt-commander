@@ -87,6 +87,7 @@ private:
     QJsonObject get(const QJsonObject& params);
     QJsonObject setProperty(const QJsonObject& params);
     QJsonObject call(const QJsonObject& params);
+    QJsonObject methods(const QJsonObject& params);
     QJsonObject items(const QJsonObject& params);
     QJsonObject quickItems(QWindow* window, QQuickItem* root,
                            const QJsonObject& params,

@@ -768,6 +768,15 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
         }
         return;
     }
+    if (method == QStringLiteral("methods")) {
+        QJsonObject result = methods(params);
+        if (result.contains(QStringLiteral("error"))) {
+            sendOperationError(result);
+        } else {
+            sendResult(socket, id, result);
+        }
+        return;
+    }
     if (method == QStringLiteral("items")) {
         QJsonObject result = items(params);
         if (result.contains(QStringLiteral("error"))) {
@@ -2824,19 +2833,33 @@ QJsonObject Server::call(const QJsonObject& params)
                 values.append(value);
                 typeNames.append(parameterTypes.at(i));
             }
+            const int returnType = chosen.returnType();
+            void* returnData = nullptr;
+            QGenericReturnArgument returnArg;
+            if (returnType != QMetaType::Void) {
+                returnData = QMetaType::create(returnType);
+                if (returnData)
+                    returnArg = QGenericReturnArgument(chosen.typeName(),
+                                                       returnData);
+            }
             bool invoked = false;
             if (args.isEmpty()) {
-                invoked = chosen.invoke(qmlItem, Qt::DirectConnection);
+                invoked = returnData
+                              ? chosen.invoke(qmlItem, Qt::DirectConnection,
+                                              returnArg)
+                              : chosen.invoke(qmlItem, Qt::DirectConnection);
             } else {
                 QGenericArgument generic[4];
                 for (int i = 0; i < values.size(); ++i)
                     generic[i] = QGenericArgument(
                         typeNames.at(i).constData(), values.at(i).data());
                 invoked = chosen.invoke(qmlItem, Qt::DirectConnection,
-                                        generic[0], generic[1], generic[2],
-                                        generic[3]);
+                                        returnArg, generic[0], generic[1],
+                                        generic[2], generic[3]);
             }
             if (!invoked) {
+                if (returnData)
+                    QMetaType::destroy(returnType, returnData);
                 QJsonObject result;
                 result.insert(QStringLiteral("error"),
                               QStringLiteral("E_INVALID_ARGUMENT"));
@@ -2851,6 +2874,12 @@ QJsonObject Server::call(const QJsonObject& params)
             result.insert(QStringLiteral("class"),
                           QString::fromLatin1(
                               qmlItem->metaObject()->className()));
+            if (returnData) {
+                result.insert(QStringLiteral("result"),
+                              QJsonValue::fromVariant(
+                                  QVariant(returnType, returnData)));
+                QMetaType::destroy(returnType, returnData);
+            }
             return result;
         }
         const QJsonValue qmlTarget =
@@ -2950,18 +2979,31 @@ QJsonObject Server::call(const QJsonObject& params)
         typeNames.append(parameterTypes.at(i));
     }
 
+    const int returnType = chosen.returnType();
+    void* returnData = nullptr;
+    QGenericReturnArgument returnArg;
+    if (returnType != QMetaType::Void) {
+        returnData = QMetaType::create(returnType);
+        if (returnData)
+            returnArg = QGenericReturnArgument(chosen.typeName(), returnData);
+    }
     bool invoked = false;
     if (args.isEmpty()) {
-        invoked = chosen.invoke(widget, Qt::DirectConnection);
+        invoked = returnData
+                      ? chosen.invoke(widget, Qt::DirectConnection, returnArg)
+                      : chosen.invoke(widget, Qt::DirectConnection);
     } else {
         QGenericArgument arguments[4];
         for (int i = 0; i < values.size(); ++i)
             arguments[i] = QGenericArgument(typeNames.at(i).constData(),
                                             values.at(i).data());
-        invoked = chosen.invoke(widget, Qt::DirectConnection, arguments[0],
-                                arguments[1], arguments[2], arguments[3]);
+        invoked = chosen.invoke(widget, Qt::DirectConnection, returnArg,
+                                arguments[0], arguments[1], arguments[2],
+                                arguments[3]);
     }
     if (!invoked) {
+        if (returnData)
+            QMetaType::destroy(returnType, returnData);
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
@@ -2972,6 +3014,78 @@ QJsonObject Server::call(const QJsonObject& params)
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("method"), method);
+    if (returnData) {
+        result.insert(QStringLiteral("result"),
+                      QJsonValue::fromVariant(
+                          QVariant(returnType, returnData)));
+        QMetaType::destroy(returnType, returnData);
+    }
+    return result;
+}
+
+QJsonObject Server::methods(const QJsonObject& params)
+{
+    QObject* object = nullptr;
+    QString className;
+    QString error;
+    QQuickWindow* qmlWindow = nullptr;
+    QQuickItem* qmlItem = nullptr;
+    QJsonArray candidates;
+    if (resolveQmlTarget(params.value(QStringLiteral("target")),
+                         requestNth(params), &qmlWindow, &qmlItem, &error,
+                         &candidates)) {
+        object = qmlItem;
+    } else {
+        const QJsonValue target = params.value(QStringLiteral("target"));
+        QString virtualId =
+            target.isString()
+                ? target.toString()
+                : target.toObject().value(QStringLiteral("id")).toString();
+        if (virtuals_.contains(virtualId)) {
+            const VirtualRef ref = virtuals_.value(virtualId);
+            object = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        }
+        if (!object) {
+            QWidget* widget = resolveTarget(target, &error, requestNth(params),
+                                             params.value(QStringLiteral("include_hidden")).toBool(false));
+            object = widget;
+        }
+    }
+    if (!object) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
+        result.insert(QStringLiteral("message"), error);
+        if (!candidates.isEmpty())
+            result.insert(QStringLiteral("candidates"), candidates);
+        return result;
+    }
+    className = QString::fromLatin1(object->metaObject()->className());
+    QJsonArray methodList;
+    const QMetaObject* meta = object->metaObject();
+    for (int i = 0; i < meta->methodCount(); ++i) {
+        const QMetaMethod method = meta->method(i);
+        if (method.methodType() == QMetaMethod::Signal)
+            continue;
+        QJsonObject entry;
+        entry.insert(QStringLiteral("name"),
+                     QString::fromLatin1(method.name()));
+        entry.insert(QStringLiteral("signature"),
+                     QString::fromLatin1(method.methodSignature()));
+        entry.insert(QStringLiteral("return_type"),
+                     QString::fromLatin1(method.typeName()));
+        QJsonArray parameterTypes;
+        for (const QByteArray& parameter : method.parameterTypes())
+            parameterTypes.append(QString::fromLatin1(parameter));
+        entry.insert(QStringLiteral("parameter_types"), parameterTypes);
+        entry.insert(QStringLiteral("slot"),
+                     method.methodType() == QMetaMethod::Slot);
+        methodList.append(entry);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("class"), className);
+    result.insert(QStringLiteral("method_count"), methodList.size());
+    result.insert(QStringLiteral("methods"), methodList);
     return result;
 }
 

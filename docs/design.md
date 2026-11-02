@@ -685,7 +685,7 @@ inject：
 - `props:"*"` 枚举 metaObject 可读属性 + dynamic properties，最多 64 个；超出返回 `props_truncated/props_total`。E2E 按钮返回 62 个属性。
 - `qt_call` 支持最多 4 个带类型参数（`QMetaMethod` 解析），实测 `setText(QString)`。
 - `qt_act(type)` 对容器目标会递归寻找可见的 QLineEdit/QTextEdit/QPlainTextEdit；找不到返回 `E_NOT_EDITABLE`，不再静默成功。`get/set/call/source` 支持 `include_hidden`。
-- `qt_call` 只调用 Qt 元对象方法/slot/`Q_INVOKABLE`，QWidget 与 QML item 走同一规则；属性 setter 用 `qt_set`。
+- `qt_call` 只调用 Qt 元对象方法/slot/`Q_INVOKABLE`，QWidget 与 QML item 走同一规则；非 void 返回值写入 `result`；属性 setter 用 `qt_set`。`qt_methods` 返回 `name/signature/parameter_types/return_type/slot`。
 - `qt_act` 支持声明式 `expect`（`where/props/gone`，可数组）；Python 轮询 `count_only`/`get`，超时返回 `cause:"expect_not_met"`、`dispatched:true`。E2E：点击 `btnA` 后 `statusLabel.text=="clicked"` 在 1ms 内匹配。
 - 严格定位：多候选 `E_AMBIGUOUS`、`nth`、未知键 `E_INVALID_FILTER`、stale id `E_STALE_ID`。
 - query 增加 2000 节点 / 2MiB 硬上限；count_only 不受 limit 限制。

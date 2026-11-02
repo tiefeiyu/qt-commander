@@ -943,6 +943,28 @@ async def qt_call(
 
 
 @mcp.tool
+async def qt_methods(
+    session_id: str,
+    target: str | dict[str, Any],
+    nth: int | None = None,
+    include_hidden: bool = False,
+) -> dict[str, Any]:
+    """List invokable Qt methods (slots/Q_INVOKABLE) for a target."""
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    params: dict[str, Any] = {"target": target}
+    if nth is not None:
+        params["nth"] = nth
+    if include_hidden:
+        params["include_hidden"] = True
+    try:
+        return await session.call("methods", params)
+    except Exception as exc:
+        return _map_error(exc)
+
+
+@mcp.tool
 async def qt_source(
     session_id: str,
     target: str | dict[str, Any],
