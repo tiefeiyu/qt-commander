@@ -156,6 +156,25 @@ async def main() -> None:
             },
         )
         assert hidden_typed.get("text_after") == "hidden-ok", hidden_typed
+        try:
+            await session.call(
+                "set",
+                {"target": {"id": hidden_id}, "name": "text", "value": "nope"},
+            )
+        except RpcError as exc:
+            assert exc.code == "E_HIDDEN", exc.code
+        else:
+            raise AssertionError("hidden set unexpectedly succeeded")
+        hidden_set = await session.call(
+            "set",
+            {
+                "target": {"id": hidden_id},
+                "name": "text",
+                "value": "set-hidden",
+                "include_hidden": True,
+            },
+        )
+        assert hidden_set.get("new") == "set-hidden", hidden_set
 
         shot = await ops.screenshot(
             session, max_width=800, annotate="all", max_labels=12

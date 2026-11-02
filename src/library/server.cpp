@@ -2607,6 +2607,15 @@ QJsonObject Server::setProperty(const QJsonObject& params)
         const VirtualRef ref = virtuals_.value(virtualId);
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
         if (ref.kind == QStringLiteral("qml_item") && item) {
+            if (!item->isVisible() &&
+                !params.value(QStringLiteral("include_hidden")).toBool(false)) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("QML target is hidden; pass "
+                                             "include_hidden=true to override"));
+                return result;
+            }
             const QString name =
                 params.value(QStringLiteral("name")).toString();
             const int index =
@@ -2657,6 +2666,15 @@ QJsonObject Server::setProperty(const QJsonObject& params)
     if (resolveQmlTarget(targetValue, requestNth(params),
                          &qmlWindow, &qmlItem, &qmlError,
                          &qmlCandidateList)) {
+        if (!qmlItem->isVisible() &&
+            !params.value(QStringLiteral("include_hidden")).toBool(false)) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML target is hidden; pass "
+                                         "include_hidden=true to override"));
+            return result;
+        }
         const QString name =
             params.value(QStringLiteral("name")).toString();
         const int index =
