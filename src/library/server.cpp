@@ -280,6 +280,20 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
     return true;
 }
 
+QString setterPropertyName(QObject* object, const QString& method)
+{
+    if (!method.startsWith(QStringLiteral("set")) || method.size() <= 3)
+        return {};
+    QString property = method.mid(3);
+    property[0] = property[0].toLower();
+    const int index =
+        object->metaObject()->indexOfProperty(property.toUtf8().constData());
+    if (index < 0)
+        return {};
+    return object->metaObject()->property(index).isWritable() ? property
+                                                              : QString();
+}
+
 int requestNth(const QJsonObject& params)
 {
     int nth = params.value(QStringLiteral("nth")).toInt(-1);
@@ -2732,6 +2746,130 @@ QJsonObject Server::setProperty(const QJsonObject& params)
 
 QJsonObject Server::call(const QJsonObject& params)
 {
+    const QString qmlMethod =
+        params.value(QStringLiteral("method")).toString();
+    if (!qmlMethod.isEmpty()) {
+        QQuickWindow* qmlWindow = nullptr;
+        QQuickItem* qmlItem = nullptr;
+        QString qmlError;
+        QJsonArray candidates;
+        bool isQmlTarget =
+            resolveQmlTarget(params.value(QStringLiteral("target")),
+                             requestNth(params), &qmlWindow, &qmlItem,
+                             &qmlError, &candidates);
+        if (!isQmlTarget) {
+            const QJsonValue target = params.value(QStringLiteral("target"));
+            QString virtualId =
+                target.isString()
+                    ? target.toString()
+                    : target.toObject()
+                          .value(QStringLiteral("id"))
+                          .toString();
+            if (virtuals_.contains(virtualId)) {
+                const VirtualRef ref = virtuals_.value(virtualId);
+                qmlItem = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+                qmlWindow =
+                    qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+                isQmlTarget = qmlItem != nullptr;
+            }
+        }
+        if (isQmlTarget && qmlItem) {
+            const QJsonArray args =
+                params.value(QStringLiteral("args")).toArray();
+            QMetaMethod chosen;
+            for (int i = 0; i < qmlItem->metaObject()->methodCount(); ++i) {
+                const QMetaMethod candidate = qmlItem->metaObject()->method(i);
+                if (candidate.methodType() == QMetaMethod::Signal)
+                    continue;
+                if (QString::fromLatin1(candidate.name()) != qmlMethod)
+                    continue;
+                if (candidate.parameterCount() != args.size())
+                    continue;
+                chosen = candidate;
+                break;
+            }
+            if (!chosen.isValid()) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"),
+                              QStringLiteral("E_NOT_FOUND"));
+                QString message =
+                    QStringLiteral("no matching QML method: %1/%2")
+                        .arg(qmlMethod)
+                        .arg(args.size());
+                const QString property =
+                    setterPropertyName(qmlItem, qmlMethod);
+                if (!property.isEmpty())
+                    message += QStringLiteral(
+                                   "; this looks like a property setter, "
+                                   "use qt_set(name=\"%1\")")
+                                   .arg(property);
+                result.insert(QStringLiteral("message"), message);
+                return result;
+            }
+            QVector<QVariant> values;
+            QVector<QByteArray> typeNames;
+            const QList<QByteArray> parameterTypes = chosen.parameterTypes();
+            for (int i = 0; i < args.size(); ++i) {
+                QVariant value = args.at(i).toVariant();
+                const int typeId = chosen.parameterType(i);
+                if (value.userType() != typeId && !value.convert(typeId)) {
+                    QJsonObject result;
+                    result.insert(QStringLiteral("error"),
+                                  QStringLiteral("E_INVALID_ARGUMENT"));
+                    result.insert(QStringLiteral("message"),
+                                  QStringLiteral("cannot convert QML argument %1")
+                                      .arg(i));
+                    return result;
+                }
+                values.append(value);
+                typeNames.append(parameterTypes.at(i));
+            }
+            bool invoked = false;
+            if (args.isEmpty()) {
+                invoked = chosen.invoke(qmlItem, Qt::DirectConnection);
+            } else {
+                QGenericArgument generic[4];
+                for (int i = 0; i < values.size(); ++i)
+                    generic[i] = QGenericArgument(
+                        typeNames.at(i).constData(), values.at(i).data());
+                invoked = chosen.invoke(qmlItem, Qt::DirectConnection,
+                                        generic[0], generic[1], generic[2],
+                                        generic[3]);
+            }
+            if (!invoked) {
+                QJsonObject result;
+                result.insert(QStringLiteral("error"),
+                              QStringLiteral("E_INVALID_ARGUMENT"));
+                result.insert(QStringLiteral("message"),
+                              QStringLiteral("QML method not invokable: %1")
+                                  .arg(qmlMethod));
+                return result;
+            }
+            QJsonObject result;
+            result.insert(QStringLiteral("ok"), true);
+            result.insert(QStringLiteral("method"), qmlMethod);
+            result.insert(QStringLiteral("class"),
+                          QString::fromLatin1(
+                              qmlItem->metaObject()->className()));
+            return result;
+        }
+        const QJsonValue qmlTarget =
+            params.value(QStringLiteral("target"));
+        if (qmlTarget.isObject() &&
+            qmlTarget.toObject().contains(QStringLiteral("qml_id"))) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_NOT_FOUND"));
+            result.insert(QStringLiteral("message"),
+                          qmlError.isEmpty()
+                              ? QStringLiteral("no QML item matches target")
+                              : qmlError);
+            if (!candidates.isEmpty())
+                result.insert(QStringLiteral("candidates"), candidates);
+            return result;
+        }
+    }
+
     QString error;
     QWidget* widget = resolveTarget(
         params.value(QStringLiteral("target")), &error,
@@ -2775,10 +2913,17 @@ QJsonObject Server::call(const QJsonObject& params)
     if (!chosen.isValid()) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));
-        result.insert(QStringLiteral("message"),
-                      QStringLiteral("no matching method: %1/%2")
-                          .arg(method)
-                          .arg(args.size()));
+        QString message =
+            QStringLiteral("no matching method: %1/%2")
+                .arg(method)
+                .arg(args.size());
+        const QString property = setterPropertyName(widget, method);
+        if (!property.isEmpty())
+            message += QStringLiteral(
+                           "; this looks like a property setter, "
+                           "use qt_set(name=\"%1\")")
+                           .arg(property);
+        result.insert(QStringLiteral("message"), message);
         return result;
     }
 
