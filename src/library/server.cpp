@@ -1049,7 +1049,7 @@ QJsonObject Server::windows(const QJsonObject& params)
     {
         for (QWindow* window : QGuiApplication::topLevelWindows()) {
             auto* quick = qobject_cast<QQuickWindow*>(window);
-            if (!quick || !quick->isVisible())
+            if (!quick)
                 continue;
             if (!includeHidden && !quick->isVisible())
                 continue;

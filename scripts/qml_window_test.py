@@ -77,6 +77,13 @@ async def main() -> None:
         assert windows["count"] == 1, windows
         window = windows["windows"][0]
         assert window["class"] == "QQuickWindow", window
+        all_windows = await session.call("windows", {"include_hidden": True})
+        assert all_windows["count"] == 2, all_windows
+        hidden_windows = [
+            item for item in all_windows["windows"] if not item["visible"]
+        ]
+        assert len(hidden_windows) == 1, all_windows
+        assert hidden_windows[0]["objectName"] == "hiddenWindow", hidden_windows
 
         tree = await session.call(
             "query",
