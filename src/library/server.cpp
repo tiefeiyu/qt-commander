@@ -158,6 +158,43 @@ QJsonArray qmlCandidates(const QList<QmlItemMatch>& matches)
 
 bool matchText(const QJsonValue& spec, const QString& actual);
 
+bool qmlMatchesTarget(QQuickItem* item, const QJsonObject& object)
+{
+    if (!item)
+        return false;
+    if (object.contains(QStringLiteral("class")) &&
+        !matchText(object.value(QStringLiteral("class")),
+                   QString::fromLatin1(item->metaObject()->className())))
+        return false;
+    if (object.contains(QStringLiteral("qml_type")) &&
+        !matchText(object.value(QStringLiteral("qml_type")),
+                   QString::fromLatin1(item->metaObject()->className())))
+        return false;
+    const QJsonValue objectSpec =
+        object.contains(QStringLiteral("object_name"))
+            ? object.value(QStringLiteral("object_name"))
+            : object.value(QStringLiteral("objectName"));
+    if ((object.contains(QStringLiteral("object_name")) ||
+         object.contains(QStringLiteral("objectName"))) &&
+        !matchText(objectSpec, item->objectName()))
+        return false;
+    if (object.contains(QStringLiteral("text")) &&
+        !matchText(object.value(QStringLiteral("text")),
+                   item->property("text").toString()))
+        return false;
+    if (object.contains(QStringLiteral("props"))) {
+        const QJsonObject props =
+            object.value(QStringLiteral("props")).toObject();
+        for (auto it = props.begin(); it != props.end(); ++it) {
+            const QVariant value =
+                item->property(it.key().toUtf8().constData());
+            if (!value.isValid() || QJsonValue::fromVariant(value) != it.value())
+                return false;
+        }
+    }
+    return true;
+}
+
 bool qmlActionable(QQuickItem* item)
 {
     if (!item)
@@ -199,6 +236,14 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
     QList<QmlItemMatch> matches;
     if (!qmlId.isEmpty()) {
         matches = findQmlMatches(qmlId);
+        if (object.size() > 1) {
+            QList<QmlItemMatch> filtered;
+            for (const QmlItemMatch& match : matches) {
+                if (qmlMatchesTarget(match.item, object))
+                    filtered.append(match);
+            }
+            matches = filtered;
+        }
     } else {
         static const QSet<QString> matcherKeys{
             QStringLiteral("class"), QStringLiteral("object_name"),
@@ -332,6 +377,8 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
     } else {
         matches = selectable;
     }
+    if (candidates)
+        *candidates = qmlCandidates(matches);
     if (matches.size() > 1 && nth < 0) {
         if (error)
             *error = QStringLiteral("%1 QML items match%2; provide nth")
@@ -3130,8 +3177,11 @@ QJsonObject Server::call(const QJsonObject& params)
         if (qmlTarget.isObject() &&
             qmlTarget.toObject().contains(QStringLiteral("qml_id"))) {
             QJsonObject result;
-            result.insert(QStringLiteral("error"),
-                          QStringLiteral("E_NOT_FOUND"));
+            result.insert(
+                QStringLiteral("error"),
+                qmlError.contains(QStringLiteral("all are hidden"))
+                    ? QStringLiteral("E_HIDDEN")
+                    : QStringLiteral("E_NOT_FOUND"));
             result.insert(QStringLiteral("message"),
                           qmlError.isEmpty()
                               ? QStringLiteral("no QML item matches target")
