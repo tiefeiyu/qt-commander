@@ -4807,7 +4807,7 @@ QJsonObject Server::buildQuickItemNode(QQuickWindow* window, QQuickItem* item,
     bool childAny = false;
     if (item->isVisible() && context.emitted < QueryContext::kMaxEmitted) {
         for (QQuickItem* child : item->childItems()) {
-            if (!child || !child->isVisible())
+            if (!child || (!context.includeHidden && !child->isVisible()))
                 continue;
             bool childMatch = false;
             const QJsonObject node =
@@ -4892,7 +4892,7 @@ QJsonObject Server::buildQuickWindowNode(QQuickWindow* window,
     if (window->contentItem() &&
         context.emitted < QueryContext::kMaxEmitted) {
         for (QQuickItem* child : window->contentItem()->childItems()) {
-            if (!child || !child->isVisible())
+            if (!child || (!context.includeHidden && !child->isVisible()))
                 continue;
             bool childMatch = false;
             int serial = 0;

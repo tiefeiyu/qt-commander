@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from qt_commander import ops
-from qt_commander.client import RpcClient
+from qt_commander.client import RpcClient, RpcError
 from qt_commander.session import Session
 
 
@@ -120,6 +120,42 @@ async def main() -> None:
             "get", {"target": {"id": field["id"]}, "props": ["text"]}
         )
         assert typed_get["props"]["text"] == "hello", typed_get
+
+        hidden_tree = await session.call(
+            "query",
+            {
+                "where": {"qml_id": "hiddenField"},
+                "include_hidden": True,
+                "limit": 10,
+            },
+        )
+        hidden = find_qml(hidden_tree["tree"][0], "hiddenField")
+        assert hidden, hidden_tree
+        hidden_id = hidden["id"]
+        try:
+            await session.call(
+                "act",
+                {
+                    "target": {"id": hidden_id},
+                    "action": "type",
+                    "text": "nope",
+                },
+            )
+        except RpcError as exc:
+            assert exc.code == "E_HIDDEN", exc.code
+        else:
+            raise AssertionError("hidden type unexpectedly succeeded")
+        hidden_typed = await session.call(
+            "act",
+            {
+                "target": {"id": hidden_id},
+                "action": "type",
+                "text": "hidden-ok",
+                "clear": True,
+                "include_hidden": True,
+            },
+        )
+        assert hidden_typed.get("text_after") == "hidden-ok", hidden_typed
 
         shot = await ops.screenshot(
             session, max_width=800, annotate="all", max_labels=12

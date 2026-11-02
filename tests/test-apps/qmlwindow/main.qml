@@ -49,5 +49,12 @@ ApplicationWindow {
             objectName: "statusLabel"
             text: "idle"
         }
+
+        TextField {
+            id: hiddenField
+            objectName: "hiddenField"
+            visible: false
+            text: "hidden"
+        }
     }
 }
