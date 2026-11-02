@@ -1273,6 +1273,15 @@ QJsonObject Server::act(const QJsonObject& params)
     if (resolveQmlTarget(params.value(QStringLiteral("target")), nth,
                          &qmlWindow, &qmlItem, &qmlError,
                          &qmlCandidateList)) {
+        if (!qmlItem->isVisible() &&
+            !params.value(QStringLiteral("include_hidden")).toBool(false)) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML target is hidden; pass "
+                                         "include_hidden=true to override"));
+            return result;
+        }
         const QRect rect =
             qmlItem->mapRectToScene(qmlItem->boundingRect()).toAlignedRect();
         const QString qmlTargetId =
@@ -3816,6 +3825,15 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         ref.kind == QStringLiteral("qml_item") &&
         !ref.windowOwner.isNull()) {
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        if (item && !item->isVisible() &&
+            !params.value(QStringLiteral("include_hidden")).toBool(false)) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML target is hidden; pass "
+                                         "include_hidden=true to override"));
+            return result;
+        }
         if (!item || item->metaObject()->indexOfProperty("text") < 0) {
             QJsonObject result;
             result.insert(QStringLiteral("error"),
@@ -3848,6 +3866,15 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         !ref.windowOwner.isNull()) {
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
         auto* window = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+        if (item && !item->isVisible() &&
+            !params.value(QStringLiteral("include_hidden")).toBool(false)) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_HIDDEN"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("QML target is hidden; pass "
+                                         "include_hidden=true to override"));
+            return result;
+        }
         if (!item || !window) {
             QJsonObject result;
             result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));

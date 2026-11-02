@@ -240,6 +240,7 @@ async def act(
     settle_ms: int = 0,
     observe: bool = True,
     input: str = "auto",
+    include_hidden: bool = False,
     js_risk_ack: bool = False,
 ) -> dict[str, Any]:
     _choice("action", action, ACTIONS)
@@ -276,6 +277,8 @@ async def act(
             "js_risk_ack": js_risk_ack,
         }
     )
+    if include_hidden:
+        params["include_hidden"] = True
     rpc_timeout = max(
         1.0,
         (settle_ms + duration_ms) / 1000.0 + ACT_RPC_MARGIN_S,

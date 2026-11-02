@@ -768,6 +768,7 @@ async def qt_act(
     settle_ms: int = 0,
     observe: bool = True,
     input: str = "auto",
+    include_hidden: bool = False,
     js_risk_ack: bool = False,
 ) -> dict[str, Any]:
     """Dispatch one action (click/type/focus today; more in the engine)."""
@@ -796,6 +797,7 @@ async def qt_act(
             settle_ms=settle_ms,
             observe=observe,
             input=input,
+            include_hidden=include_hidden,
             js_risk_ack=js_risk_ack,
         )
     except Exception as exc:
