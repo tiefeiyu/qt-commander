@@ -49,6 +49,8 @@ are no snapshot files and no stale index of the UI.
   integer values.
 - `qt_source` accepts `source_dir` for qrc/embedded QML whose source tree is
   not next to the executable; it returns `file/line/url` when found.
+- `qt_screenshot(annotate=...)` supports `annotate_offset` for paging large
+  annotation sets; legend `n` numbers stay continuous across pages.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.

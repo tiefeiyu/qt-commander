@@ -1966,8 +1966,18 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
                           return left.rect.top() < right.rect.top();
                       return left.rect.left() < right.rect.left();
                   });
-        annotateTotal = candidates.size() + virtualAnnotations.size();
-        annotateTruncated = annotateTotal > maxLabels;
+        const int annotateOffset =
+            params.value(QStringLiteral("annotate_offset")).toInt(0);
+        if (annotateOffset > 0) {
+            if (annotateOffset >= candidates.size())
+                candidates.clear();
+            else
+                candidates = candidates.mid(annotateOffset);
+        }
+        annotateTotal = candidates.size() + virtualAnnotations.size() +
+                        annotateOffset;
+        annotateTruncated =
+            annotateTotal > annotateOffset + maxLabels;
         if (candidates.size() > maxLabels)
             candidates = candidates.mid(0, maxLabels);
         const int remaining = qMax(0, maxLabels - candidates.size());
@@ -1995,7 +2005,7 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
             QRect rect;
             int number = 0;
         };
-        int number = 0;
+        int number = annotateOffset;
         QList<BadgeTarget> badgeTargets;
         for (const Candidate& candidate : candidates) {
             ++number;
@@ -2258,6 +2268,9 @@ QJsonObject Server::screenshot(const QJsonObject& params, QByteArray* binary)
     if (annotate != QStringLiteral("none")) {
         result.insert(QStringLiteral("annotate_total"), annotateTotal);
         result.insert(QStringLiteral("annotate_shown"), annotateShown);
+        result.insert(
+            QStringLiteral("annotate_offset"),
+            params.value(QStringLiteral("annotate_offset")).toInt(0));
         result.insert(QStringLiteral("annotate_truncated"), annotateTruncated);
     }
     if (virtualTarget) {
@@ -2321,6 +2334,8 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
             params.value(QStringLiteral("where")).toObject();
         const int maxLabels =
             params.value(QStringLiteral("max_labels")).toInt(50);
+        const int annotateOffset =
+            params.value(QStringLiteral("annotate_offset")).toInt(0);
         struct QmlCandidate {
             QQuickItem* item = nullptr;
             QRect rect;
@@ -2434,6 +2449,12 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
             }
             candidates = filtered;
         }
+        if (annotateOffset > 0) {
+            if (annotateOffset >= candidates.size())
+                candidates.clear();
+            else
+                candidates = candidates.mid(annotateOffset);
+        }
         if (candidates.size() > maxLabels)
             candidates = candidates.mid(0, maxLabels);
         shown = candidates.size();
@@ -2447,7 +2468,7 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
         QFont font = painter.font();
         font.setPixelSize(qMax(8, qRound(9 * dpr)));
         painter.setFont(font);
-        int number = 0;
+        int number = annotateOffset;
         for (const QmlCandidate& candidate : candidates) {
             ++number;
             const QRect drawRect(
@@ -2536,7 +2557,11 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
     result.insert(QStringLiteral("annotate"), annotate);
     result.insert(QStringLiteral("annotate_shown"), shown);
     result.insert(QStringLiteral("annotate_total"), total);
-    result.insert(QStringLiteral("annotate_truncated"), total > shown);
+    result.insert(QStringLiteral("annotate_offset"),
+                  params.value(QStringLiteral("annotate_offset")).toInt(0));
+    result.insert(
+        QStringLiteral("annotate_truncated"),
+        total > params.value(QStringLiteral("annotate_offset")).toInt(0) + shown);
     result.insert(QStringLiteral("legend"), legend);
     result.insert(QStringLiteral("window"), QJsonObject{
         {QStringLiteral("id"), idForWindow(window)},

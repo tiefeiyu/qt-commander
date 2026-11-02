@@ -44,6 +44,8 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   枚举参数可传整数。
 - `qt_source` 支持 `source_dir`，用于 qrc/嵌入式 QML 源码不在可执行文件附近的情况；
   找到时返回 `file/line/url`。
+- `qt_screenshot(annotate=...)` 支持 `annotate_offset` 分页；legend 的 `n`
+  跨页连续。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。

@@ -371,6 +371,7 @@ async def screenshot(
     annotate: str = "none",
     where: Mapping[str, Any] | None = None,
     max_labels: int = 50,
+    annotate_offset: int = 0,
     format: str = "png",
 ) -> FrameResponse:
     _choice("annotate", annotate, ANNOTATE)
@@ -381,6 +382,8 @@ async def screenshot(
         raise ValueError("max_width must be >= 0 (0 = native)")
     if max_labels < 0:
         raise ValueError("max_labels must be >= 0")
+    if annotate_offset < 0:
+        raise ValueError("annotate_offset must be >= 0")
     params = _clean(
         {
             "target": target,
@@ -389,6 +392,7 @@ async def screenshot(
             "annotate": annotate,
             "where": where,
             "max_labels": max_labels,
+            "annotate_offset": annotate_offset,
             "format": format,
         }
     )

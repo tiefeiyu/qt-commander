@@ -848,6 +848,7 @@ async def qt_screenshot(
     annotate: str = "none",
     where: dict[str, Any] | None = None,
     max_labels: int = 50,
+    annotate_offset: int = 0,
     format: str = "png",
 ) -> list[Any]:
     """Capture a PNG plus metadata.
@@ -872,6 +873,7 @@ async def qt_screenshot(
             annotate=annotate,
             where=where,
             max_labels=max_labels,
+            annotate_offset=annotate_offset,
             format=format,
         )
     except Exception as exc:
