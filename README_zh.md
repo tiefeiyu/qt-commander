@@ -48,6 +48,7 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   跨页连续。
 - `qt_batch` 每步必须是 `{"act": ...}`、`{"wait": ...}`、`{"set": ...}` 或
   `{"get": ...}` 之一，可原子完成写入/读取/恢复。
+- `qt_act(target=<窗口 id>, action="restore")` 可恢复最小化的 QWindow/QQuickWindow。
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。

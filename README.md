@@ -55,6 +55,8 @@ are no snapshot files and no stale index of the UI.
 - `qt_batch` steps are exactly one of `{"act": ...}`, `{"wait": ...}`,
   `{"set": ...}`, `{"get": ...}`; this allows an atomic write/read/restore
   sequence.
+- `qt_act(target=<window id>, action="restore")` restores a minimized
+  QWindow/QQuickWindow before further inspection.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.
