@@ -1068,6 +1068,13 @@ QJsonObject Server::query(const QJsonObject& params)
         }
     }
     context.props = params.value(QStringLiteral("props"));
+    if (context.props.isUndefined() || context.props.isNull()) {
+        // Default to the properties an agent needs to identify a node.
+        // Callers can still pass [] for a minimal tree or "*" for everything.
+        context.props =
+            QJsonArray{QStringLiteral("text"), QStringLiteral("visible"),
+                       QStringLiteral("enabled")};
+    }
     context.includeHidden =
         params.value(QStringLiteral("include_hidden")).toBool(false);
     context.maxDepth = params.value(QStringLiteral("max_depth")).toInt(-1);
@@ -3300,11 +3307,16 @@ QJsonObject Server::methods(const QJsonObject& params)
         return result;
     }
     className = QString::fromLatin1(object->metaObject()->className());
+    const bool includeInternal =
+        params.value(QStringLiteral("include_internal")).toBool(false);
     QJsonArray methodList;
     const QMetaObject* meta = object->metaObject();
     for (int i = 0; i < meta->methodCount(); ++i) {
         const QMetaMethod method = meta->method(i);
         if (method.methodType() == QMetaMethod::Signal)
+            continue;
+        const QString methodName = QString::fromLatin1(method.name());
+        if (!includeInternal && methodName.startsWith(QStringLiteral("_q_")))
             continue;
         QJsonObject entry;
         entry.insert(QStringLiteral("name"),

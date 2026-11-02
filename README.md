@@ -44,7 +44,8 @@ are no snapshot files and no stale index of the UI.
   widgets and QML items; property setters such as `QPushButton::setText` are
   not methods — use `qt_set` instead. Non-void return values are returned in
   `result`; object returns use `{class, id}` so they can be reused as targets.
-  `qt_methods` lists invokable methods, parameter types and return types.
+  `qt_methods` lists invokable methods, parameter types and return types
+  (Qt `_q_` internals are hidden unless `include_internal=true`).
   Pass `signature` to disambiguate overloads; enum arguments accept their
   integer values.
 - `qt_source` accepts `source_dir` for qrc/embedded QML whose source tree is
@@ -106,7 +107,8 @@ For multiple windows, call `qt_windows` first and pass that window's `id` to
 `qt_screenshot`. Without a target, a screenshot is refused when more than one
 visible top-level window exists; popups/tooltips do not count toward that
 ambiguity. `qt_query(scope=...)` can limit a query to one window/widget subtree;
-`where` accepts both `object_name` and the `objectName` alias, and strings
+without `props`, nodes default to `text/visible/enabled`, which is usually
+enough to identify a target. `where` accepts both `object_name` and the `objectName` alias, and strings
 support wildcards or `contains/startsWith/regex/equals` matchers. For QAction/
 menu items use `qt_items(owner=menu, where=...)`; they are virtual items, not
 part of the QWidget query tree.

@@ -952,6 +952,7 @@ async def qt_methods(
     target: str | dict[str, Any],
     nth: int | None = None,
     include_hidden: bool = False,
+    include_internal: bool = False,
 ) -> dict[str, Any]:
     """List invokable Qt methods (slots/Q_INVOKABLE) for a target."""
     session = _session(session_id)
@@ -962,6 +963,8 @@ async def qt_methods(
         params["nth"] = nth
     if include_hidden:
         params["include_hidden"] = True
+    if include_internal:
+        params["include_internal"] = True
     try:
         return await session.call("methods", params)
     except Exception as exc:
