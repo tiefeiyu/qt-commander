@@ -413,22 +413,27 @@ QStringList sourceRoots()
     const QByteArray configured = qgetenv("QT_COMMANDER_SOURCE_DIR");
     if (!configured.isEmpty())
         roots.append(QString::fromLocal8Bit(configured));
-    roots.append(QCoreApplication::applicationDirPath());
-    roots.append(QDir::currentPath());
-    // Debug builds often live several levels below the source tree. Keep
-    // this bounded: walking a drive root is far too expensive.
+
+    // Prefer real source subdirectories over build/staging trees. Staging
+    // trees can contain thousands of generated QML files and otherwise
+    // exhaust the bounded scan before the source is reached.
+    QStringList ancestors;
     QDir ancestor(QCoreApplication::applicationDirPath());
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         if (!ancestor.cdUp())
             break;
         const QString path = ancestor.absolutePath();
         if (path.size() <= 4) // "D:/" or "D:\\"
             break;
-        roots.append(path);
+        ancestors.append(path);
         const QString sourceSubdir = path + QStringLiteral("/src");
         if (QDir(sourceSubdir).exists())
             roots.append(sourceSubdir);
     }
+    roots.append(QCoreApplication::applicationDirPath());
+    roots.append(QDir::currentPath());
+    roots.append(ancestors);
+    roots.removeDuplicates();
     return roots;
 }
 
