@@ -1341,6 +1341,26 @@ QJsonObject Server::act(const QJsonObject& params)
         if (QWindow* window = windowForId(virtualId)) {
             const QString windowAction =
                 params.value(QStringLiteral("action")).toString();
+            if (windowAction == QStringLiteral("restore")) {
+                if (window->windowState() == Qt::WindowMinimized)
+                    window->setWindowState(Qt::WindowNoState);
+                window->show();
+                window->raise();
+                window->requestActivate();
+                QJsonObject resolved;
+                resolved.insert(QStringLiteral("id"), virtualId);
+                resolved.insert(
+                    QStringLiteral("class"),
+                    QString::fromLatin1(window->metaObject()->className()));
+                resolved.insert(QStringLiteral("visible"), window->isVisible());
+                resolved.insert(
+                    QStringLiteral("minimized"),
+                    window->windowState() == Qt::WindowMinimized);
+                QJsonObject result;
+                result.insert(QStringLiteral("ok"), true);
+                result.insert(QStringLiteral("resolved"), resolved);
+                return result;
+            }
             if (windowAction != QStringLiteral("key")) {
                 QJsonObject result;
                 result.insert(QStringLiteral("error"),

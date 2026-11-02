@@ -15,7 +15,17 @@ from .errors import ErrorCode
 from .session import Session
 
 ACTIONS = frozenset(
-    {"click", "dblclick", "hover", "type", "key", "focus", "scroll", "drag"}
+    {
+        "click",
+        "dblclick",
+        "hover",
+        "type",
+        "key",
+        "focus",
+        "restore",
+        "scroll",
+        "drag",
+    }
 )
 COORDS = frozenset({"parent", "screen"})
 ANNOTATE = frozenset({"none", "interactive", "matched", "all", "layers"})
