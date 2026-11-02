@@ -280,6 +280,22 @@ bool resolveQmlTarget(const QJsonValue& target, int nth,
     return true;
 }
 
+QStringList methodSignatures(QObject* object, const QString& method)
+{
+    QStringList signatures;
+    for (int i = 0; i < object->metaObject()->methodCount(); ++i) {
+        const QMetaMethod candidate = object->metaObject()->method(i);
+        if (candidate.methodType() == QMetaMethod::Signal)
+            continue;
+        if (QString::fromLatin1(candidate.name()) != method)
+            continue;
+        signatures.append(
+            QString::fromLatin1(candidate.methodSignature()));
+    }
+    signatures.sort();
+    return signatures;
+}
+
 QString setterPropertyName(QObject* object, const QString& method)
 {
     if (!method.startsWith(QStringLiteral("set")) || method.size() <= 3)
@@ -2757,6 +2773,8 @@ QJsonObject Server::call(const QJsonObject& params)
 {
     const QString qmlMethod =
         params.value(QStringLiteral("method")).toString();
+    const QString requestedSignature =
+        params.value(QStringLiteral("signature")).toString();
     if (!qmlMethod.isEmpty()) {
         QQuickWindow* qmlWindow = nullptr;
         QQuickItem* qmlItem = nullptr;
@@ -2794,6 +2812,10 @@ QJsonObject Server::call(const QJsonObject& params)
                     continue;
                 if (candidate.parameterCount() != args.size())
                     continue;
+                if (!requestedSignature.isEmpty() &&
+                    QString::fromLatin1(candidate.methodSignature()) !=
+                        requestedSignature)
+                    continue;
                 chosen = candidate;
                 break;
             }
@@ -2805,6 +2827,11 @@ QJsonObject Server::call(const QJsonObject& params)
                     QStringLiteral("no matching QML method: %1/%2")
                         .arg(qmlMethod)
                         .arg(args.size());
+                const QStringList signatures =
+                    methodSignatures(qmlItem, qmlMethod);
+                if (!signatures.isEmpty())
+                    message += QStringLiteral("; candidates: %1")
+                                   .arg(signatures.join(QStringLiteral(", ")));
                 const QString property =
                     setterPropertyName(qmlItem, qmlMethod);
                 if (!property.isEmpty())
@@ -2821,13 +2848,24 @@ QJsonObject Server::call(const QJsonObject& params)
             for (int i = 0; i < args.size(); ++i) {
                 QVariant value = args.at(i).toVariant();
                 const int typeId = chosen.parameterType(i);
-                if (value.userType() != typeId && !value.convert(typeId)) {
+                const bool enumArgument =
+                    typeId != QMetaType::UnknownType &&
+                    (QMetaType::typeFlags(typeId) &
+                     QMetaType::IsEnumeration);
+                if ((enumArgument || typeId == QMetaType::UnknownType) &&
+                    value.canConvert<int>()) {
+                    value = value.toInt();
+                } else if (value.userType() != typeId &&
+                           !value.convert(typeId)) {
                     QJsonObject result;
                     result.insert(QStringLiteral("error"),
                                   QStringLiteral("E_INVALID_ARGUMENT"));
-                    result.insert(QStringLiteral("message"),
-                                  QStringLiteral("cannot convert QML argument %1")
-                                      .arg(i));
+                    result.insert(
+                        QStringLiteral("message"),
+                        QStringLiteral("cannot convert QML argument %1 to %2")
+                            .arg(i)
+                            .arg(QString::fromLatin1(
+                                chosen.parameterTypes().at(i).constData())));
                     return result;
                 }
                 values.append(value);
@@ -2871,6 +2909,9 @@ QJsonObject Server::call(const QJsonObject& params)
             QJsonObject result;
             result.insert(QStringLiteral("ok"), true);
             result.insert(QStringLiteral("method"), qmlMethod);
+            result.insert(
+                QStringLiteral("signature"),
+                QString::fromLatin1(chosen.methodSignature()));
             result.insert(QStringLiteral("class"),
                           QString::fromLatin1(
                               qmlItem->metaObject()->className()));
@@ -2936,6 +2977,10 @@ QJsonObject Server::call(const QJsonObject& params)
             continue;
         if (candidate.parameterCount() != args.size())
             continue;
+        if (!requestedSignature.isEmpty() &&
+            QString::fromLatin1(candidate.methodSignature()) !=
+                requestedSignature)
+            continue;
         chosen = candidate;
         break;
     }
@@ -2946,6 +2991,10 @@ QJsonObject Server::call(const QJsonObject& params)
             QStringLiteral("no matching method: %1/%2")
                 .arg(method)
                 .arg(args.size());
+        const QStringList signatures = methodSignatures(widget, method);
+        if (!signatures.isEmpty())
+            message += QStringLiteral("; candidates: %1")
+                           .arg(signatures.join(QStringLiteral(", ")));
         const QString property = setterPropertyName(widget, method);
         if (!property.isEmpty())
             message += QStringLiteral(
@@ -2964,7 +3013,13 @@ QJsonObject Server::call(const QJsonObject& params)
     for (int i = 0; i < args.size(); ++i) {
         QVariant value = args.at(i).toVariant();
         const int typeId = chosen.parameterType(i);
-        if (value.userType() != typeId && !value.convert(typeId)) {
+        const bool enumArgument =
+            typeId != QMetaType::UnknownType &&
+            (QMetaType::typeFlags(typeId) & QMetaType::IsEnumeration);
+        if ((enumArgument || typeId == QMetaType::UnknownType) &&
+            value.canConvert<int>()) {
+            value = value.toInt();
+        } else if (value.userType() != typeId && !value.convert(typeId)) {
             QJsonObject result;
             result.insert(QStringLiteral("error"),
                           QStringLiteral("E_INVALID_ARGUMENT"));
@@ -3014,6 +3069,8 @@ QJsonObject Server::call(const QJsonObject& params)
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("method"), method);
+    result.insert(QStringLiteral("signature"),
+                  QString::fromLatin1(chosen.methodSignature()));
     if (returnData) {
         result.insert(QStringLiteral("result"),
                       returnValueToJson(QVariant(returnType, returnData)));

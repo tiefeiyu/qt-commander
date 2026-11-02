@@ -350,12 +350,13 @@ async def call_method(
     method: str,
     args: list[Any] | None = None,
     nth: int | None = None,
+    signature: str | None = None,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
     params = _clean({"target": target, "method": method, "args": args,
-                     "nth": nth})
+                     "nth": nth, "signature": signature})
     if include_hidden:
         params["include_hidden"] = True
     return await session.call("call", params)

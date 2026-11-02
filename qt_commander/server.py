@@ -929,6 +929,7 @@ async def qt_call(
     method: str,
     args: list[Any] | None = None,
     nth: int | None = None,
+    signature: str | None = None,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Invoke a method (destructive)."""
@@ -937,6 +938,7 @@ async def qt_call(
         return session
     try:
         return await ops.call_method(session, target, method, args=args, nth=nth,
+                                     signature=signature,
                                      include_hidden=include_hidden)
     except Exception as exc:
         return _map_error(exc)
