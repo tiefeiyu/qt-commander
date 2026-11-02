@@ -2914,8 +2914,13 @@ QJsonObject Server::call(const QJsonObject& params)
                               qmlItem->metaObject()->className()));
             if (returnData) {
                 result.insert(QStringLiteral("result"),
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                              returnValueToJson(
+                                  QVariant(QMetaType(returnType), returnData)));
+#else
                               returnValueToJson(
                                   QVariant(returnType, returnData)));
+#endif
                 QMetaType::destroy(returnType, returnData);
             }
             return result;
@@ -3070,7 +3075,13 @@ QJsonObject Server::call(const QJsonObject& params)
                   QString::fromLatin1(chosen.methodSignature()));
     if (returnData) {
         result.insert(QStringLiteral("result"),
-                      returnValueToJson(QVariant(returnType, returnData)));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                      returnValueToJson(
+                          QVariant(QMetaType(returnType), returnData)));
+#else
+                      returnValueToJson(
+                          QVariant(returnType, returnData)));
+#endif
         QMetaType::destroy(returnType, returnData);
     }
     return result;
