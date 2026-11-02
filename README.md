@@ -115,6 +115,7 @@ End-to-end / benchmark scripts:
 uv run python scripts/linked_smoke.py
 uv run python scripts/mcp_linked_smoke.py
 uv run python scripts/window_regression.py
+uv run python scripts/qml_window_test.py
 
 # native injection smoke (pass the target pid)
 uv run python scripts/injection_smoke.py <pid> --mode injection

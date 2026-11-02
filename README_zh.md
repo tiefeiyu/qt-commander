@@ -108,6 +108,7 @@ uv run pytest tests/unit_server -q
 uv run python scripts/linked_smoke.py
 uv run python scripts/mcp_linked_smoke.py
 uv run python scripts/window_regression.py
+uv run python scripts/qml_window_test.py
 
 # 原生 injection smoke（传入目标 pid）
 uv run python scripts/injection_smoke.py <pid> --mode injection
