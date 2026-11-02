@@ -5197,7 +5197,8 @@ QJsonObject Server::buildQuickItemNode(QQuickWindow* window, QQuickItem* item,
     int childCount = 0;
     QJsonArray children;
     bool childAny = false;
-    if (item->isVisible() && context.emitted < QueryContext::kMaxEmitted) {
+    if ((context.includeHidden || item->isVisible()) &&
+        context.emitted < QueryContext::kMaxEmitted) {
         for (QQuickItem* child : item->childItems()) {
             if (!child || (!context.includeHidden && !child->isVisible()))
                 continue;
@@ -5459,7 +5460,7 @@ void Server::countNode(QWidget* widget, QueryContext& context, int depth)
     if (auto* quick = qobject_cast<QQuickWidget*>(widget)) {
         std::function<void(QQuickItem*, int)> countQml =
             [&](QQuickItem* item, int qmlDepth) {
-                if (!item || !item->isVisible())
+                if (!item || (!context.includeHidden && !item->isVisible()))
                     return;
                 ++context.total;
                 if (context.hasWhere && qmlMatches(item, context.where))
