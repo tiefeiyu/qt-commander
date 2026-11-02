@@ -158,6 +158,21 @@ QJsonArray qmlCandidates(const QList<QmlItemMatch>& matches)
 
 bool matchText(const QJsonValue& spec, const QString& actual);
 
+QString qmlTextContent(QQuickItem* item)
+{
+    if (!item)
+        return {};
+    const QString own = item->property("text").toString();
+    if (!own.isEmpty())
+        return own;
+    for (QQuickItem* child : item->childItems()) {
+        const QString nested = qmlTextContent(child);
+        if (!nested.isEmpty())
+            return nested;
+    }
+    return {};
+}
+
 bool qmlMatchesTarget(QQuickItem* item, const QJsonObject& object)
 {
     if (!item)
@@ -180,7 +195,7 @@ bool qmlMatchesTarget(QQuickItem* item, const QJsonObject& object)
         return false;
     if (object.contains(QStringLiteral("text")) &&
         !matchText(object.value(QStringLiteral("text")),
-                   item->property("text").toString()))
+                   qmlTextContent(item)))
         return false;
     if (object.contains(QStringLiteral("props"))) {
         const QJsonObject props =
