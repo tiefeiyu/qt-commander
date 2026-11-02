@@ -560,18 +560,23 @@ def _batch_error(exc: BaseException) -> dict[str, Any]:
 
 def _validate_step(step: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
     if not isinstance(step, Mapping) or len(step) != 1:
-        raise ValueError("each step must have exactly one of: act, wait")
+        raise ValueError(
+            "each step must have exactly one of: act, wait, set, get"
+        )
     kind, payload = next(iter(step.items()))
-    if kind not in {"act", "wait"}:
+    if kind not in {"act", "wait", "set", "get"}:
         raise ValueError(f"unknown step kind: {kind!r}")
     if not isinstance(payload, Mapping):
         raise ValueError(f"{kind} payload must be an object")
+    if kind in {"act", "set", "get"} and "target" not in payload:
+        raise ValueError(f"{kind} target is required")
     if kind == "act":
-        if "target" not in payload:
-            raise ValueError("act target is required")
         _choice("action", str(payload.get("action", "")), ACTIONS)
         _choice("input", str(payload.get("input", "auto")), INPUT_MODES)
-    else:
+    elif kind == "set":
+        if "name" not in payload or "value" not in payload:
+            raise ValueError("set name and value are required")
+    elif kind == "wait":
         condition = payload.get("condition")
         if not isinstance(condition, Mapping):
             raise ValueError("wait condition is required")
@@ -585,7 +590,7 @@ async def batch(
     *,
     stop_on_error: bool = True,
 ) -> dict[str, Any]:
-    """Execute ``[{"act": {...}}, {"wait": {...}}]`` sequentially."""
+    """Execute act/wait/set/get steps sequentially without a round-trip."""
     if not isinstance(steps, list):
         raise TypeError("steps must be a list")
     validated = [_validate_step(step) for step in steps]
@@ -595,6 +600,10 @@ async def batch(
         try:
             if kind == "act":
                 result = await act(session, **payload)
+            elif kind == "set":
+                result = await set_property(session, **payload)
+            elif kind == "get":
+                result = await get(session, **payload)
             else:
                 result = await wait(session, **payload)
         except (RpcError, ClientTimeout, ClientClosed, ValueError, TypeError) as exc:

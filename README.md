@@ -52,6 +52,9 @@ are no snapshot files and no stale index of the UI.
   not next to the executable; it returns `file/line/url` when found.
 - `qt_screenshot(annotate=...)` supports `annotate_offset` for paging large
   annotation sets; legend `n` numbers stay continuous across pages.
+- `qt_batch` steps are exactly one of `{"act": ...}`, `{"wait": ...}`,
+  `{"set": ...}`, `{"get": ...}`; this allows an atomic write/read/restore
+  sequence.
 - `qt_act` supports click/dblclick/type/focus/key/scroll/hover/drag and
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.
