@@ -412,7 +412,7 @@ bool findUiLocation(const QString& objectName, UiHit* hit)
     for (const QString& root : roots) {
         QDirIterator it(root, {QStringLiteral("*.ui")}, QDir::Files,
                         QDirIterator::Subdirectories);
-        while (it.hasNext() && scanned < 500) {
+        while (it.hasNext() && scanned < 5000) {
             const QString path = it.next();
             const QString canonical = QFileInfo(path).canonicalFilePath();
             if (canonical.isEmpty() || seen.contains(canonical))
@@ -506,7 +506,7 @@ bool findQmlLocation(const QString& objectName, UiHit* hit)
     for (const QString& root : roots) {
         QDirIterator it(root, {QStringLiteral("*.qml")}, QDir::Files,
                         QDirIterator::Subdirectories);
-        while (it.hasNext() && scanned < 500) {
+        while (it.hasNext() && scanned < 5000) {
             const QString path = it.next();
             const QString canonical = QFileInfo(path).canonicalFilePath();
             if (canonical.isEmpty() || seen.contains(canonical))
