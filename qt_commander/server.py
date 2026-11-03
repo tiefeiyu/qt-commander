@@ -22,7 +22,44 @@ from .environment import detect_qt_environments, detect_toolchains
 from .errors import ErrorCode
 from .session import Session, SessionExists, SessionManager, SessionNotFound
 
-mcp = FastMCP("qt-commander")
+INSTRUCTIONS = """\
+qt-commander drives a live Qt process (QWidget or QML/QQuickWindow) over MCP.
+
+Startup:
+1. Call qt_status, then qt_windows to choose the window.
+2. Call qt_attach with a descriptor, or with pid + mode="injection" for an
+   already-running Windows process. Use one session per process.
+3. Call qt_detach when finished.
+
+Finding targets:
+- qt_query reads the live tree; without props it includes text/visible/enabled.
+- A target may be a returned node id, a string QML id, or an object such as
+  {"id": ...}, {"qml_id": ...}, {"text": ...}, {"class": ...}, or
+  {"object_name": ...}. Combine qml_id with text/class/objectName when
+  several delegates share an id.
+- E_AMBIGUOUS includes candidates with nth/visible/class/rect; choose nth.
+  E_HIDDEN means all matches are hidden; pass include_hidden=true only when
+  operating a hidden object is intentional.
+
+Actions and properties:
+- qt_act performs real input: click/dblclick/type/focus/key/scroll/hover/
+  drag, plus window minimize/restore/set_geometry. Use expect to verify.
+- qt_get and qt_set read/write properties; use qt_set for property setters.
+- qt_call invokes only metaobject slots/Q_INVOKABLE. Use qt_methods to list
+  signatures and signature= to choose an overload; property setters are not
+  methods.
+- qt_batch runs act/wait/set/get steps sequentially.
+- qt_screenshot supports annotate and annotate_offset; use legend id, not the
+  badge number, as the next target. qt_source resolves .ui/.qml source and
+  accepts source_dir for qrc/embedded QML.
+
+Rules:
+- Prefer real input through qt_act. Verify state after destructive actions.
+- Do not blindly retry after a timeout; inspect the tree first.
+- Node ids can become stale; query again instead of guessing.
+"""
+
+mcp = FastMCP("qt-commander", instructions=INSTRUCTIONS)
 sessions = SessionManager()
 
 
@@ -200,7 +237,11 @@ async def _inject_target(pid: int) -> Path | dict[str, Any]:
 
 @mcp.tool
 async def qt_status(session_id: str | None = None) -> dict[str, Any]:
-    """Return live sessions/descriptors, optionally probing one session."""
+    """Return live sessions/descriptors, optionally probing one session.
+
+    Pass ``session_id`` to probe an existing session; otherwise this lists
+    descriptor files and their process liveness.
+    """
     candidates = _descriptor_candidates()
     result: dict[str, Any] = {
         "sessions": [asdict(info) for info in sessions.list()],
@@ -238,7 +279,12 @@ async def qt_windows(
     limit: int = 200,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List top-level windows with id/title/class/screen_pos/active/modal."""
+    """List top-level windows with id/title/class/screen_pos/active/modal.
+
+    ``include_hidden`` also returns hidden QWidget/QQuickWindow roots.
+    ``visible`` and ``class_name`` filter the result; ``limit``/``offset``
+    paginate. Returned ids are valid targets for this session.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -257,7 +303,10 @@ async def qt_windows(
 
 @mcp.tool
 async def qt_environments() -> dict[str, Any]:
-    """Detect Qt versions/kits and C++ toolchains available on this machine."""
+    """Detect Qt kits and C++ toolchains available on this machine.
+
+    Read-only; use it before qt_build when the Qt path/toolchain is unknown.
+    """
     def detect() -> dict[str, Any]:
         return {
             "qt": detect_qt_environments(),
@@ -332,7 +381,12 @@ async def qt_build(
     extra_args: list[str] | None = None,
     timeout_s: int = 300,
 ) -> dict[str, Any]:
-    """Configure and build a CMake project against a discovered Qt kit."""
+    """Configure and build a CMake project against a discovered Qt kit.
+
+    This builds a test/target runtime; it does not attach to or launch the
+    application. The build must match the target process's Qt major version,
+    toolchain, architecture, and build type.
+    """
     source = Path(source_dir)
     if not (source / "CMakeLists.txt").is_file():
         return _error(ErrorCode.INVALID_ARGUMENT.value,
@@ -520,7 +574,14 @@ async def qt_attach(
     mode: str = "auto",
     build_id: str | None = None,
 ) -> dict[str, Any]:
-    """Attach to a linked runtime via its descriptor."""
+    """Attach to a live Qt process.
+
+    Use a rendezvous descriptor (linked mode), or ``pid`` with
+    ``mode="injection"``. ``mode="auto"`` uses a live descriptor when
+    available and otherwise injects. ``build_id`` guards against attaching a
+    runtime built for a different library; a mismatch must be rebuilt/reinjected
+    rather than bypassed.
+    """
     if mode not in {"auto", "linked", "injection"}:
         return _error(ErrorCode.INVALID_ARGUMENT.value,
                       f"unsupported attach mode: {mode}")
@@ -671,7 +732,10 @@ async def qt_attach(
 
 @mcp.tool
 async def qt_detach(session_id: str, purge: bool = False) -> dict[str, Any]:
-    """Close a session; purge is reserved for descriptor removal."""
+    """Close a session; ``purge=True`` requests descriptor removal.
+
+    Detach before rebuilding/reinjecting a library if the old DLL is loaded.
+    """
     if purge:
         return _error(ErrorCode.NOT_IMPLEMENTED.value,
                       "purge is not implemented")
@@ -697,7 +761,14 @@ async def qt_query(
     occlusion: bool = False,
     count_only: bool = False,
 ) -> dict[str, Any]:
-    """Live query of the object tree ."""
+    """Query the live object tree.
+
+    ``where`` accepts id/class/object_name/objectName/qml_id/qml_type/text/
+    props; strings support exact, wildcard, and contains/startsWith/regex/
+    equals matchers. ``scope`` limits to a window or subtree. Without
+    ``props``, nodes include text/visible/enabled. ``limit`` is a soft
+    truncation reported via count/total/limit/truncated.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -728,7 +799,12 @@ async def qt_items(
     compact: bool = False,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    """List non-QObject children of an owner (provider chain)."""
+    """List provider-backed children of a widget/QML owner.
+
+    Covers actions, tabs, table/list/tree cells, dock/toolbar items, splitter
+    handles, and QML item children. These children are virtual and are not
+    part of the QWidget query tree.
+    """
     session = _session(session_id or owner.split(".")[0])
     if isinstance(session, dict):
         return session
@@ -772,7 +848,15 @@ async def qt_act(
     include_hidden: bool = False,
     js_risk_ack: bool = False,
 ) -> dict[str, Any]:
-    """Dispatch one action (click/type/focus today; more in the engine)."""
+    """Dispatch one real input or window action.
+
+    Actions: click/dblclick/hover/type/focus/key/scroll/drag, plus
+    minimize/restore/set_geometry for window targets (set_geometry takes
+    ``geometry={x,y,w,h}``). ``target`` can be a node id, a string QML id, or
+    an object with id/qml_id/text/class/objectName; use ``nth`` for
+    ambiguity. Hidden targets require ``include_hidden=true``. ``expect`` verifies a
+    declarative state; ``type`` accepts clear/submit.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -812,7 +896,12 @@ async def qt_batch(
     steps: list[dict[str, Any]],
     stop_on_error: bool = True,
 ) -> dict[str, Any]:
-    """Run act/wait steps sequentially ."""
+    """Run steps sequentially.
+
+    Each step is exactly one of {"act": {...}}, {"wait": {...}},
+    {"set": {...}}, or {"get": {...}}. Useful for write/read/restore
+    sequences; ``stop_on_error`` is true by default.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -829,7 +918,11 @@ async def qt_wait(
     timeout_ms: int = 2000,
     poll_ms: int = 75,
 ) -> dict[str, Any]:
-    """Poll a declarative condition ."""
+    """Poll a declarative condition until it matches or times out.
+
+    A condition may use where/props/gone selectors. Timeouts are reported as
+    matched=false rather than silently succeeding.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -859,9 +952,11 @@ async def qt_screenshot(
     several are visible the call fails with ``E_AMBIGUOUS`` and the caller
     must choose a window from ``qt_windows``.
 
-    With ``annotate`` enabled, ``legend`` lists the numbered regions
+    With ``annotate`` enabled, ``legend`` lists numbered regions
     (``n``, ``id``, ``rect``, ``image_rect``). The number is only a
-    screenshot-local visual marker; use ``id`` from the legend to act.
+    screenshot-local marker; use ``id`` from the legend to act.
+    ``annotate_offset`` pages large annotation sets; legend numbers stay
+    continuous. ``max_width`` controls output width.
     """
     session = _session(session_id)
     if isinstance(session, dict):
@@ -895,7 +990,11 @@ async def qt_get(
     nth: int | None = None,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
-    """Read one node/virtual node ."""
+    """Read properties and identity for one node or virtual item.
+
+    ``props`` may be a list of names or "*" for all readable properties.
+    Hidden QML targets require ``include_hidden=true``.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -915,7 +1014,12 @@ async def qt_set(
     nth: int | None = None,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
-    """Set a property (destructive)."""
+    """Write one property (destructive).
+
+    Returns name/old/new. Use this for property setters such as
+    QPushButton::setText, which are not qt_call methods. Hidden QML targets
+    require ``include_hidden=true``.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -936,7 +1040,14 @@ async def qt_call(
     signature: str | None = None,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
-    """Invoke a method (destructive)."""
+    """Invoke a Qt metaobject method (destructive).
+
+    QWidget and QML targets are both supported. Only slots/Q_INVOKABLE are
+    callable; property setters are not methods. Use qt_methods to discover
+    signatures, then pass ``signature`` to disambiguate overloads. Enum
+    arguments accept their integer values. Non-void results are returned in
+    ``result``; object results are ``{class, id}`` and are reusable targets.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -956,7 +1067,11 @@ async def qt_methods(
     include_hidden: bool = False,
     include_internal: bool = False,
 ) -> dict[str, Any]:
-    """List invokable Qt methods (slots/Q_INVOKABLE) for a target."""
+    """List invokable Qt methods (slots/Q_INVOKABLE) for a target.
+
+    Returns name/signature/parameter_types/return_type/slot. Qt ``_q_``
+    internal methods are filtered unless ``include_internal=true``.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
@@ -984,7 +1099,12 @@ async def qt_source(
     include_hidden: bool = False,
     source_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Return source location (engine support pending)."""
+    """Resolve a widget/QML target to source.
+
+    Searches the target's source tree (and QT_COMMANDER_SOURCE_DIR) for a
+    matching .ui/.qml; ``source_dir`` adds an explicit root for qrc/embedded
+    QML. Returns file/line/url when found, otherwise E_NO_DEBUGINFO.
+    """
     session = _session(session_id)
     if isinstance(session, dict):
         return session

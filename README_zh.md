@@ -10,7 +10,7 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
   linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
-  linked、72 个 Python 测试和 MCP stdio E2E 也已验证。
+  linked、74 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
@@ -106,6 +106,14 @@ Claude/MCP 进程，再重新执行 `uv run`。
 `qt_attach(pid=<pid>, mode="injection")`；DLL 路径可用
 `QT_COMMANDER_INJECT_DLL` 覆盖。
 
+## Agent skill
+
+仓库自带工作流 skill：`skills/qt-commander-ui/SKILL.md`。它只讲
+attach → 定位 → 操作 → 验证 → detach 的流程、歧义/隐藏处理、QML 陷阱和安全
+规则，不重复工具 schema。把它复制到所用 harness 的 skill 目录（DSH 为
+`~/.dsh/skills/qt-commander-ui/SKILL.md`）。MCP server 自身也带一段简短的
+`instructions` 和每个工具的说明，供不加载 skill 的客户端使用。
+
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
 且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个；QMenu/QToolTip
 等 popup 不计入歧义判断。`qt_windows(include_hidden=true)` 可列出隐藏的
@@ -121,7 +129,7 @@ QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
 uv run pytest tests/unit_server -q
 ```
 
-当前：**72 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+当前：**74 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
 
 纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
 
