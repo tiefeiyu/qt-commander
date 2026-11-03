@@ -20,11 +20,12 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 16 个 MCP 工具。当前可用：
+- 已注册 17 个 MCP 工具。当前可用：
   `status`、`environments`、`build`、`attach`、`detach`、`windows`、`query`、
-  `items`、`act`、`batch`、`wait`、`screenshot`、`get`、`set`、`call`、`source`。
-  `source` 先按 objectName 搜索 `.ui`/`.qml`，未命中才返回身份信息和
-  `E_NO_DEBUGINFO`。
+  `items`、`act`、`batch`、`wait`、`screenshot`、`get`、`set`、`call`、
+  `methods`、`source`。`source` 会搜索目标源码树（以及
+  `QT_COMMANDER_SOURCE_DIR` / 显式 `source_dir`）中的 `.ui`/`.qml`，未命中才
+  返回身份信息和 `E_NO_DEBUGINFO`。
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
   `QTableView`、`QTreeView`、`QListView`、`QComboBox`、`QScrollBar`、`QSlider`、
   `QSpinBox`、可勾选的 `QGroupBox`、`QDockWidget` 标题按钮、`QSplitter`
@@ -42,8 +43,8 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   非 void 返回值放在 `result`；对象返回值是 `{class, id}`，可直接复用为 target；
   `qt_methods` 可列出方法、参数类型和返回类型（默认隐藏 Qt `_q_` 内部方法）；
   用 `signature` 消歧重载，枚举参数可传整数。
-- `qt_source` 支持 `source_dir`，用于 qrc/嵌入式 QML 源码不在可执行文件附近的情况；
-  找到时返回 `file/line/url`。
+- `qt_source` 会自动搜索附近的源码树（包括祖先目录下的 `src`），也支持
+  `source_dir` 指定 qrc/嵌入式 QML 的源码根；找到时返回 `file/line/url`。
 - `qt_screenshot(annotate=...)` 支持 `annotate_offset` 分页；legend 的 `n`
   跨页连续。
 - `qt_batch` 每步必须是 `{"act": ...}`、`{"wait": ...}`、`{"set": ...}` 或
@@ -55,6 +56,10 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 - `qt_act` 支持 click/dblclick/type/focus/key/scroll/hover/drag，以及声明式
   `expect`（where/props/gone）；`type` 对容器目标自动寻找可编辑子控件，
   找不到返回 `E_NOT_EDITABLE`；虚拟 item 支持 click/dblclick。
+- target 可直接用字符串作为 QML `qml_id`，也可组合
+  `qml_id`/`text`/`class`/`objectName`（含子节点文本）。文本命中会自动折叠到
+  最近的可点击祖先；例如按钮内标签会点击按钮。隐藏目标默认排除，除非传
+  `include_hidden=true`，否则返回 `E_HIDDEN`。
 - MCP 层截图 PNG 限制约 6 MiB；超限会自动降低宽度重截并返回
   `auto_downscaled`，避免大图导致连接断开。
 
@@ -103,8 +108,10 @@ Claude/MCP 进程，再重新执行 `uv run`。
 
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
 且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个；QMenu/QToolTip
-等 popup 不计入歧义判断。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
-`where` 同时接受 `object_name` 和 `objectName` 别名；字符串支持通配符或
+等 popup 不计入歧义判断。`qt_windows(include_hidden=true)` 可列出隐藏的
+QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
+不传 `props` 时节点默认带 `text/visible/enabled`；`where` 同时接受
+`object_name` 和 `objectName` 别名；字符串支持通配符或
 `contains/startsWith/regex/equals` 匹配器。QAction/菜单项是虚拟项，用
 `qt_items(owner=menu, where=...)` 查询，不在 QWidget query 树中。
 
@@ -115,6 +122,15 @@ uv run pytest tests/unit_server -q
 ```
 
 当前：**72 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+
+纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
+
+```bash
+cmake -S tests/test-apps/qmlwindow -B build/qmlwindow-mingw5 -G Ninja \
+  -DQT_MAJOR_VERSION=5 \
+  -DQt5_DIR=/path/to/Qt/5.15.2/mingw81_64/lib/cmake/Qt5
+cmake --build build/qmlwindow-mingw5
+```
 
 端到端 / benchmark：
 
@@ -140,7 +156,7 @@ qt_commander/        Python MCP server、protocol、client、session、ops、注
 src/                 C++ 运行时（linked 库 + injection DLL）
 src/injector/        原生 C++ qtc-inject（Windows remote thread / Linux ptrace）
 tests/unit_server/   Python 单元测试
-tests/test-apps/     linked / large / injected / matrix 测试应用
+tests/test-apps/     linked / large / injected / matrix / qmlwindow 测试应用
 scripts/             smoke、注入与 P0 benchmark 脚本
 docs/design.md       当前设计记录
 docs/benchmarks/     large-7000.json 与 matrix.json

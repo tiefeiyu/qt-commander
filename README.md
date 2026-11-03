@@ -22,11 +22,12 @@ are no snapshot files and no stale index of the UI.
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
-- 16 MCP tools are registered. Working today:
+- 17 MCP tools are registered. Working today:
   `status`, `environments`, `build`, `attach`, `detach`, `windows`, `query`,
-  `items`, `act`, `batch`, `wait`, `screenshot`, `get`, `set`, `call`, `source`.
-  `source` uses `.ui`/`.qml`-by-objectName heuristics and otherwise returns
-  identity with `E_NO_DEBUGINFO`.
+  `items`, `act`, `batch`, `wait`, `screenshot`, `get`, `set`, `call`,
+  `methods`, `source`. `source` searches the target's source tree (and
+  `QT_COMMANDER_SOURCE_DIR` / an explicit `source_dir`) for matching `.ui` or
+  `.qml`; unresolved targets return identity with `E_NO_DEBUGINFO`.
 - `items` covers `QTabWidget`/`QTabBar`, `QMenuBar`/`QMenu`, `QHeaderView`,
   `QTableView`, `QTreeView`, `QListView`, `QComboBox`, `QScrollBar`,
   `QSlider`, `QSpinBox`, checkable `QGroupBox`, `QDockWidget` title buttons,
@@ -48,8 +49,9 @@ are no snapshot files and no stale index of the UI.
   (Qt `_q_` internals are hidden unless `include_internal=true`).
   Pass `signature` to disambiguate overloads; enum arguments accept their
   integer values.
-- `qt_source` accepts `source_dir` for qrc/embedded QML whose source tree is
-  not next to the executable; it returns `file/line/url` when found.
+- `qt_source` auto-discovers nearby source trees (including `src` ancestors)
+  and accepts `source_dir` for qrc/embedded QML whose source tree is not next
+  to the executable; it returns `file/line/url` when found.
 - `qt_screenshot(annotate=...)` supports `annotate_offset` for paging large
   annotation sets; legend `n` numbers stay continuous across pages.
 - `qt_batch` steps are exactly one of `{"act": ...}`, `{"wait": ...}`,
@@ -63,6 +65,11 @@ are no snapshot files and no stale index of the UI.
   declarative `expect` (where/props/gone). `type` finds the first editable
   child for container targets and returns `E_NOT_EDITABLE` when none exists.
   Virtual items support click/dblclick.
+- Targets may use a plain string as a QML `qml_id`, or combine
+  `qml_id`/`text`/`class`/`objectName` (child text is included). Text matches
+  fold into the nearest actionable ancestor; e.g. a label inside a button
+  clicks the button. Hidden targets are excluded by default and return
+  `E_HIDDEN` unless `include_hidden=true` is passed.
 - Screenshots are capped at about 6 MiB at the MCP layer; oversized images are
   automatically re-captured at a smaller width (`auto_downscaled`).
 
@@ -128,6 +135,15 @@ uv run pytest tests/unit_server -q
 
 Current suite: **72 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
+The pure-QML regression app is built with the same options as the linked app:
+
+```bash
+cmake -S tests/test-apps/qmlwindow -B build/qmlwindow-mingw5 -G Ninja \
+  -DQT_MAJOR_VERSION=5 \
+  -DQt5_DIR=/path/to/Qt/5.15.2/mingw81_64/lib/cmake/Qt5
+cmake --build build/qmlwindow-mingw5
+```
+
 End-to-end / benchmark scripts:
 
 ```bash
@@ -152,7 +168,7 @@ qt_commander/        Python MCP server, protocol, client, session, ops, injector
 src/                 C++ runtime (linked library + injection DLL)
 src/injector/        native C++ qtc-inject (Windows remote thread / Linux ptrace)
 tests/unit_server/   Python unit tests
-tests/test-apps/     linked / large / injected / matrix test applications
+tests/test-apps/     linked / large / injected / matrix / qmlwindow test applications
 scripts/             smoke, injection and P0 benchmark scripts
 docs/design.md       current design notes
 docs/benchmarks/     large-7000.json and matrix.json P0 results
