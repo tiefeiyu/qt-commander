@@ -23,45 +23,38 @@ from .errors import ErrorCode
 from .session import Session, SessionExists, SessionManager, SessionNotFound
 
 INSTRUCTIONS = """\
-qt-commander automates a live Qt process (QWidget or QML/QQuickWindow).
-The tree is live: query immediately before acting; do not rely on old ids.
+qt-commander is for autonomous operation of a running Qt/QML application.
 
-Session:
-- qt_status, then qt_attach (descriptor, or pid with mode="injection"), then
-  qt_windows to choose a window. Keep one session per process.
-- qt_detach when finished, and before rebuilding/reinjecting the library.
+When to use:
+- You need to inspect or drive a real Qt/QML UI: locate controls, click,
+  type, read/write properties, call slots, capture screenshots, or verify a
+  UI state.
+- Do not use it for static code/log analysis, non-Qt applications, or process
+  launch/termination. If no target is running, use the project's own launch
+  procedure first.
 
-Locate:
-- qt_query has soft limits and defaults to text/visible/enabled; pass props
-  for more. Use scope to limit the subtree.
-- where supports id/class/object_name/objectName/qml_id/qml_type/text/props;
-  strings accept exact, wildcard, contains, startsWith, regex, equals.
-- target may be a returned id, a string QML id, or an object such as
-  {"id": ...}, {"qml_id": ...}, {"text": ...}, {"class": ...}, or
-  {"object_name": ...}. Combine qml_id with text/class/objectName for repeated
-  delegates, e.g. {"qml_id":"buttonTemplate","text":"Fly"}.
-- E_AMBIGUOUS: use details.candidates (nth/visible/class/rect) and pass nth.
-  E_HIDDEN: all matches are hidden; use include_hidden=true only if intended.
-  E_NOT_FOUND: query again. E_NOT_EDITABLE: target an editable child.
+How to use:
+1. If the target was built with the linked runtime, use qt_status and
+   qt_attach with its descriptor. No build or injection is needed.
+2. Otherwise inspect the target executable/process and qt_environments to
+   determine its architecture, Qt major version, and toolchain. Use qt_build
+   to build the matching injector/runtime for that target.
+3. qt_attach(pid=..., mode="injection"), then qt_windows to choose a window.
+   Keep one session per process.
+4. qt_query to locate a target; then act/read/write/call.
+5. Verify with query/get/screenshot, close popups you opened, and qt_detach.
 
-Operate:
-- qt_act is real input: click/dblclick/type/focus/key/scroll/hover/drag.
-  For window ids it also does minimize/restore/set_geometry
-  (set_geometry takes geometry={x,y,w,h}). Use expect to verify a result.
-- qt_get reads properties; qt_set writes them (use qt_set for property
-  setters). qt_call invokes only slots/Q_INVOKABLE; discover signatures with
-  qt_methods and pass signature= for overloads; enum args accept integers.
-- qt_batch runs act/wait/set/get steps sequentially; use it for atomic
-  write/read/restore sequences.
-- qt_screenshot: no target requires exactly one visible window; target an
-  element for a crop. Annotation legend id is the target, not the badge
-  number; annotate_offset pages large sets.
-- qt_source resolves .ui/.qml source; pass source_dir for qrc/embedded QML.
-
-Rules:
-- Verify state after destructive actions with get/query/screenshot.
-- Do not blindly retry after a timeout; inspect first.
-- Hidden targets are not a shortcut; do not bypass safety with include_hidden.
+Critical rules:
+- The tree is live; re-query when a target may be stale.
+- Targets can be ids, QML ids, or objects such as {"qml_id":...},
+  {"text":...}, {"class":...}; combine fields for repeated delegates and use
+  nth when ambiguous.
+- E_AMBIGUOUS: inspect candidates. E_HIDDEN: hidden by design; pass
+  include_hidden=true only when intentional.
+- qt_call only invokes slots/Q_INVOKABLE; property setters use qt_set. Use
+  qt_methods and signature= to select overloads.
+- Do not blindly retry after a timeout; inspect state first.
+- Verify destructive actions with get/query/screenshot.
 """
 
 mcp = FastMCP("qt-commander", instructions=INSTRUCTIONS)
