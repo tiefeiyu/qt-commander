@@ -117,15 +117,9 @@ set `QT_COMMANDER_RENDEZVOUS` before starting the server. For an already-running
 Windows Qt app, use `qt_attach(pid=<pid>, mode="injection")`; the DLL path can
 be overridden with `QT_COMMANDER_INJECT_DLL`.
 
-## Agent skill
-
-The repository ships a workflow skill at `skills/qt-commander-ui/SKILL.md`.
-It covers attach → locate → act → verify → detach, ambiguity/hidden handling,
-QML-specific pitfalls, and safety rules without duplicating the tool schemas.
-Copy it into your harness's skill directory (for DSH:
-`~/.dsh/skills/qt-commander-ui/SKILL.md`). The MCP server also carries a short
-`instructions` block and per-tool descriptions for clients that do not load
-skills.
+The MCP server carries an `instructions` block for agent startup, target
+selection, ambiguity/hidden handling, and destructive-action safety; each
+tool also has a schema-aware description.
 
 For multiple windows, call `qt_windows` first and pass that window's `id` to
 `qt_screenshot`. Without a target, a screenshot is refused when more than one

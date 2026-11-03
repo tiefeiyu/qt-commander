@@ -37,7 +37,7 @@ async def test_mcp_instructions_cover_the_operating_loop():
     assert "E_HIDDEN" in instructions
     assert "include_hidden" in instructions
     assert "qt_methods" in instructions
-    assert "property setters" in instructions
+    assert "property setters" in " ".join(instructions.split())
 
 
 @pytest.mark.asyncio

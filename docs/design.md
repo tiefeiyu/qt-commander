@@ -627,7 +627,7 @@ inject：
 3. **linked mode macOS**：补 macOS 构建/CI 验证；Hardened Runtime entitlement 文档。
 4. **`qt_act` 的 `input:"api"` / `invoke`**：虚拟节点是否暴露结构化 invoke，待覆盖率结论。
 5. **P0 校准**：用测试矩阵跑当前实现，固定阈值。
-6. **实现分期**：协议/引擎 → 工具面 → linked → P0 → 文档与 skill。
+6. **实现分期**：协议/引擎 → 工具面 → linked → P0 → 文档与提示词。
 
 ---
 

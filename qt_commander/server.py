@@ -23,40 +23,45 @@ from .errors import ErrorCode
 from .session import Session, SessionExists, SessionManager, SessionNotFound
 
 INSTRUCTIONS = """\
-qt-commander drives a live Qt process (QWidget or QML/QQuickWindow) over MCP.
+qt-commander automates a live Qt process (QWidget or QML/QQuickWindow).
+The tree is live: query immediately before acting; do not rely on old ids.
 
-Startup:
-1. Call qt_status, then qt_windows to choose the window.
-2. Call qt_attach with a descriptor, or with pid + mode="injection" for an
-   already-running Windows process. Use one session per process.
-3. Call qt_detach when finished.
+Session:
+- qt_status, then qt_attach (descriptor, or pid with mode="injection"), then
+  qt_windows to choose a window. Keep one session per process.
+- qt_detach when finished, and before rebuilding/reinjecting the library.
 
-Finding targets:
-- qt_query reads the live tree; without props it includes text/visible/enabled.
-- A target may be a returned node id, a string QML id, or an object such as
+Locate:
+- qt_query has soft limits and defaults to text/visible/enabled; pass props
+  for more. Use scope to limit the subtree.
+- where supports id/class/object_name/objectName/qml_id/qml_type/text/props;
+  strings accept exact, wildcard, contains, startsWith, regex, equals.
+- target may be a returned id, a string QML id, or an object such as
   {"id": ...}, {"qml_id": ...}, {"text": ...}, {"class": ...}, or
-  {"object_name": ...}. Combine qml_id with text/class/objectName when
-  several delegates share an id.
-- E_AMBIGUOUS includes candidates with nth/visible/class/rect; choose nth.
-  E_HIDDEN means all matches are hidden; pass include_hidden=true only when
-  operating a hidden object is intentional.
+  {"object_name": ...}. Combine qml_id with text/class/objectName for repeated
+  delegates, e.g. {"qml_id":"buttonTemplate","text":"Fly"}.
+- E_AMBIGUOUS: use details.candidates (nth/visible/class/rect) and pass nth.
+  E_HIDDEN: all matches are hidden; use include_hidden=true only if intended.
+  E_NOT_FOUND: query again. E_NOT_EDITABLE: target an editable child.
 
-Actions and properties:
-- qt_act performs real input: click/dblclick/type/focus/key/scroll/hover/
-  drag, plus window minimize/restore/set_geometry. Use expect to verify.
-- qt_get and qt_set read/write properties; use qt_set for property setters.
-- qt_call invokes only metaobject slots/Q_INVOKABLE. Use qt_methods to list
-  signatures and signature= to choose an overload; property setters are not
-  methods.
-- qt_batch runs act/wait/set/get steps sequentially.
-- qt_screenshot supports annotate and annotate_offset; use legend id, not the
-  badge number, as the next target. qt_source resolves .ui/.qml source and
-  accepts source_dir for qrc/embedded QML.
+Operate:
+- qt_act is real input: click/dblclick/type/focus/key/scroll/hover/drag.
+  For window ids it also does minimize/restore/set_geometry
+  (set_geometry takes geometry={x,y,w,h}). Use expect to verify a result.
+- qt_get reads properties; qt_set writes them (use qt_set for property
+  setters). qt_call invokes only slots/Q_INVOKABLE; discover signatures with
+  qt_methods and pass signature= for overloads; enum args accept integers.
+- qt_batch runs act/wait/set/get steps sequentially; use it for atomic
+  write/read/restore sequences.
+- qt_screenshot: no target requires exactly one visible window; target an
+  element for a crop. Annotation legend id is the target, not the badge
+  number; annotate_offset pages large sets.
+- qt_source resolves .ui/.qml source; pass source_dir for qrc/embedded QML.
 
 Rules:
-- Prefer real input through qt_act. Verify state after destructive actions.
-- Do not blindly retry after a timeout; inspect the tree first.
-- Node ids can become stale; query again instead of guessing.
+- Verify state after destructive actions with get/query/screenshot.
+- Do not blindly retry after a timeout; inspect first.
+- Hidden targets are not a shortcut; do not bypass safety with include_hidden.
 """
 
 mcp = FastMCP("qt-commander", instructions=INSTRUCTIONS)

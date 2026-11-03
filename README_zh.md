@@ -106,13 +106,8 @@ Claude/MCP 进程，再重新执行 `uv run`。
 `qt_attach(pid=<pid>, mode="injection")`；DLL 路径可用
 `QT_COMMANDER_INJECT_DLL` 覆盖。
 
-## Agent skill
-
-仓库自带工作流 skill：`skills/qt-commander-ui/SKILL.md`。它只讲
-attach → 定位 → 操作 → 验证 → detach 的流程、歧义/隐藏处理、QML 陷阱和安全
-规则，不重复工具 schema。把它复制到所用 harness 的 skill 目录（DSH 为
-`~/.dsh/skills/qt-commander-ui/SKILL.md`）。MCP server 自身也带一段简短的
-`instructions` 和每个工具的说明，供不加载 skill 的客户端使用。
+MCP server 自带 `instructions`，覆盖启动、目标选择、歧义/隐藏处理和破坏性
+操作安全；每个工具也有带 schema 的说明。
 
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
 且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个；QMenu/QToolTip
