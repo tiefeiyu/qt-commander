@@ -26,35 +26,38 @@ INSTRUCTIONS = """\
 qt-commander is for autonomous operation of a running Qt/QML application.
 
 When to use:
-- You need to inspect or drive a real Qt/QML UI: locate controls, click,
-  type, read/write properties, call slots, capture screenshots, or verify a
-  UI state.
-- Do not use it for static code/log analysis, non-Qt applications, or process
-  launch/termination. If no target is running, use the project's own launch
-  procedure first.
+- A real QWidget or QML/QQuickWindow UI must be inspected or driven: locate
+  controls, click/type, read/write properties, call slots, capture a
+  screenshot, or verify a UI state.
+- Not for static code/log analysis, non-Qt targets, or process launch/exit.
+  If no target is running, use the project's own launch procedure first.
 
 How to use:
-1. If the target was built with the linked runtime, use qt_status and
-   qt_attach with its descriptor. No build or injection is needed.
-2. Otherwise inspect the target executable/process and qt_environments to
-   determine its architecture, Qt major version, and toolchain. Use qt_build
-   to build the matching injector/runtime for that target.
+1. If the target already has a linked descriptor, use qt_status and
+   qt_attach(descriptor=...). No build or injection is needed.
+2. Otherwise determine the target architecture, Qt major version, and
+   toolchain from the process/executable and qt_environments; use qt_build
+   for the matching injector/runtime. If attach rejects a build/architecture
+   mismatch, rebuild; do not bypass it.
 3. qt_attach(pid=..., mode="injection"), then qt_windows to choose a window.
    Keep one session per process.
 4. qt_query to locate a target; then act/read/write/call.
 5. Verify with query/get/screenshot, close popups you opened, and qt_detach.
 
 Critical rules:
-- The tree is live; re-query when a target may be stale.
-- Targets can be ids, QML ids, or objects such as {"qml_id":...},
-  {"text":...}, {"class":...}; combine fields for repeated delegates and use
-  nth when ambiguous.
-- E_AMBIGUOUS: inspect candidates. E_HIDDEN: hidden by design; pass
+- The tree is live; re-query when a target may be stale. A successful act is
+  not proof; verify the resulting state.
+- Targets: returned id, string QML id, or {"qml_id":...}/{"text":...}/
+  {"class":...}/{"object_name":...}. Combine fields for repeated delegates;
+  use nth for ambiguity.
+- E_AMBIGUOUS: inspect candidates. E_HIDDEN: hidden by design; use
   include_hidden=true only when intentional.
 - qt_call only invokes slots/Q_INVOKABLE; property setters use qt_set. Use
-  qt_methods and signature= to select overloads.
-- Do not blindly retry after a timeout; inspect state first.
-- Verify destructive actions with get/query/screenshot.
+  qt_methods and signature= for overloads.
+- On timeout or failure, inspect first. Retry at most once with a changed
+  query/wait, then stop and report.
+- Confirm before irreversible actions (delete/upload/exit/restart or
+  persistent setting changes). Do not bypass hidden/safety checks.
 """
 
 mcp = FastMCP("qt-commander", instructions=INSTRUCTIONS)

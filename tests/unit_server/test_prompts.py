@@ -30,6 +30,11 @@ EXPECTED_TOOLS = {
 @pytest.mark.asyncio
 async def test_mcp_instructions_cover_the_operating_loop():
     instructions = server.mcp.instructions or ""
+    assert "When to use" in instructions
+    assert "How to use" in instructions
+    assert "Not for" in instructions
+    assert "linked descriptor" in instructions
+    assert "mode=\"injection\"" in instructions
     assert "qt_query" in instructions
     assert "qt_attach" in instructions
     assert "qt_detach" in instructions
