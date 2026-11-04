@@ -280,9 +280,10 @@ async def qt_target_info(
 
     Use this before qt_build when injecting a running target. Reads the
     executable image, loader PATH, Qt runtime DLLs, and descriptor build id;
-    it does not inject or launch anything. ``build_type`` comes from the
-    descriptor when available. Without pid/descriptor it uses the sole live
-    descriptor.
+    it does not inject or launch anything. ``qt_version`` is the full version
+    (for example 5.15.2) when the descriptor or PE version resource provides
+    it; ``build_type`` comes from the descriptor when available. Without
+    pid/descriptor it uses the sole live descriptor.
     """
     if pid is None and descriptor is None:
         candidates = _descriptor_candidates()

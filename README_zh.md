@@ -10,7 +10,7 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
   linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
-  linked、78 个 Python 测试和 MCP stdio E2E 也已验证。
+  linked、79 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
@@ -43,8 +43,8 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   非 void 返回值放在 `result`；对象返回值是 `{class, id}`，可直接复用为 target；
   `qt_methods` 可列出方法、参数类型和返回类型（默认隐藏 Qt `_q_` 内部方法）；
   用 `signature` 消歧重载，枚举参数可传整数。
-- `qt_target_info` 在 `qt_build` 前检查目标进程的 PE/ELF 架构、Qt 主运行时、
-  构建类型和工具链；它不注入、不启动目标。
+- `qt_target_info` 在 `qt_build` 前检查目标进程的 PE/ELF 架构、完整 Qt 版本
+  （例如 5.15.2）、构建类型和工具链；它不注入、不启动目标。
 - `qt_source` 会自动搜索附近的源码树（包括祖先目录下的 `src`），也支持
   `source_dir` 指定 qrc/嵌入式 QML 的源码根；找到时返回 `file/line/url`。
 - `qt_screenshot(annotate=...)` 支持 `annotate_offset` 分页；legend 的 `n`
@@ -126,7 +126,7 @@ QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
 uv run pytest tests/unit_server -q
 ```
 
-当前：**78 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+当前：**79 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
 
 纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
 

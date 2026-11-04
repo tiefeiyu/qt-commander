@@ -87,6 +87,72 @@ def inspect_executable(path: str | Path) -> dict[str, Any]:
     return result
 
 
+def _descriptor_qt(data: dict[str, Any]) -> dict[str, Any]:
+    qt = data.get("qt")
+    if not isinstance(qt, dict):
+        return {}
+    result: dict[str, Any] = {}
+    version = qt.get("version")
+    if isinstance(version, str) and version.strip():
+        result["qt_version"] = version.strip()
+    major = qt.get("major")
+    if isinstance(major, int):
+        result["qt_major"] = major
+    return result
+
+
+def _file_version(path: Path) -> str | None:
+    """Read a Windows PE file version, returning major.minor.patch."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class FixedFileInfo(ctypes.Structure):
+            _fields_ = [
+                ("signature", wintypes.DWORD),
+                ("struc_version", wintypes.DWORD),
+                ("file_version_ms", wintypes.DWORD),
+                ("file_version_ls", wintypes.DWORD),
+                ("product_version_ms", wintypes.DWORD),
+                ("product_version_ls", wintypes.DWORD),
+                ("flags_mask", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("os", wintypes.DWORD),
+                ("type", wintypes.DWORD),
+                ("subtype", wintypes.DWORD),
+                ("date_ms", wintypes.DWORD),
+                ("date_ls", wintypes.DWORD),
+            ]
+
+        version = ctypes.windll.version
+        size = version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        block = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(
+            str(path), 0, size, block
+        ):
+            return None
+        pointer = ctypes.c_void_p()
+        length = wintypes.UINT()
+        if not version.VerQueryValueW(
+            block, "\\", ctypes.byref(pointer), ctypes.byref(length)
+        ):
+            return None
+        info = ctypes.cast(
+            pointer, ctypes.POINTER(FixedFileInfo)
+        ).contents
+        ms, ls = info.file_version_ms, info.file_version_ls
+        parts = [ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF]
+        while len(parts) > 3 and parts[-1] == 0:
+            parts.pop()
+        return ".".join(str(part) for part in parts[:3])
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
 def _runtime_from_build_id(build_id: str | None) -> dict[str, Any]:
     if not build_id:
         return {}
@@ -121,6 +187,7 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
         except OSError:
             continue
         qt_major: int | None = None
+        qt_version: str | None = None
         qt_debug = False
         toolchain: str | None = None
         evidence: list[str] = []
@@ -129,10 +196,12 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
             if lower.startswith("qt5core") and lower.endswith(".dll"):
                 qt_major = 5
                 qt_debug = lower.endswith("d.dll")
+                qt_version = _file_version(entry) or qt_version
                 evidence.append(str(entry))
             elif lower.startswith("qt6core") and lower.endswith(".dll"):
                 qt_major = 6
                 qt_debug = lower.endswith("d.dll")
+                qt_version = _file_version(entry) or qt_version
                 evidence.append(str(entry))
             elif lower.startswith(("msvcp", "vcruntime")):
                 toolchain = "msvc"
@@ -143,6 +212,7 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
         if qt_major is not None:
             return {
                 "qt_major": qt_major,
+                "qt_version": qt_version,
                 "debug": qt_debug,
                 "toolchain": toolchain,
                 "evidence": evidence[:8],
@@ -152,6 +222,7 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
             fallback_evidence = evidence[:8]
     return {
         "qt_major": None,
+        "qt_version": None,
         "debug": None,
         "toolchain": fallback_toolchain,
         "evidence": fallback_evidence,
@@ -204,9 +275,17 @@ def target_info(pid: int | None = None,
     descriptor_runtime = _runtime_from_build_id(
         data.get("library_build_id") if data else None
     )
-    for key in ("qt_major", "debug", "build_type", "toolchain"):
-        if runtime.get(key) is None and descriptor_runtime.get(key) is not None:
-            runtime[key] = descriptor_runtime[key]
+    descriptor_qt = _descriptor_qt(data)
+    for key in ("qt_major", "qt_version", "debug", "build_type", "toolchain"):
+        if runtime.get(key) is None:
+            value = descriptor_qt.get(key, descriptor_runtime.get(key))
+            if value is not None:
+                runtime[key] = value
+    if runtime.get("qt_major") is None and runtime.get("qt_version"):
+        try:
+            runtime["qt_major"] = int(str(runtime["qt_version"]).split(".")[0])
+        except (ValueError, IndexError):
+            pass
     if descriptor_runtime and not runtime.get("evidence"):
         runtime["evidence"] = [f"descriptor:{data.get('library_build_id')}"]
     result.update(runtime)
@@ -217,6 +296,8 @@ def target_info(pid: int | None = None,
             "library_version": data.get("library_version"),
             "started_at": data.get("started_at"),
         }
+        if isinstance(data.get("qt"), dict):
+            result["descriptor"]["qt"] = data["qt"]
         # A descriptor without a Qt DLL still proves the runtime was loaded.
         if result.get("confidence") == "low" and data.get("library_build_id"):
             result["confidence"] = "medium"

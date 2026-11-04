@@ -40,6 +40,12 @@ def test_inspect_pe_and_elf(tmp_path):
     assert target.inspect_executable(elf)["format"] == "elf"
 
 
+def test_descriptor_qt_version():
+    info = target._descriptor_qt({"qt": {"major": 5, "version": "5.15.2"}})
+    assert info["qt_major"] == 5
+    assert info["qt_version"] == "5.15.2"
+
+
 def test_descriptor_build_id_runtime():
     info = target._runtime_from_build_id("qt5/GNU-AMD64/Debug")
     assert info["qt_major"] == 5

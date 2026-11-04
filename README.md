@@ -11,7 +11,7 @@ are no snapshot files and no stale index of the UI.
 
 - Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
   MSVC for linked and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB)
-  verified for linked, the 78-test Python suite, and MCP stdio E2E.
+  verified for linked, the 79-test Python suite, and MCP stdio E2E.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
 - Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
@@ -49,8 +49,9 @@ are no snapshot files and no stale index of the UI.
   (Qt `_q_` internals are hidden unless `include_internal=true`).
   Pass `signature` to disambiguate overloads; enum arguments accept their
   integer values.
-- `qt_target_info` inspects a process's PE/ELF architecture, Qt major runtime,
-  build type, and toolchain before `qt_build`; it does not inject or launch.
+- `qt_target_info` inspects a process's PE/ELF architecture, full Qt runtime
+  version (e.g. 5.15.2), build type, and toolchain before `qt_build`; it does
+  not inject or launch.
 - `qt_source` auto-discovers nearby source trees (including `src` ancestors)
   and accepts `source_dir` for qrc/embedded QML whose source tree is not next
   to the executable; it returns `file/line/url` when found.
@@ -139,7 +140,7 @@ part of the QWidget query tree.
 uv run pytest tests/unit_server -q
 ```
 
-Current suite: **78 passed** (Qt5 MinGW/ MSVC test apps are built separately).
+Current suite: **79 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
 The pure-QML regression app is built with the same options as the linked app:
 
