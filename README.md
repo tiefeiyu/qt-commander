@@ -11,7 +11,7 @@ are no snapshot files and no stale index of the UI.
 
 - Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
   MSVC for linked and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB)
-  verified for linked, the 74-test Python suite, and MCP stdio E2E.
+  verified for linked, the 78-test Python suite, and MCP stdio E2E.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
 - Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
@@ -22,10 +22,10 @@ are no snapshot files and no stale index of the UI.
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
-- 17 MCP tools are registered. Working today:
-  `status`, `environments`, `build`, `attach`, `detach`, `windows`, `query`,
-  `items`, `act`, `batch`, `wait`, `screenshot`, `get`, `set`, `call`,
-  `methods`, `source`. `source` searches the target's source tree (and
+- 18 MCP tools are registered. Working today:
+  `status`, `target_info`, `environments`, `build`, `attach`, `detach`,
+  `windows`, `query`, `items`, `act`, `batch`, `wait`, `screenshot`, `get`,
+  `set`, `call`, `methods`, `source`. `source` searches the target's source tree (and
   `QT_COMMANDER_SOURCE_DIR` / an explicit `source_dir`) for matching `.ui` or
   `.qml`; unresolved targets return identity with `E_NO_DEBUGINFO`.
 - `items` covers `QTabWidget`/`QTabBar`, `QMenuBar`/`QMenu`, `QHeaderView`,
@@ -49,14 +49,16 @@ are no snapshot files and no stale index of the UI.
   (Qt `_q_` internals are hidden unless `include_internal=true`).
   Pass `signature` to disambiguate overloads; enum arguments accept their
   integer values.
+- `qt_target_info` inspects a process's PE/ELF architecture, Qt major runtime,
+  build type, and toolchain before `qt_build`; it does not inject or launch.
 - `qt_source` auto-discovers nearby source trees (including `src` ancestors)
   and accepts `source_dir` for qrc/embedded QML whose source tree is not next
   to the executable; it returns `file/line/url` when found.
 - `qt_screenshot(annotate=...)` supports `annotate_offset` for paging large
   annotation sets; legend `n` numbers stay continuous across pages.
 - `qt_batch` steps are exactly one of `{"act": ...}`, `{"wait": ...}`,
-  `{"set": ...}`, `{"get": ...}`; this allows an atomic write/read/restore
-  sequence.
+  `{"set": ...}`, `{"get": ...}`; this allows an ordered write/read/restore
+  sequence (no implicit rollback).
 - `qt_act(target=<window id>, action="minimize"|"restore")` controls a
   QWindow/QQuickWindow; restore preserves the pre-minimize geometry.
   `action="set_geometry"` with `geometry={x,y,w,h}` reports the actual
@@ -137,7 +139,7 @@ part of the QWidget query tree.
 uv run pytest tests/unit_server -q
 ```
 
-Current suite: **74 passed** (Qt5 MinGW/ MSVC test apps are built separately).
+Current suite: **78 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
 The pure-QML regression app is built with the same options as the linked app:
 
@@ -175,6 +177,7 @@ tests/unit_server/   Python unit tests
 tests/test-apps/     linked / large / injected / matrix / qmlwindow test applications
 scripts/             smoke, injection and P0 benchmark scripts
 docs/design.md       current design notes
+docs/agent-eval.md   agent acceptance tasks and metrics
 docs/benchmarks/     large-7000.json and matrix.json P0 results
 CODE_STANDARDS.md    coding and review rules
 ```

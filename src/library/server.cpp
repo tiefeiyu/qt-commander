@@ -80,6 +80,8 @@ namespace {
 QString qmlTypeName(const QQuickItem* item);
 QString qmlIdName(const QQuickItem* item);
 QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner);
+QString qmlTextContent(QQuickItem* item);
+bool qmlActionable(QQuickItem* item);
 
 constexpr const char* kLibraryVersion = "2.0.0";
 
@@ -146,11 +148,39 @@ QJsonArray qmlCandidates(const QList<QmlItemMatch>& matches)
         candidate.insert(QStringLiteral("class"),
                          QString::fromLatin1(
                              match.item->metaObject()->className()));
+        candidate.insert(QStringLiteral("qml_id"),
+                         qmlIdName(match.item));
+        candidate.insert(QStringLiteral("objectName"),
+                         match.item->objectName());
+        candidate.insert(QStringLiteral("text"),
+                         qmlTextContent(match.item));
+        candidate.insert(QStringLiteral("actionable"),
+                         qmlActionable(match.item));
+        QStringList pathParts;
+        for (QQuickItem* parent = match.item; parent;
+             parent = parent->parentItem()) {
+            QString part = qmlIdName(parent);
+            if (part.isEmpty())
+                part = parent->objectName();
+            if (part.isEmpty())
+                part = qmlTypeName(parent);
+            pathParts.prepend(part);
+        }
+        candidate.insert(QStringLiteral("path"),
+                         pathParts.join(QStringLiteral("/")));
         candidate.insert(QStringLiteral("rect"), QJsonObject{
             {QStringLiteral("x"), rect.x()},
             {QStringLiteral("y"), rect.y()},
             {QStringLiteral("w"), rect.width()},
             {QStringLiteral("h"), rect.height()}});
+        if (match.window) {
+            const QPoint screen = match.window->mapToGlobal(rect.topLeft());
+            candidate.insert(QStringLiteral("screen_rect"), QJsonObject{
+                {QStringLiteral("x"), screen.x()},
+                {QStringLiteral("y"), screen.y()},
+                {QStringLiteral("w"), rect.width()},
+                {QStringLiteral("h"), rect.height()}});
+        }
         candidates.append(candidate);
     }
     return candidates;
@@ -550,6 +580,10 @@ struct UiHit {
     int line = 0;
 };
 
+// Repeated source lookups are common while an agent inspects several controls
+// from the same QML file. Keep successful lookups for this process lifetime.
+QHash<QString, UiHit> qmlSourceCache;
+
 QObject* objectFromVariant(const QVariant& value)
 {
     if (!value.isValid())
@@ -692,6 +726,11 @@ bool findQmlLocation(const QString& objectName, UiHit* hit)
 {
     if (objectName.isEmpty())
         return false;
+    const auto cached = qmlSourceCache.constFind(objectName);
+    if (cached != qmlSourceCache.constEnd()) {
+        *hit = cached.value();
+        return true;
+    }
     const QStringList roots = sourceRoots();
     QSet<QString> seen;
     int scanned = 0;
@@ -715,6 +754,7 @@ bool findQmlLocation(const QString& objectName, UiHit* hit)
                 if (lineDeclaresName(text, objectName)) {
                     hit->file = canonical;
                     hit->line = line;
+                    qmlSourceCache.insert(objectName, *hit);
                     return true;
                 }
             }
@@ -1390,6 +1430,7 @@ QJsonObject Server::query(const QJsonObject& params)
     result.insert(QStringLiteral("total"), count);
     result.insert(QStringLiteral("limit"), limit);
     result.insert(QStringLiteral("truncated"), truncated);
+    result.insert(QStringLiteral("virtual_count"), virtuals_.size());
     if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() >
         2 * 1024 * 1024) {
         QJsonObject error;

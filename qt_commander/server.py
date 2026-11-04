@@ -16,7 +16,7 @@ import psutil
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 
-from . import inject, ops
+from . import inject, ops, target
 from .client import ClientClosed, ClientTimeout, RpcClient, RpcError
 from .environment import detect_qt_environments, detect_toolchains
 from .errors import ErrorCode
@@ -35,10 +35,10 @@ When to use:
 How to use:
 1. If the target already has a linked descriptor, use qt_status and
    qt_attach(descriptor=...). No build or injection is needed.
-2. Otherwise determine the target architecture, Qt major version, and
-   toolchain from the process/executable and qt_environments; use qt_build
-   for the matching injector/runtime. If attach rejects a build/architecture
-   mismatch, rebuild; do not bypass it.
+2. Otherwise use qt_target_info (and qt_environments) to inspect the target
+   architecture, Qt major version, and toolchain. Use qt_build for the
+   matching injector/runtime. If attach rejects a build/architecture mismatch,
+   rebuild; do not bypass it.
 3. qt_attach(pid=..., mode="injection"), then qt_windows to choose a window.
    Keep one session per process.
 4. qt_query to locate a target; then act/read/write/call.
@@ -269,6 +269,40 @@ async def qt_status(session_id: str | None = None) -> dict[str, Any]:
         result["alive"] = False
         result["ping_error"] = _map_error(exc)["error"]
     return result
+
+
+@mcp.tool
+async def qt_target_info(
+    pid: int | None = None,
+    descriptor: str | None = None,
+) -> dict[str, Any]:
+    """Inspect a target process's architecture and Qt runtime before building.
+
+    Use this before qt_build when injecting a running target. Reads the
+    executable image, loader PATH, Qt runtime DLLs, and descriptor build id;
+    it does not inject or launch anything. ``build_type`` comes from the
+    descriptor when available. Without pid/descriptor it uses the sole live
+    descriptor.
+    """
+    if pid is None and descriptor is None:
+        candidates = _descriptor_candidates()
+        if len(candidates) != 1:
+            return _error(
+                "E_AMBIGUOUS",
+                "provide pid or descriptor (or start exactly one linked app)",
+            )
+        descriptor = str(candidates[0])
+    if descriptor is None and pid is not None:
+        # Reuse the linked descriptor so build_type/Qt metadata can be read
+        # from the runtime that actually created the process.
+        for candidate in _descriptor_candidates():
+            if _descriptor_pid(candidate) == pid:
+                descriptor = str(candidate)
+                break
+    try:
+        return target.target_info(pid=pid, descriptor=descriptor)
+    except ValueError as exc:
+        return _error("E_NOT_FOUND", str(exc))
 
 
 @mcp.tool

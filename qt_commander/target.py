@@ -1,0 +1,223 @@
+"""Best-effort target-process architecture/Qt metadata.
+
+This intentionally does not inject or execute anything in the target. It reads
+the executable image and adjacent runtime files, and optionally a live
+descriptor. Callers should treat the result as evidence, not a guarantee.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import struct
+from pathlib import Path
+from typing import Any
+
+import psutil
+
+_ARCH_BY_PE_MACHINE = {
+    0x014C: "x86",
+    0x8664: "x64",
+    0xAA64: "arm64",
+    0xA641: "arm64",
+    0x01C0: "arm",
+    0x01C4: "arm",
+}
+_ARCH_BY_ELF_MACHINE = {
+    3: "x86",
+    62: "x64",
+    183: "arm64",
+    40: "arm",
+}
+
+
+def _read_descriptor(path: str | Path) -> dict[str, Any]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _pe_info(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        header = stream.read(0x40)
+        if len(header) < 0x40 or header[:2] != b"MZ":
+            return {}
+        offset = struct.unpack_from("<I", header, 0x3C)[0]
+        stream.seek(offset)
+        pe = stream.read(6)
+    if len(pe) < 6 or pe[:4] != b"PE\0\0":
+        return {}
+    machine = struct.unpack_from("<H", pe, 4)[0]
+    arch = _ARCH_BY_PE_MACHINE.get(machine)
+    return {
+        "format": "pe",
+        "arch": arch or f"unknown(0x{machine:04x})",
+        "bits": 64 if arch in {"x64", "arm64"} else 32,
+    }
+
+
+def _elf_info(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        header = stream.read(20)
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        return {}
+    elf_class = header[4]
+    endian = "<" if header[5] == 1 else ">"
+    machine = struct.unpack_from(f"{endian}H", header, 18)[0]
+    arch = _ARCH_BY_ELF_MACHINE.get(machine)
+    return {
+        "format": "elf",
+        "arch": arch or f"unknown({machine})",
+        "bits": 64 if elf_class == 2 else 32,
+    }
+
+
+def inspect_executable(path: str | Path) -> dict[str, Any]:
+    """Inspect a PE or ELF image without loading it."""
+    file_path = Path(path)
+    try:
+        info = _pe_info(file_path) or _elf_info(file_path)
+    except OSError as exc:
+        return {"error": str(exc), "executable": str(file_path)}
+    result: dict[str, Any] = {"executable": str(file_path)}
+    result.update(info)
+    result["confidence"] = "high" if info else "low"
+    return result
+
+
+def _runtime_from_build_id(build_id: str | None) -> dict[str, Any]:
+    if not build_id:
+        return {}
+    lower = build_id.lower()
+    result: dict[str, Any] = {}
+    if "qt5" in lower:
+        result["qt_major"] = 5
+    elif "qt6" in lower:
+        result["qt_major"] = 6
+    if "debug" in lower:
+        result["debug"] = True
+        result["build_type"] = "Debug"
+    elif "release" in lower:
+        result["debug"] = False
+        result["build_type"] = "Release"
+    if "msvc" in lower:
+        result["toolchain"] = "msvc"
+    elif "gnu" in lower or "mingw" in lower:
+        result["toolchain"] = "mingw"
+    return result
+
+
+def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
+    """Find a Qt runtime and derive toolchain only from that runtime's dir."""
+    fallback_toolchain: str | None = None
+    fallback_evidence: list[str] = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            continue
+        qt_major: int | None = None
+        qt_debug = False
+        toolchain: str | None = None
+        evidence: list[str] = []
+        for entry in entries:
+            lower = entry.name.lower()
+            if lower.startswith("qt5core") and lower.endswith(".dll"):
+                qt_major = 5
+                qt_debug = lower.endswith("d.dll")
+                evidence.append(str(entry))
+            elif lower.startswith("qt6core") and lower.endswith(".dll"):
+                qt_major = 6
+                qt_debug = lower.endswith("d.dll")
+                evidence.append(str(entry))
+            elif lower.startswith(("msvcp", "vcruntime")):
+                toolchain = "msvc"
+                evidence.append(str(entry))
+            elif lower.startswith(("libstdc++", "libgcc", "libwinpthread")):
+                toolchain = toolchain or "mingw"
+                evidence.append(str(entry))
+        if qt_major is not None:
+            return {
+                "qt_major": qt_major,
+                "debug": qt_debug,
+                "toolchain": toolchain,
+                "evidence": evidence[:8],
+            }
+        if fallback_toolchain is None and toolchain is not None:
+            fallback_toolchain = toolchain
+            fallback_evidence = evidence[:8]
+    return {
+        "qt_major": None,
+        "debug": None,
+        "toolchain": fallback_toolchain,
+        "evidence": fallback_evidence,
+    }
+
+
+def _adjacent_runtime(executable: Path) -> dict[str, Any]:
+    return _scan_runtime_dirs([executable.parent, executable.parent.parent])
+
+
+def _path_runtime(process: psutil.Process) -> dict[str, Any]:
+    try:
+        entries = process.environ().get("PATH", "")
+    except (psutil.Error, OSError):
+        return {}
+    directories = [
+        Path(item) for item in entries.split(os.pathsep) if item.strip()
+    ]
+    return _scan_runtime_dirs(directories[:64])
+
+
+def target_info(pid: int | None = None,
+                descriptor: str | Path | None = None) -> dict[str, Any]:
+    """Return architecture/Qt metadata for one process.
+
+    The result is deliberately conservative: unknown fields are null and
+    ``confidence`` describes how much was actually observed.
+    """
+    data: dict[str, Any] = {}
+    if descriptor:
+        data = _read_descriptor(descriptor)
+        if pid is None and isinstance(data.get("pid"), int):
+            pid = data["pid"]
+    if pid is None:
+        raise ValueError("pid is required")
+    try:
+        process = psutil.Process(pid)
+        executable = Path(process.exe())
+    except (psutil.Error, OSError) as exc:
+        raise ValueError(f"cannot inspect pid {pid}: {exc}") from exc
+
+    result = inspect_executable(executable)
+    result["pid"] = pid
+    result["pid_alive"] = psutil.pid_exists(pid)
+    runtime = _adjacent_runtime(executable)
+    if runtime.get("qt_major") is None:
+        path_runtime = _path_runtime(process)
+        if path_runtime.get("qt_major") is not None:
+            runtime = path_runtime
+    descriptor_runtime = _runtime_from_build_id(
+        data.get("library_build_id") if data else None
+    )
+    for key in ("qt_major", "debug", "build_type", "toolchain"):
+        if runtime.get(key) is None and descriptor_runtime.get(key) is not None:
+            runtime[key] = descriptor_runtime[key]
+    if descriptor_runtime and not runtime.get("evidence"):
+        runtime["evidence"] = [f"descriptor:{data.get('library_build_id')}"]
+    result.update(runtime)
+    if data:
+        result["descriptor"] = {
+            "session_id": data.get("session_id"),
+            "library_build_id": data.get("library_build_id"),
+            "library_version": data.get("library_version"),
+            "started_at": data.get("started_at"),
+        }
+        # A descriptor without a Qt DLL still proves the runtime was loaded.
+        if result.get("confidence") == "low" and data.get("library_build_id"):
+            result["confidence"] = "medium"
+    return result

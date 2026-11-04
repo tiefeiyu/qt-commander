@@ -10,7 +10,7 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
   linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
-  linked、74 个 Python 测试和 MCP stdio E2E 也已验证。
+  linked、78 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
@@ -20,10 +20,10 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 17 个 MCP 工具。当前可用：
-  `status`、`environments`、`build`、`attach`、`detach`、`windows`、`query`、
-  `items`、`act`、`batch`、`wait`、`screenshot`、`get`、`set`、`call`、
-  `methods`、`source`。`source` 会搜索目标源码树（以及
+- 已注册 18 个 MCP 工具。当前可用：
+  `status`、`target_info`、`environments`、`build`、`attach`、`detach`、
+  `windows`、`query`、`items`、`act`、`batch`、`wait`、`screenshot`、`get`、
+  `set`、`call`、`methods`、`source`。`source` 会搜索目标源码树（以及
   `QT_COMMANDER_SOURCE_DIR` / 显式 `source_dir`）中的 `.ui`/`.qml`，未命中才
   返回身份信息和 `E_NO_DEBUGINFO`。
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
@@ -43,12 +43,14 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
   非 void 返回值放在 `result`；对象返回值是 `{class, id}`，可直接复用为 target；
   `qt_methods` 可列出方法、参数类型和返回类型（默认隐藏 Qt `_q_` 内部方法）；
   用 `signature` 消歧重载，枚举参数可传整数。
+- `qt_target_info` 在 `qt_build` 前检查目标进程的 PE/ELF 架构、Qt 主运行时、
+  构建类型和工具链；它不注入、不启动目标。
 - `qt_source` 会自动搜索附近的源码树（包括祖先目录下的 `src`），也支持
   `source_dir` 指定 qrc/嵌入式 QML 的源码根；找到时返回 `file/line/url`。
 - `qt_screenshot(annotate=...)` 支持 `annotate_offset` 分页；legend 的 `n`
   跨页连续。
 - `qt_batch` 每步必须是 `{"act": ...}`、`{"wait": ...}`、`{"set": ...}` 或
-  `{"get": ...}` 之一，可原子完成写入/读取/恢复。
+  `{"get": ...}` 之一，按顺序完成写入/读取/恢复（失败不自动回滚）。
 - `qt_act(target=<窗口 id>, action="minimize"|"restore")` 可最小化/恢复
   QWindow/QQuickWindow；restore 保持原几何。
   `action="set_geometry"` + `geometry={x,y,w,h}` 返回实际 `resolved.rect`
@@ -124,7 +126,7 @@ QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
 uv run pytest tests/unit_server -q
 ```
 
-当前：**74 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+当前：**78 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
 
 纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
 
@@ -162,6 +164,7 @@ tests/unit_server/   Python 单元测试
 tests/test-apps/     linked / large / injected / matrix / qmlwindow 测试应用
 scripts/             smoke、注入与 P0 benchmark 脚本
 docs/design.md       当前设计记录
+docs/agent-eval.md   Agent 验收任务与指标
 docs/benchmarks/     large-7000.json 与 matrix.json
 CODE_STANDARDS.md    代码与评审规范
 ```

@@ -9,6 +9,17 @@ ApplicationWindow {
     visible: true
     title: "QML Window Test"
 
+    Component {
+        id: duplicateComponent
+        Rectangle {
+            id: duplicateItem
+            objectName: "duplicateItem"
+            width: 50
+            height: 20
+            color: "#c0c0c0"
+        }
+    }
+
     Column {
         objectName: "rootColumn"
         anchors.centerIn: parent
@@ -56,5 +67,8 @@ ApplicationWindow {
             visible: false
             text: "hidden"
         }
+
+        Loader { sourceComponent: duplicateComponent }
+        Loader { sourceComponent: duplicateComponent }
     }
 }
