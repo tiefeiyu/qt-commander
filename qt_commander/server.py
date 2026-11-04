@@ -35,7 +35,8 @@ When to use:
 How to use:
 1. If the target already has a linked descriptor, use qt_status and
    qt_attach(descriptor=...). No build or injection is needed.
-2. Otherwise use qt_target_info (and qt_environments) to inspect the target
+2. If the target PID is unknown, use qt_processes to discover Qt targets.
+   Otherwise use qt_target_info (and qt_environments) to inspect the target
    architecture, Qt major version, and toolchain. Use qt_build for the
    matching injector/runtime. If attach rejects a build/architecture mismatch,
    rebuild; do not bypass it.
@@ -304,6 +305,39 @@ async def qt_target_info(
         return target.target_info(pid=pid, descriptor=descriptor)
     except ValueError as exc:
         return _error("E_NOT_FOUND", str(exc))
+
+
+@mcp.tool
+async def qt_processes(
+    name: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    include_non_qt: bool = False,
+) -> dict[str, Any]:
+    """List accessible running Qt targets without injecting.
+
+    Discovery uses live descriptors or a Qt Core runtime next to the
+    executable. Each entry includes pid, arch, Qt version (when known), and
+    an ``attach`` hint. Use before ``qt_attach(pid=..., mode="injection")``.
+    """
+    if limit < 1 or limit > 200:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "limit must be between 1 and 200")
+    if offset < 0:
+        return _error(ErrorCode.INVALID_ARGUMENT.value, "offset must be >= 0")
+    descriptors: dict[int, Path] = {}
+    for candidate in _descriptor_candidates():
+        pid = _descriptor_pid(candidate)
+        if pid is not None:
+            descriptors[pid] = candidate
+    return await asyncio.to_thread(
+        target.list_processes,
+        descriptors,
+        name,
+        limit,
+        offset,
+        include_non_qt,
+    )
 
 
 @mcp.tool

@@ -244,6 +244,95 @@ def _path_runtime(process: psutil.Process) -> dict[str, Any]:
     return _scan_runtime_dirs(directories[:64])
 
 
+def list_processes(
+    descriptors: dict[int, Path] | None = None,
+    name: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    include_non_qt: bool = False,
+) -> dict[str, Any]:
+    """List accessible processes that look like Qt targets.
+
+    Discovery is intentionally conservative: a process qualifies via a live
+    descriptor or a Qt Core runtime next to its executable. It never injects.
+    """
+    descriptors = descriptors or {}
+    needle = (name or "").lower()
+    found: list[dict[str, Any]] = []
+    runtime_cache: dict[Path, dict[str, Any]] = {}
+    arch_cache: dict[Path, dict[str, Any]] = {}
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        info = proc.info
+        pid = info.get("pid")
+        if not isinstance(pid, int):
+            continue
+        proc_name = info.get("name") or ""
+        if needle and needle not in proc_name.lower():
+            continue
+        exe_value = info.get("exe")
+        exe = Path(exe_value) if isinstance(exe_value, str) and exe_value else None
+        descriptor = descriptors.get(pid)
+        descriptor_data = _read_descriptor(descriptor) if descriptor else {}
+        descriptor_qt = _descriptor_qt(descriptor_data)
+        # A live descriptor is definitive; avoid scanning every process's
+        # neighbouring directories just to discover it. Runtime/arch results
+        # are cached by directory/path because many processes share them.
+        if descriptor:
+            runtime = {}
+        elif exe:
+            runtime = runtime_cache.get(exe.parent)
+            if runtime is None:
+                runtime = _adjacent_runtime(exe)
+                runtime_cache[exe.parent] = runtime
+        else:
+            runtime = {}
+        if runtime.get("qt_major") is None and not descriptor_qt:
+            if not include_non_qt:
+                continue
+        result: dict[str, Any] = {
+            "pid": pid,
+            "name": proc_name,
+            "exe": str(exe) if exe else None,
+        }
+        if exe:
+            cached_arch = arch_cache.get(exe)
+            if cached_arch is None:
+                cached_arch = inspect_executable(exe)
+                arch_cache[exe] = cached_arch
+            result.update(cached_arch)
+        result.update({
+            "qt_major": runtime.get("qt_major") or descriptor_qt.get("qt_major"),
+            "qt_version": runtime.get("qt_version") or descriptor_qt.get("qt_version"),
+            "debug": runtime.get("debug"),
+            "toolchain": runtime.get("toolchain"),
+            "has_descriptor": descriptor is not None,
+            "descriptor": str(descriptor) if descriptor else None,
+            "session_id": descriptor_data.get("session_id"),
+            "attach": (
+                {"descriptor": str(descriptor)}
+                if descriptor
+                else {"pid": pid, "mode": "injection"}
+            ),
+        })
+        if descriptor:
+            build_type = _runtime_from_build_id(
+                descriptor_data.get("library_build_id")
+            ).get("build_type")
+            if build_type:
+                result["build_type"] = build_type
+        found.append(result)
+    total = len(found)
+    page = found[offset:offset + max(1, limit)]
+    return {
+        "count": len(page),
+        "total": total,
+        "limit": max(1, limit),
+        "offset": offset,
+        "truncated": offset + len(page) < total,
+        "processes": page,
+    }
+
+
 def target_info(pid: int | None = None,
                 descriptor: str | Path | None = None) -> dict[str, Any]:
     """Return architecture/Qt metadata for one process.

@@ -9,6 +9,7 @@ from qt_commander import server
 EXPECTED_TOOLS = {
     "qt_status",
     "qt_target_info",
+    "qt_processes",
     "qt_windows",
     "qt_environments",
     "qt_build",
@@ -37,6 +38,7 @@ async def test_mcp_instructions_cover_the_operating_loop():
     assert "linked descriptor" in instructions
     assert "mode=\"injection\"" in instructions
     assert "qt_target_info" in instructions
+    assert "qt_processes" in instructions
     assert "qt_query" in instructions
     assert "qt_attach" in instructions
     assert "qt_detach" in instructions

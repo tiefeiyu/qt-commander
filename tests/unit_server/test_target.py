@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 
@@ -44,6 +45,25 @@ def test_descriptor_qt_version():
     info = target._descriptor_qt({"qt": {"major": 5, "version": "5.15.2"}})
     assert info["qt_major"] == 5
     assert info["qt_version"] == "5.15.2"
+
+
+def test_list_processes_uses_descriptor(tmp_path):
+    descriptor = tmp_path / f"descriptor-{os.getpid()}.json"
+    descriptor.write_text(
+        json.dumps({
+            "pid": os.getpid(),
+            "session_id": "s-test",
+            "qt": {"major": 5, "version": "5.15.2"},
+            "library_build_id": "qt5/GNU-AMD64/Debug",
+        }),
+        encoding="utf-8",
+    )
+    result = target.list_processes({os.getpid(): descriptor}, limit=200)
+    assert result["total"] >= 1
+    entry = next(p for p in result["processes"] if p["pid"] == os.getpid())
+    assert entry["has_descriptor"] is True
+    assert entry["qt_version"] == "5.15.2"
+    assert entry["attach"]["descriptor"] == str(descriptor)
 
 
 def test_descriptor_build_id_runtime():

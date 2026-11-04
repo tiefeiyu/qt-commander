@@ -58,8 +58,9 @@ Claude Desktop / Cursor / 其它 JSON 客户端：
 
 - **Linked runtime**：构建/接入一次应用或测试程序（见
   [构建 linked 运行时](#构建-linked-运行时)）；它会写出 descriptor。
-- **已运行目标**：调用 `qt_attach(pid=<pid>, mode="injection")`；Qt 版本/
-  工具链未知时先用 `qt_target_info`，必要时构建匹配的 injector 和 runtime。
+- **已运行目标**：调用 `qt_attach(pid=<pid>, mode="injection")`；不知道 PID
+  时先用 `qt_processes`，Qt 版本/工具链未知时用 `qt_target_info`，必要时构建
+  匹配的 injector 和 runtime。
 
 通常的第一次 agent 交互：
 
@@ -71,7 +72,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
   linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
-  linked、79 个 Python 测试和 MCP stdio E2E 也已验证。
+  linked、80 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
@@ -81,10 +82,10 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 18 个 MCP 工具。当前可用：
-  `status`、`target_info`、`environments`、`build`、`attach`、`detach`、
-  `windows`、`query`、`items`、`act`、`batch`、`wait`、`screenshot`、`get`、
-  `set`、`call`、`methods`、`source`。`source` 会搜索目标源码树（以及
+- 已注册 19 个 MCP 工具。当前可用：
+  `status`、`target_info`、`processes`、`environments`、`build`、`attach`、
+  `detach`、`windows`、`query`、`items`、`act`、`batch`、`wait`、`screenshot`、
+  `get`、`set`、`call`、`methods`、`source`。`source` 会搜索目标源码树（以及
   `QT_COMMANDER_SOURCE_DIR` / 显式 `source_dir`）中的 `.ui`/`.qml`，未命中才
   返回身份信息和 `E_NO_DEBUGINFO`。
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
@@ -106,6 +107,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   用 `signature` 消歧重载，枚举参数可传整数。
 - `qt_target_info` 在 `qt_build` 前检查目标进程的 PE/ELF 架构、完整 Qt 版本
   （例如 5.15.2）、构建类型和工具链；它不注入、不启动目标。
+  `qt_processes` 可发现正在运行的 Qt 目标并返回 attach 提示，不执行注入。
 - `qt_source` 会自动搜索附近的源码树（包括祖先目录下的 `src`），也支持
   `source_dir` 指定 qrc/嵌入式 QML 的源码根；找到时返回 `file/line/url`。
 - `qt_screenshot(annotate=...)` 支持 `annotate_offset` 分页；legend 的 `n`
@@ -174,8 +176,8 @@ MCP server 自带 `instructions`，覆盖启动、目标选择、歧义/隐藏�
 
 ## 故障排查
 
-- `qt_status` 没有 descriptor：先启动 linked 目标，或用
-  `qt_attach(pid=..., mode="injection")`。
+- `qt_status` 没有 descriptor：先启动 linked 目标，或用 `qt_processes`
+  找到 PID 后再 `qt_attach(pid=..., mode="injection")`。
 - 桌面客户端找不到 `uv`：把 `command` 配成 `uv` 的绝对路径。
 - `qt-commander-mcp.exe` 被占用：先停掉旧的 Claude/MCP 进程，再重启客户端。
 - 注入失败或 runtime 不匹配：先跑 `qt_target_info`，按返回的架构/Qt 主版本/
@@ -196,7 +198,7 @@ QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
 uv run pytest tests/unit_server -q
 ```
 
-当前：**79 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+当前：**80 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
 
 纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
 

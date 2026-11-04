@@ -64,8 +64,8 @@ descriptors or live sessions.
   [Build the linked runtime](#build-the-linked-runtime)); it writes a
   descriptor.
 - **Already-running target:** call
-  `qt_attach(pid=<pid>, mode="injection")`; use `qt_target_info` first when
-  the target's Qt version/toolchain is unknown. Build the matching injector
+  `qt_attach(pid=<pid>, mode="injection")`; use `qt_processes` to discover a
+  PID, then `qt_target_info` when the target's Qt version/toolchain is unknown. Build the matching injector
   and runtime if needed.
 
 The usual first agent interaction is:
@@ -78,7 +78,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 
 - Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
   MSVC for linked and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB)
-  verified for linked, the 79-test Python suite, and MCP stdio E2E.
+  verified for linked, the 80-test Python suite, and MCP stdio E2E.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
 - Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
@@ -89,10 +89,10 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
-- 18 MCP tools are registered. Working today:
-  `status`, `target_info`, `environments`, `build`, `attach`, `detach`,
-  `windows`, `query`, `items`, `act`, `batch`, `wait`, `screenshot`, `get`,
-  `set`, `call`, `methods`, `source`. `source` searches the target's source tree (and
+- 19 MCP tools are registered. Working today:
+  `status`, `target_info`, `processes`, `environments`, `build`, `attach`,
+  `detach`, `windows`, `query`, `items`, `act`, `batch`, `wait`, `screenshot`,
+  `get`, `set`, `call`, `methods`, `source`. `source` searches the target's source tree (and
   `QT_COMMANDER_SOURCE_DIR` / an explicit `source_dir`) for matching `.ui` or
   `.qml`; unresolved targets return identity with `E_NO_DEBUGINFO`.
 - `items` covers `QTabWidget`/`QTabBar`, `QMenuBar`/`QMenu`, `QHeaderView`,
@@ -118,7 +118,8 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   integer values.
 - `qt_target_info` inspects a process's PE/ELF architecture, full Qt runtime
   version (e.g. 5.15.2), build type, and toolchain before `qt_build`; it does
-  not inject or launch.
+  not inject or launch. `qt_processes` lists discoverable running Qt targets
+  with their attach hint, without injecting.
 - `qt_source` auto-discovers nearby source trees (including `src` ancestors)
   and accepts `source_dir` for qrc/embedded QML whose source tree is not next
   to the executable; it returns `file/line/url` when found.
@@ -194,7 +195,7 @@ tool also has a schema-aware description.
 ## Troubleshooting
 
 - `qt_status` has no descriptors: start a linked target, or use
-  `qt_attach(pid=..., mode="injection")`.
+  `qt_processes` and then `qt_attach(pid=..., mode="injection")`.
 - A desktop client cannot find `uv`: use the absolute path to `uv` as
   `command` in the client config.
 - `qt-commander-mcp.exe` is locked: stop the old Claude/MCP process, then
@@ -219,7 +220,7 @@ part of the QWidget query tree.
 uv run pytest tests/unit_server -q
 ```
 
-Current suite: **79 passed** (Qt5 MinGW/ MSVC test apps are built separately).
+Current suite: **80 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
 The pure-QML regression app is built with the same options as the linked app:
 
