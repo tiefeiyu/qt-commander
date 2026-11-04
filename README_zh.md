@@ -6,6 +6,67 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 活的对象树，并通过 MCP server 驱动它。查询每次都在目标进程里实时求值，
 没有 snapshot 文件，也没有陈旧的 UI 索引。
 
+## 安装
+
+qt-commander 目前从源码安装，尚未发布到 PyPI 或 npm。
+
+### 前置要求
+
+- Python 3.10+ 和 [uv](https://docs.astral.sh/uv/)
+- Qt 5.15 或 Qt 6.8 的目标程序
+- Windows 或 Linux
+- Python 只用于 MCP server；目标进程不需要 Python 或 gdb
+
+### 1. 获取 server
+
+```bash
+git clone https://github.com/tiefeiyu/qt-commander.git
+cd qt-commander
+uv sync
+```
+
+### 2. 注册到 MCP 客户端
+
+Claude Code：
+
+```bash
+claude mcp add qt-commander -- uv run --project /absolute/path/to/qt-commander qt-commander-mcp
+```
+
+Claude Desktop / Cursor / 其它 JSON 客户端：
+
+```json
+{
+  "mcpServers": {
+    "qt-commander": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/qt-commander",
+        "qt-commander-mcp"
+      ]
+    }
+  }
+}
+```
+
+路径用本机绝对路径（Windows 可用 `D:/Develop/qt-commander`）。改完配置后重启
+客户端；`qt_status` 应该能列出 descriptor 或活动会话。
+
+### 3. 连接目标
+
+- **Linked runtime**：构建/接入一次应用或测试程序（见
+  [构建 linked 运行时](#构建-linked-运行时)）；它会写出 descriptor。
+- **已运行目标**：调用 `qt_attach(pid=<pid>, mode="injection")`；Qt 版本/
+  工具链未知时先用 `qt_target_info`，必要时构建匹配的 injector 和 runtime。
+
+通常的第一次 agent 交互：
+
+```text
+qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
+```
+
 ## 当前状态
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
@@ -110,6 +171,15 @@ Claude/MCP 进程，再重新执行 `uv run`。
 
 MCP server 自带 `instructions`，覆盖启动、目标选择、歧义/隐藏处理和破坏性
 操作安全；每个工具也有带 schema 的说明。
+
+## 故障排查
+
+- `qt_status` 没有 descriptor：先启动 linked 目标，或用
+  `qt_attach(pid=..., mode="injection")`。
+- 桌面客户端找不到 `uv`：把 `command` 配成 `uv` 的绝对路径。
+- `qt-commander-mcp.exe` 被占用：先停掉旧的 Claude/MCP 进程，再重启客户端。
+- 注入失败或 runtime 不匹配：先跑 `qt_target_info`，按返回的架构/Qt 主版本/
+  工具链重新构建；不要绕过 build-id 不匹配。
 
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
 且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个；QMenu/QToolTip

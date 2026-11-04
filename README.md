@@ -7,6 +7,73 @@ its live object tree over a local JSON-RPC connection, and drives it through
 an MCP server. Queries are evaluated in the target process every time; there
 are no snapshot files and no stale index of the UI.
 
+## Install
+
+qt-commander is source-installed; it is not currently published to PyPI or
+npm.
+
+### Requirements
+
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/)
+- A Qt 5.15 or Qt 6.8 target application
+- Windows or Linux
+- Python is only needed for the MCP server; the target process does not need
+  Python or gdb
+
+### 1. Get the server
+
+```bash
+git clone https://github.com/tiefeiyu/qt-commander.git
+cd qt-commander
+uv sync
+```
+
+### 2. Register it with your MCP client
+
+Claude Code:
+
+```bash
+claude mcp add qt-commander -- uv run --project /absolute/path/to/qt-commander qt-commander-mcp
+```
+
+Claude Desktop / Cursor / other JSON clients:
+
+```json
+{
+  "mcpServers": {
+    "qt-commander": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/qt-commander",
+        "qt-commander-mcp"
+      ]
+    }
+  }
+}
+```
+
+Use a native absolute path (`D:/Develop/qt-commander` is fine on Windows).
+Restart the client after changing the config; `qt_status` should then list
+descriptors or live sessions.
+
+### 3. Connect a target
+
+- **Linked runtime:** build/instrument the application or test app once (see
+  [Build the linked runtime](#build-the-linked-runtime)); it writes a
+  descriptor.
+- **Already-running target:** call
+  `qt_attach(pid=<pid>, mode="injection")`; use `qt_target_info` first when
+  the target's Qt version/toolchain is unknown. Build the matching injector
+  and runtime if needed.
+
+The usual first agent interaction is:
+
+```text
+qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
+```
+
 ## Status
 
 - Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
@@ -123,6 +190,18 @@ be overridden with `QT_COMMANDER_INJECT_DLL`.
 The MCP server carries an `instructions` block for agent startup, target
 selection, ambiguity/hidden handling, and destructive-action safety; each
 tool also has a schema-aware description.
+
+## Troubleshooting
+
+- `qt_status` has no descriptors: start a linked target, or use
+  `qt_attach(pid=..., mode="injection")`.
+- A desktop client cannot find `uv`: use the absolute path to `uv` as
+  `command` in the client config.
+- `qt-commander-mcp.exe` is locked: stop the old Claude/MCP process, then
+  restart the client.
+- Injection fails or attaches to an incompatible runtime: run
+  `qt_target_info`, rebuild for the reported architecture/Qt major/toolchain,
+  and do not bypass a build-id mismatch.
 
 For multiple windows, call `qt_windows` first and pass that window's `id` to
 `qt_screenshot`. Without a target, a screenshot is refused when more than one
