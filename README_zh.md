@@ -13,7 +13,8 @@ qt-commander 目前从源码安装，尚未发布到 PyPI 或 npm。
 ### 前置要求
 
 - Python 3.10+ 和 [uv](https://docs.astral.sh/uv/)
-- Qt 5.15 或 Qt 6.8 的目标程序
+- Qt 5 或 Qt 6 的目标程序。当前实测 Qt 5.15.2 与 Qt 6.8.3；理论上兼容
+  其它 Qt 5.x/6.x，但尚未逐个验证。
 - Windows 或 Linux
 - Python 只用于 MCP server；目标进程不需要 Python 或 gdb
 

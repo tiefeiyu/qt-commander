@@ -15,7 +15,8 @@ npm.
 ### Requirements
 
 - Python 3.10+ and [uv](https://docs.astral.sh/uv/)
-- A Qt 5.15 or Qt 6.8 target application
+- A Qt 5 or Qt 6 target application. Verified on Qt 5.15.2 and Qt 6.8.3;
+  other Qt 5.x/6.x releases are expected to work but are not yet validated.
 - Windows or Linux
 - Python is only needed for the MCP server; the target process does not need
   Python or gdb
