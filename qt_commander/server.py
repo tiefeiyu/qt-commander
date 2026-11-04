@@ -282,7 +282,8 @@ async def qt_windows(
 ) -> dict[str, Any]:
     """List top-level windows with id/title/class/screen_pos/active/modal.
 
-    ``include_hidden`` also returns hidden QWidget/QQuickWindow roots.
+    Use after attach to choose the window to inspect. ``include_hidden`` also
+    returns hidden QWidget/QQuickWindow roots.
     ``visible`` and ``class_name`` filter the result; ``limit``/``offset``
     paginate. Returned ids are valid targets for this session.
     """
@@ -577,7 +578,8 @@ async def qt_attach(
 ) -> dict[str, Any]:
     """Attach to a live Qt process.
 
-    Use a rendezvous descriptor (linked mode), or ``pid`` with
+    Use this before any session-scoped tool. Use a rendezvous descriptor
+    (linked mode), or ``pid`` with
     ``mode="injection"``. ``mode="auto"`` uses a live descriptor when
     available and otherwise injects. ``build_id`` guards against attaching a
     runtime built for a different library; a mismatch must be rebuilt/reinjected
@@ -764,7 +766,9 @@ async def qt_query(
 ) -> dict[str, Any]:
     """Query the live object tree.
 
-    ``where`` accepts id/class/object_name/objectName/qml_id/qml_type/text/
+    Use when the target is unknown, or to survey a subtree. For one already
+    known target, prefer qt_get. ``where`` accepts
+    id/class/object_name/objectName/qml_id/qml_type/text/
     props; strings support exact, wildcard, and contains/startsWith/regex/
     equals matchers. ``scope`` limits to a window or subtree. Without
     ``props``, nodes include text/visible/enabled. ``limit`` is a soft
@@ -802,7 +806,9 @@ async def qt_items(
 ) -> dict[str, Any]:
     """List provider-backed children of a widget/QML owner.
 
-    Covers actions, tabs, table/list/tree cells, dock/toolbar items, splitter
+    Use when the regular query tree lacks actions, tabs, cells, dock/toolbar
+    items, or splitter handles. Covers actions, tabs, table/list/tree cells,
+    dock/toolbar items, splitter
     handles, and QML item children. These children are virtual and are not
     part of the QWidget query tree.
     """
@@ -851,7 +857,8 @@ async def qt_act(
 ) -> dict[str, Any]:
     """Dispatch one real input or window action.
 
-    Actions: click/dblclick/hover/type/focus/key/scroll/drag, plus
+    Use for user-like input; use qt_set for property writes and qt_call for
+    slots. Actions: click/dblclick/hover/type/focus/key/scroll/drag, plus
     minimize/restore/set_geometry for window targets (set_geometry takes
     ``geometry={x,y,w,h}``). ``target`` can be a node id, a string QML id, or
     an object with id/qml_id/text/class/objectName; use ``nth`` for
@@ -949,7 +956,9 @@ async def qt_screenshot(
 ) -> list[Any]:
     """Capture a PNG plus metadata.
 
-    With no target, exactly one visible top-level window is captured; if
+    Use for visual evidence and annotation; use the returned legend ids as
+    action targets. With no target, exactly one visible top-level window is
+    captured; if
     several are visible the call fails with ``E_AMBIGUOUS`` and the caller
     must choose a window from ``qt_windows``.
 
@@ -993,7 +1002,9 @@ async def qt_get(
 ) -> dict[str, Any]:
     """Read properties and identity for one node or virtual item.
 
-    ``props`` may be a list of names or "*" for all readable properties.
+    Use after an action to verify state, or when the target is already known;
+    use qt_query for discovery. ``props`` may be a list of names or "*" for
+    all readable properties.
     Hidden QML targets require ``include_hidden=true``.
     """
     session = _session(session_id)
@@ -1017,7 +1028,7 @@ async def qt_set(
 ) -> dict[str, Any]:
     """Write one property (destructive).
 
-    Returns name/old/new. Use this for property setters such as
+    Use for property setters such as
     QPushButton::setText, which are not qt_call methods. Hidden QML targets
     require ``include_hidden=true``.
     """
@@ -1043,7 +1054,9 @@ async def qt_call(
 ) -> dict[str, Any]:
     """Invoke a Qt metaobject method (destructive).
 
-    QWidget and QML targets are both supported. Only slots/Q_INVOKABLE are
+    Use when you need a slot or Q_INVOKABLE method; use qt_set for property
+    setters and qt_act for user-like input. QWidget and QML targets are both
+    supported. Only slots/Q_INVOKABLE are
     callable; property setters are not methods. Use qt_methods to discover
     signatures, then pass ``signature`` to disambiguate overloads. Enum
     arguments accept their integer values. Non-void results are returned in
@@ -1070,6 +1083,7 @@ async def qt_methods(
 ) -> dict[str, Any]:
     """List invokable Qt methods (slots/Q_INVOKABLE) for a target.
 
+    Use before qt_call when the method name or signature is unknown.
     Returns name/signature/parameter_types/return_type/slot. Qt ``_q_``
     internal methods are filtered unless ``include_internal=true``.
     """
@@ -1102,6 +1116,7 @@ async def qt_source(
 ) -> dict[str, Any]:
     """Resolve a widget/QML target to source.
 
+    Use after a UI target is identified; this is not a free-form code search.
     Searches the target's source tree (and QT_COMMANDER_SOURCE_DIR) for a
     matching .ui/.qml; ``source_dir`` adds an explicit root for qrc/embedded
     QML. Returns file/line/url when found, otherwise E_NO_DEBUGINFO.
