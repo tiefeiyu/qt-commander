@@ -5,7 +5,7 @@ ApplicationWindow {
     id: window
     objectName: "qmlWindow"
     width: 640
-    height: 480
+    height: 680
     visible: true
     title: "QML Window Test"
 
@@ -70,5 +70,54 @@ ApplicationWindow {
 
         Loader { sourceComponent: duplicateComponent }
         Loader { sourceComponent: duplicateComponent }
+
+        Item {
+            objectName: "callProbe"
+            width: 1
+            height: 1
+            function echo(text) {
+                clickResult.text = text
+                return text
+            }
+            function hello() { return "hello" }
+        }
+
+        Flickable {
+            objectName: "clickFlick"
+            width: 220
+            height: 100
+            contentHeight: 96
+            clip: true
+            Column {
+                spacing: 3
+                Repeater {
+                    model: ["row-1", "row-2", "row-3"]
+                    Item {
+                        objectName: "click-" + modelData
+                        width: 200
+                        height: 30
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#333333"
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData
+                            color: "white"
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: clickResult.text = modelData
+                        }
+                    }
+                }
+            }
+        }
+
+        Text {
+            id: clickResult
+            objectName: "clickResult"
+            text: "none"
+        }
     }
 }

@@ -207,11 +207,15 @@ async def _await_descriptor_for_pid(pid: int, timeout_s: float = 20.0) -> Path |
 async def _inject_target(pid: int) -> Path | dict[str, Any]:
     dll = inject.default_dll_path(pid)
     if dll is None:
-        return _error(
+        detail = inject.artifact_detail(pid)
+        result = _error(
             ErrorCode.INJECTION_FAILED.value,
-            "injection DLL not found",
-            hint="build qt_commander_inject or set QT_COMMANDER_INJECT_DLL",
+            "no injector artifact matches the target",
+            hint="run qt_build for this target or set "
+                 "QT_COMMANDER_INJECT_DLL",
         )
+        result["error"]["details"] = detail
+        return result
     status_path = Path(tempfile.gettempdir()) / f"qtc-inject-status-{pid}.txt"
     try:
         status_path.unlink(missing_ok=True)
@@ -250,6 +254,7 @@ async def qt_status(session_id: str | None = None) -> dict[str, Any]:
         "descriptors": [str(path) for path in candidates],
         "descriptor_info": [_descriptor_summary(path) for path in candidates],
         "descriptor": str(candidates[0]) if len(candidates) == 1 else None,
+        "artifacts": artifacts.listing(),
         "protocol": 2,
     }
     if session_id is None:

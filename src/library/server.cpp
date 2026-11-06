@@ -18,6 +18,7 @@
 #include <QHoverEvent>
 #include <QImageWriter>
 #include <QJsonArray>
+#include <QJSValue>
 #include <QKeySequence>
 #include <QJsonDocument>
 #include <QLineEdit>
@@ -1556,13 +1557,74 @@ QJsonObject Server::act(const QJsonObject& params)
                 result.insert(QStringLiteral("resolved"), resolved);
                 return result;
             }
+            if (windowAction == QStringLiteral("click") ||
+                windowAction == QStringLiteral("dblclick")) {
+                const QJsonValue positionValue =
+                    params.value(QStringLiteral("position"));
+                if (!positionValue.isObject()) {
+                    QJsonObject result;
+                    result.insert(QStringLiteral("error"),
+                                  QStringLiteral("E_INVALID_ARGUMENT"));
+                    result.insert(QStringLiteral("message"),
+                                  QStringLiteral("window click requires "
+                                                 "position={x,y}"));
+                    return result;
+                }
+                const QJsonObject position = positionValue.toObject();
+                const QPointF point(position.value(QStringLiteral("x"))
+                                        .toDouble(),
+                                    position.value(QStringLiteral("y"))
+                                        .toDouble());
+                window->requestActivate();
+                QCoreApplication::processEvents(
+                    QEventLoop::ExcludeUserInputEvents);
+                const int clicks =
+                    windowAction == QStringLiteral("dblclick") ? 2 : 1;
+                for (int i = 0; i < clicks; ++i) {
+                    QMouseEvent move(QEvent::MouseMove, point, point,
+                                     Qt::NoButton, Qt::NoButton,
+                                     Qt::NoModifier);
+                    QCoreApplication::sendEvent(window, &move);
+                    QMouseEvent press(QEvent::MouseButtonPress, point, point,
+                                      Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QCoreApplication::sendEvent(window, &press);
+                    QMouseEvent release(QEvent::MouseButtonRelease, point,
+                                        point, Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QCoreApplication::sendEvent(window, &release);
+                }
+                QCoreApplication::processEvents();
+                const QRect geometry = window->geometry();
+                QJsonObject resolved;
+                resolved.insert(QStringLiteral("id"), virtualId);
+                resolved.insert(
+                    QStringLiteral("class"),
+                    QString::fromLatin1(window->metaObject()->className()));
+                resolved.insert(QStringLiteral("rect"), QJsonObject{
+                    {QStringLiteral("x"), geometry.x()},
+                    {QStringLiteral("y"), geometry.y()},
+                    {QStringLiteral("w"), geometry.width()},
+                    {QStringLiteral("h"), geometry.height()}});
+                resolved.insert(QStringLiteral("point"), QJsonObject{
+                    {QStringLiteral("x"), point.x()},
+                    {QStringLiteral("y"), point.y()}});
+                QJsonObject result;
+                result.insert(QStringLiteral("ok"), true);
+                result.insert(QStringLiteral("action"), windowAction);
+                result.insert(QStringLiteral("dispatched"), true);
+                result.insert(QStringLiteral("input"), QStringLiteral("mouse"));
+                result.insert(QStringLiteral("resolved"), resolved);
+                return result;
+            }
             if (windowAction != QStringLiteral("key")) {
                 QJsonObject result;
                 result.insert(QStringLiteral("error"),
                               QStringLiteral("E_INVALID_ARGUMENT"));
                 result.insert(QStringLiteral("message"),
-                              QStringLiteral("window targets only support key; "
-                                             "use the item id for click/type"));
+                              QStringLiteral("window targets support key, click, "
+                                             "dblclick, minimize, restore, and "
+                                             "set_geometry"));
                 return result;
             }
             QStringList names;
@@ -3215,8 +3277,29 @@ QJsonObject Server::call(const QJsonObject& params)
                     typeId != QMetaType::UnknownType &&
                     (QMetaType::typeFlags(typeId) &
                      QMetaType::IsEnumeration);
-                if ((enumArgument || typeId == QMetaType::UnknownType) &&
-                    value.canConvert<int>()) {
+                if (typeId == QMetaType::QVariant) {
+                    // QML functions expose untyped JS parameters as QVariant;
+                    // QVariant::convert(QVariant) has no conversion path.
+                    values.append(value);
+                    typeNames.append(parameterTypes.at(i));
+                    continue;
+                }
+                if (typeId == qMetaTypeId<QJSValue>()) {
+                    QQmlEngine* engine = qmlEngine(qmlItem);
+                    if (!engine) {
+                        QJsonObject result;
+                        result.insert(QStringLiteral("error"),
+                                      QStringLiteral("E_INVALID_ARGUMENT"));
+                        result.insert(QStringLiteral("message"),
+                                      QStringLiteral("no QML engine for QJSValue "
+                                                     "argument %1").arg(i));
+                        return result;
+                    }
+                    value = QVariant::fromValue(
+                        engine->toScriptValue(value));
+                } else if ((enumArgument ||
+                            typeId == QMetaType::UnknownType) &&
+                           value.canConvert<int>()) {
                     value = value.toInt();
                 } else if (value.userType() != typeId &&
                            !value.convert(typeId)) {
@@ -3461,6 +3544,15 @@ QJsonValue Server::returnValueToJson(const QVariant& value)
     if (!value.isValid())
         return QJsonValue(QJsonValue::Null);
     const int type = value.userType();
+    if (type == qMetaTypeId<QJSValue>()) {
+        const QJSValue script = value.value<QJSValue>();
+        return QJsonValue::fromVariant(script.toVariant());
+    }
+    if (type == QMetaType::QVariant) {
+        const QVariant inner = value.value<QVariant>();
+        if (inner.isValid() && inner.userType() != QMetaType::QVariant)
+            return returnValueToJson(inner);
+    }
     const bool objectPointer =
         type == QMetaType::QObjectStar ||
         (QMetaType::typeFlags(type) & QMetaType::PointerToQObject);
@@ -4626,11 +4718,17 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
                 break;
             }
         }
-        QQuickItem* clickTarget = clickItem;
+        // Keep the event at the requested item's center. The ancestor is only
+        // used for focus: in Qt Quick a visible Item often has a *sibling*
+        // MouseArea, so walking to an accepting ancestor would both miss that
+        // sibling and move the click to an unrelated container center.
+        const QRectF sourceRect = item->boundingRect();
         const QPointF point =
-            clickTarget->mapToScene(clickTarget->boundingRect().center());
+            (sourceRect.width() > 0 && sourceRect.height() > 0)
+                ? item->mapToScene(sourceRect.center())
+                : clickItem->mapToScene(clickItem->boundingRect().center());
         const int clicks = action == QStringLiteral("dblclick") ? 2 : 1;
-        clickTarget->forceActiveFocus();
+        clickItem->forceActiveFocus();
         for (int i = 0; i < clicks; ++i) {
             QMouseEvent move(QEvent::MouseMove, point, point,
                              Qt::NoButton, Qt::NoButton, Qt::NoModifier);

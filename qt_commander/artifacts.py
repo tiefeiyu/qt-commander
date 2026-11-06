@@ -157,23 +157,60 @@ def _matches(manifest: dict[str, Any], target: dict[str, Any]) -> bool:
     return True
 
 
+def listing(root: Path = ROOT) -> list[dict[str, Any]]:
+    """Return every valid artifact manifest under the single root."""
+    result: list[dict[str, Any]] = []
+    if root.is_dir():
+        for directory in sorted(root.glob("*/*/*")):
+            manifest = read_manifest(directory)
+            if manifest:
+                result.append(
+                    {"directory": str(directory), "manifest": manifest}
+                )
+    return result
+
+
 def find(target: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
     """Find exactly one artifact matching target metadata under one root."""
     matches: list[tuple[Path, dict[str, Any]]] = []
+    available: list[dict[str, Any]] = []
     if root.is_dir():
         for directory in root.glob("*/*/*"):
             if not directory.is_dir():
                 continue
             manifest = read_manifest(directory)
-            if manifest and _matches(manifest, target):
+            if not manifest:
+                continue
+            available.append(
+                {"directory": str(directory), "manifest": manifest}
+            )
+            if _matches(manifest, target):
                 matches.append((directory, manifest))
     if not matches:
+        expected = None
+        try:
+            expected = str(
+                build_dir(
+                    os_name=target.get("os", "unknown"),
+                    arch=target.get("arch", "unknown"),
+                    compiler=target.get("toolchain") or "unknown",
+                    compiler_version=target.get("compiler_version"),
+                    qt_version=target.get("qt_version"),
+                    qt_debug=bool(target.get("debug")),
+                    root=root,
+                )
+            )
+        except Exception:
+            pass
         return {
             "ok": False,
             "error": "E_ARTIFACT_NOT_FOUND",
             "message": "no artifact matches the target; run qt_build or provide "
                        "QT_COMMANDER_INJECT_DLL/QT_COMMANDER_INJECTOR",
             "searched": str(root),
+            "expected": expected,
+            "target": target,
+            "available": available,
         }
     if len(matches) > 1:
         return {
@@ -181,7 +218,9 @@ def find(target: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
             "error": "E_ARTIFACT_AMBIGUOUS",
             "message": "multiple artifacts match the target; specify the "
                        "artifact directory explicitly",
+            "searched": str(root),
             "candidates": [str(directory) for directory, _ in matches],
+            "available": available,
         }
     directory, manifest = matches[0]
     return {"ok": True, "directory": directory, "manifest": manifest}

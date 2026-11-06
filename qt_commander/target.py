@@ -154,6 +154,92 @@ def _file_version(path: Path) -> str | None:
         return None
 
 
+def _pe_imports(path: Path) -> list[str]:
+    """Read PE import DLL names using only the file image."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        return []
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe + 24 > len(data) or data[pe:pe + 4] != b"PE\0\0":
+        return []
+    coff = pe + 4
+    sections = struct.unpack_from("<H", data, coff + 2)[0]
+    optional_size = struct.unpack_from("<H", data, coff + 16)[0]
+    optional = coff + 20
+    if optional + optional_size > len(data):
+        return []
+    magic = struct.unpack_from("<H", data, optional)[0]
+    data_dirs = optional + (0x60 if magic == 0x10B else 0x70)
+    if magic not in (0x10B, 0x20B) or data_dirs + 16 > len(data):
+        return []
+    import_rva, import_size = struct.unpack_from("<II", data, data_dirs + 8)
+    if not import_rva or not import_size:
+        return []
+
+    section_rows: list[tuple[int, int, int, int]] = []
+    row = optional + optional_size
+    for _ in range(sections):
+        if row + 40 > len(data):
+            break
+        virtual_size, virtual_address = struct.unpack_from(
+            "<II", data, row + 8
+        )
+        raw_size, raw_offset = struct.unpack_from("<II", data, row + 16)
+        section_rows.append(
+            (virtual_address, virtual_size, raw_offset, raw_size)
+        )
+        row += 40
+
+    def file_offset(rva: int) -> int | None:
+        for va, vsize, raw_offset, raw_size in section_rows:
+            if va <= rva < va + max(vsize, raw_size):
+                return raw_offset + (rva - va)
+        return None
+
+    offset = file_offset(import_rva)
+    if offset is None:
+        return []
+    names: list[str] = []
+    for _ in range(4096):
+        if offset + 20 > len(data):
+            break
+        name_rva = struct.unpack_from("<I", data, offset + 12)[0]
+        if not name_rva:
+            break
+        name_offset = file_offset(name_rva)
+        if name_offset is None or name_offset >= len(data):
+            break
+        end = data.find(b"\0", name_offset, name_offset + 512)
+        if end < 0:
+            break
+        names.append(
+            data[name_offset:end].decode("ascii", errors="replace").lower()
+        )
+        offset += 20
+    return names
+
+
+def _toolchain_from_imports(paths: list[Path]) -> tuple[str | None, list[str]]:
+    imported: list[str] = []
+    for path in paths:
+        if path.is_file():
+            imported.extend(_pe_imports(path))
+    if any(name.startswith(("msvcp", "vcruntime")) for name in imported):
+        return "msvc", list(dict.fromkeys(
+            name for name in imported
+            if name.startswith(("msvcp", "vcruntime"))
+        ))[:8]
+    if any(name.startswith(("libstdc++", "libgcc")) for name in imported):
+        return "mingw", list(dict.fromkeys(
+            name for name in imported
+            if name.startswith(("libstdc++", "libgcc"))
+        ))[:8]
+    return None, []
+
+
 def _runtime_from_build_id(build_id: str | None) -> dict[str, Any]:
     if not build_id:
         return {}
@@ -321,6 +407,15 @@ def list_processes(
             ).get("build_type")
             if build_type:
                 result["build_type"] = build_type
+            try:
+                detailed = target_info(pid, str(descriptor))
+            except (OSError, ValueError):
+                detailed = {}
+            for key in ("os", "arch", "toolchain", "compiler",
+                        "compiler_version", "qt_version", "debug",
+                        "toolchain_evidence"):
+                if detailed.get(key) is not None:
+                    result[key] = detailed[key]
         found.append(result)
     total = len(found)
     page = found[offset:offset + max(1, limit)]
@@ -366,6 +461,17 @@ def target_info(pid: int | None = None,
         data.get("library_build_id") if data else None
     )
     descriptor_qt = _descriptor_qt(data)
+    import_paths = [
+        Path(path) for path in runtime.get("evidence", []) if path
+    ]
+    import_toolchain, import_evidence = _toolchain_from_imports(
+        import_paths + [executable]
+    )
+    if import_toolchain:
+        runtime["toolchain"] = import_toolchain
+        runtime["toolchain_evidence"] = [
+            f"import:{name}" for name in import_evidence
+        ]
     for key in ("qt_major", "qt_version", "debug", "build_type", "toolchain"):
         if runtime.get(key) is None:
             value = descriptor_qt.get(key, descriptor_runtime.get(key))

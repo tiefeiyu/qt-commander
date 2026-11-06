@@ -93,7 +93,10 @@ async def main() -> None:
         action = find_qml(tree["tree"][0], "actionMouse")
         status = find_qml(tree["tree"][0], "statusLabel")
         field = find_qml(tree["tree"][0], "nameField")
-        assert action and status and field
+        row3 = find_qml(tree["tree"][0], "click-row-3")
+        click_result = find_qml(tree["tree"][0], "clickResult")
+        call_probe = find_qml(tree["tree"][0], "callProbe")
+        assert action and status and field and row3 and click_result and call_probe
 
         items = await session.call("items", {"owner": window["id"], "limit": 20})
         assert items["visible"] >= 1, items
@@ -112,6 +115,31 @@ async def main() -> None:
             "get", {"target": {"id": status["id"]}, "props": ["text"]}
         )
         assert status_after["props"]["text"] == "clicked", status_after
+
+        row_click = await session.call(
+            "act", {"target": {"id": row3["id"]}, "action": "click"}
+        )
+        assert row_click["ok"] and row_click["dispatched"], row_click
+        await asyncio.sleep(0.2)
+        row_result = await session.call(
+            "get", {"target": {"id": click_result["id"]}, "props": ["text"]}
+        )
+        assert row_result["props"]["text"] == "row-3", row_result
+
+        echoed = await session.call(
+            "call",
+            {
+                "target": {"id": call_probe["id"]},
+                "method": "echo",
+                "args": ["hello"],
+            },
+        )
+        assert echoed.get("result") == "hello", echoed
+        await asyncio.sleep(0.2)
+        echo_effect = await session.call(
+            "get", {"target": {"id": click_result["id"]}, "props": ["text"]}
+        )
+        assert echo_effect["props"]["text"] == "hello", (echoed, echo_effect)
 
         typed = await session.call(
             "act",

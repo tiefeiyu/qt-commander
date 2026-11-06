@@ -37,6 +37,11 @@ def _artifact_for_pid(pid: int | None) -> dict:
     return artifacts.find(info)
 
 
+def artifact_detail(pid: int | None) -> dict:
+    """Return the artifact lookup result, including why it failed."""
+    return _artifact_for_pid(pid)
+
+
 def default_dll_path(pid: int | None = None) -> Path | None:
     override = os.environ.get("QT_COMMANDER_INJECT_DLL")
     if override:
