@@ -218,6 +218,17 @@ The MCP server carries an `instructions` block for agent startup, target
 selection, ambiguity/hidden handling, and destructive-action safety; each
 tool also has a schema-aware description.
 
+## Known limitations
+
+- Qt Quick Controls `Popup` roots (for example `indicatorPopup`) may not be
+  discoverable by `qml_id`; query their text or child items instead.
+  A `Popup` rendered in the main window's Overlay is not a separate window, so
+  `qt_windows` still reports only the main window. Independent `Qt.Popup`
+  windows do appear and have `popup: true`.
+- After changing C++ runtime code, rebuilding the artifact and restarting the
+  target is required. Restarting only the MCP server leaves the already-loaded
+  runtime in the old target process.
+
 ## Troubleshooting
 
 - `qt_status` has no descriptors: start a linked target, or use

@@ -199,6 +199,15 @@ Claude/MCP 进程，再重新执行 `uv run`。
 MCP server 自带 `instructions`，覆盖启动、目标选择、歧义/隐藏处理和破坏性
 操作安全；每个工具也有带 schema 的说明。
 
+## 已知限制
+
+- Qt Quick Controls 的 `Popup` 根对象（例如 `indicatorPopup`）可能无法通过
+  `qml_id` 查到；请改用弹层内的文字或子节点查询。渲染在主窗口 Overlay 里的
+  `Popup` 不是独立窗口，`qt_windows` 仍只返回主窗口；独立的 `Qt.Popup` 窗口
+  会出现在 `qt_windows` 中，并带 `popup: true`。
+- 修改 C++ runtime 代码后，必须重建 artifact 并重启目标进程。只重启 MCP
+  server 不会更新已经加载到目标进程里的旧 runtime。
+
 ## 故障排查
 
 - `qt_status` 没有 descriptor：先启动 linked 目标，或用 `qt_processes`

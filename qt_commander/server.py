@@ -53,6 +53,8 @@ Critical rules:
   use nth for ambiguity.
 - E_AMBIGUOUS: inspect candidates. E_HIDDEN: hidden by design; use
   include_hidden=true only when intentional.
+- QML Popup roots may not resolve by qml_id; query their text or child items.
+  A Popup in the main window Overlay is not a separate qt_windows entry.
 - qt_call only invokes slots/Q_INVOKABLE; property setters use qt_set. Use
   qt_methods and signature= for overloads.
 - On timeout or failure, inspect first. Retry at most once with a changed
