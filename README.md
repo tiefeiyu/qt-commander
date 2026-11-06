@@ -79,7 +79,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 
 - Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
   MSVC for linked and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB)
-  verified for linked, the 80-test Python suite, and MCP stdio E2E.
+  verified for linked, the 84-test Python suite, and MCP stdio E2E.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
 - Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
@@ -174,6 +174,31 @@ $env:QT_COMMANDER_RENDEZVOUS = "$PWD\.test-workspace\rendezvous"
 The app writes `descriptor-<pid>.json` into that directory (one file per
 process; owner-only permissions on POSIX).
 
+## Injection artifacts
+
+`qt_build` writes injectors and injection libraries into one root only:
+
+```text
+artifacts/<os>-<arch>/<compiler>-<version>/qt-<qt-version>-<debug|release>/
+  manifest.json
+  bin/qtc-inject.exe
+  lib/qt_commander_inject.dll   # libqt_commander_inject.so on Linux
+```
+
+Examples:
+
+```text
+artifacts/windows-x64/msvc-19.29/qt-5.15.2-debug/
+artifacts/windows-x64/mingw-gcc-13.1/qt-5.15.2-release/
+artifacts/linux-x64/gcc-13.3/qt-6.8.3-release/
+```
+
+`qt_attach(mode="injection")` matches the target's OS/architecture,
+compiler family, Qt version, and Qt debug/release against a manifest under
+`artifacts/`; it does not scan `build/` or pick the newest file. Set
+`QT_COMMANDER_INJECTOR` / `QT_COMMANDER_INJECT_DLL` only for an explicit
+override.
+
 ## Run the MCP server
 
 ```bash
@@ -221,7 +246,7 @@ part of the QWidget query tree.
 uv run pytest tests/unit_server -q
 ```
 
-Current suite: **80 passed** (Qt5 MinGW/ MSVC test apps are built separately).
+Current suite: **84 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
 The pure-QML regression app is built with the same options as the linked app:
 

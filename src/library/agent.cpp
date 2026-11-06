@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QSaveFile>
+#include <QSysInfo>
 #include <QUuid>
 #include <QVariant>
 
@@ -149,6 +150,37 @@ StartResult start(const StartOptions& options)
     qt.insert(QStringLiteral("major"), QT_VERSION_MAJOR);
     qt.insert(QStringLiteral("version"), QString::fromLatin1(qVersion()));
 
+    QJsonObject compiler;
+#if defined(_MSC_VER)
+    compiler.insert(QStringLiteral("family"), QStringLiteral("msvc"));
+    compiler.insert(
+        QStringLiteral("version"),
+        QStringLiteral("%1.%2.%3")
+            .arg(_MSC_FULL_VER / 10000000)
+            .arg((_MSC_FULL_VER / 100000) % 100)
+            .arg(_MSC_FULL_VER % 100000));
+#elif defined(__clang__)
+    compiler.insert(QStringLiteral("family"), QStringLiteral("clang"));
+    compiler.insert(QStringLiteral("version"),
+                    QStringLiteral("%1.%2.%3")
+                        .arg(__clang_major__)
+                        .arg(__clang_minor__)
+                        .arg(__clang_patchlevel__));
+#elif defined(__GNUC__)
+#ifdef Q_OS_WIN
+    compiler.insert(QStringLiteral("family"), QStringLiteral("mingw"));
+#else
+    compiler.insert(QStringLiteral("family"), QStringLiteral("gcc"));
+#endif
+    compiler.insert(QStringLiteral("version"),
+                    QStringLiteral("%1.%2.%3")
+                        .arg(__GNUC__)
+                        .arg(__GNUC_MINOR__)
+                        .arg(__GNUC_PATCHLEVEL__));
+#else
+    compiler.insert(QStringLiteral("family"), QStringLiteral("unknown"));
+#endif
+
     QJsonObject descriptor;
     descriptor.insert(QStringLiteral("schema"), 2);
     descriptor.insert(QStringLiteral("protocol"), protocol);
@@ -169,6 +201,18 @@ StartResult start(const StartOptions& options)
     descriptor.insert(QStringLiteral("library_build_id"),
                       QStringLiteral(QT_COMMANDER_BUILD_ID));
     descriptor.insert(QStringLiteral("qt"), qt);
+    descriptor.insert(QStringLiteral("compiler"), compiler);
+#ifdef Q_OS_WIN
+    descriptor.insert(QStringLiteral("os"), QStringLiteral("windows"));
+#else
+    descriptor.insert(QStringLiteral("os"), QStringLiteral("linux"));
+#endif
+    const QString cpu = QSysInfo::buildCpuArchitecture();
+    descriptor.insert(QStringLiteral("arch"),
+                      cpu == QStringLiteral("x86_64") ? QStringLiteral("x64")
+                      : cpu == QStringLiteral("i386") ? QStringLiteral("x86")
+                      : cpu == QStringLiteral("arm64") ? QStringLiteral("arm64")
+                                                       : cpu);
     descriptor.insert(QStringLiteral("capabilities"),
                       QJsonArray{QStringLiteral("query"), QStringLiteral("act"),
                                  QStringLiteral("screenshot"),

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
+from . import artifacts, target
 from .errors import ErrorCode
 
 
@@ -22,53 +22,53 @@ class InjectionError(RuntimeError):
         self.code = code
 
 
-def _newest(paths: set[Path]) -> Path | None:
-    if not paths:
-        return None
+def _artifact_for_pid(pid: int | None) -> dict:
+    if pid is None:
+        return {
+            "ok": False,
+            "error": "E_ARTIFACT_NOT_FOUND",
+            "message": "pid is required to select an injector artifact",
+        }
     try:
-        return max(paths, key=lambda path: path.stat().st_mtime)
-    except OSError:
-        return None
+        info = target.target_info(pid=pid)
+    except ValueError as exc:
+        return {"ok": False, "error": "E_ARTIFACT_NOT_FOUND",
+                "message": str(exc)}
+    return artifacts.find(info)
 
 
-def default_dll_path() -> Path | None:
+def default_dll_path(pid: int | None = None) -> Path | None:
     override = os.environ.get("QT_COMMANDER_INJECT_DLL")
     if override:
         path = Path(override)
         return path if path.is_file() else None
-    root = Path(__file__).resolve().parents[1]
-    candidates = {
-        path.resolve()
-        for pattern in (
-            "build/*/qt-commander/qt_commander_inject.dll",
-            "build/*/qt_commander_inject.dll",
-            "build/*/qt-commander/libqt_commander_inject.so",
-            "build/*/libqt_commander_inject.so",
-        )
-        for path in root.glob(pattern)
-    }
-    return _newest(candidates)
+    found = _artifact_for_pid(pid)
+    if not found.get("ok"):
+        return None
+    relative = (found.get("manifest") or {}).get("library")
+    if not relative:
+        return None
+    path = Path(found["directory"]) / relative
+    return path if path.is_file() else None
 
 
-def default_injector_path() -> Path | None:
+def default_injector_path(pid: int | None = None) -> Path | None:
     override = os.environ.get("QT_COMMANDER_INJECTOR")
     if override:
         path = Path(override)
         return path if path.is_file() else None
-    root = Path(__file__).resolve().parents[1]
-    candidates = {
-        path.resolve()
-        for pattern in ("build/*/qt-commander/qtc-inject",
-                        "build/*/qt-commander/qtc-inject.exe",
-                        "build/*/qtc-inject",
-                        "build/*/qtc-inject.exe")
-        for path in root.glob(pattern)
-    }
-    return _newest(candidates)
+    found = _artifact_for_pid(pid)
+    if not found.get("ok"):
+        return None
+    relative = (found.get("manifest") or {}).get("injector")
+    if not relative:
+        return None
+    path = Path(found["directory"]) / relative
+    return path if path.is_file() else None
 
 
 def inject_library(pid: int, lib_path: Path, *, timeout_ms: int = 8000) -> None:
-    injector = default_injector_path() or shutil.which("qtc-inject")
+    injector = default_injector_path(pid)
     if injector is None:
         raise InjectionError(
             ErrorCode.INJECTION_FAILED.value,

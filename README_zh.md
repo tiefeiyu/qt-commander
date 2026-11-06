@@ -73,7 +73,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
   linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
-  linked、80 个 Python 测试和 MCP stdio E2E 也已验证。
+  linked、84 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
@@ -157,6 +157,30 @@ $env:QT_COMMANDER_RENDEZVOUS = "$PWD\.test-workspace\rendezvous"
 应用会把 `descriptor-<pid>.json` 写进该目录（一进程一份；POSIX 下仅属主
 可读写）。
 
+## 注入产物
+
+`qt_build` 只写入一个根目录：
+
+```text
+artifacts/<os>-<arch>/<compiler>-<version>/qt-<qt-version>-<debug|release>/
+  manifest.json
+  bin/qtc-inject.exe
+  lib/qt_commander_inject.dll   # Linux 为 libqt_commander_inject.so
+```
+
+例如：
+
+```text
+artifacts/windows-x64/msvc-19.29/qt-5.15.2-debug/
+artifacts/windows-x64/mingw-gcc-13.1/qt-5.15.2-release/
+artifacts/linux-x64/gcc-13.3/qt-6.8.3-release/
+```
+
+`qt_attach(mode="injection")` 按目标的 OS/架构、编译器家族、Qt 版本和
+Qt Debug/Release 匹配 `artifacts/` 下的 manifest；不扫描 `build/`，也不按
+修改时间挑最新文件。只有显式覆盖时才使用
+`QT_COMMANDER_INJECTOR` / `QT_COMMANDER_INJECT_DLL`。
+
 ## 启动 MCP server
 
 ```bash
@@ -199,7 +223,7 @@ QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
 uv run pytest tests/unit_server -q
 ```
 
-当前：**80 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+当前：**84 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
 
 纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
 

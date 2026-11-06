@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import struct
 from pathlib import Path
 from typing import Any
@@ -378,6 +379,27 @@ def target_info(pid: int | None = None,
     if descriptor_runtime and not runtime.get("evidence"):
         runtime["evidence"] = [f"descriptor:{data.get('library_build_id')}"]
     result.update(runtime)
+    system = platform.system().lower()
+    result["os"] = (
+        "windows" if system == "windows"
+        else "linux" if system == "linux"
+        else "macos" if system == "darwin"
+        else system or "unknown"
+    )
+    result["compiler"] = result.get("toolchain")
+    result["compiler_version"] = None
+    if isinstance(data.get("compiler"), dict):
+        family = data["compiler"].get("family")
+        version = data["compiler"].get("version")
+        if isinstance(family, str):
+            result["compiler"] = family
+        if isinstance(version, str):
+            result["compiler_version"] = version
+    if isinstance(data.get("os"), str):
+        result["os"] = data["os"]
+    if isinstance(data.get("arch"), str):
+        result["arch"] = data["arch"]
+    result["qt_debug"] = result.get("debug")
     if data:
         result["descriptor"] = {
             "session_id": data.get("session_id"),

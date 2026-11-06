@@ -704,7 +704,7 @@ inject：
 
 ### 测试
 
-- `uv run pytest tests/unit_server -q`：80 passed。
+- `uv run pytest tests/unit_server -q`：84 passed。
 - linked + MCP stdio E2E：通过（含歧义、nth、stale id、typed call、per-PID descriptor）。
 
 ### 待办

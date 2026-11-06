@@ -16,7 +16,7 @@ import psutil
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 
-from . import inject, ops, target
+from . import artifacts, inject, ops, target
 from .client import ClientClosed, ClientTimeout, RpcClient, RpcError
 from .environment import detect_qt_environments, detect_toolchains
 from .errors import ErrorCode
@@ -205,7 +205,7 @@ async def _await_descriptor_for_pid(pid: int, timeout_s: float = 20.0) -> Path |
 
 
 async def _inject_target(pid: int) -> Path | dict[str, Any]:
-    dll = inject.default_dll_path()
+    dll = inject.default_dll_path(pid)
     if dll is None:
         return _error(
             ErrorCode.INJECTION_FAILED.value,
@@ -438,6 +438,18 @@ async def _run_build_command(
     return process.returncode or 0, output.decode("utf-8", "replace")
 
 
+def _built_file(build: Path, names: tuple[str, ...]) -> Path | None:
+    for name in names:
+        matches = sorted(
+            path for path in build.rglob(name)
+            if (build / "bin") not in path.parents
+            and (build / "lib") not in path.parents
+        )
+        if matches:
+            return matches[0]
+    return None
+
+
 @mcp.tool
 async def qt_build(
     source_dir: str,
@@ -531,8 +543,39 @@ async def qt_build(
             return _error(ErrorCode.INVALID_ARGUMENT.value,
                           f"vcvars_path not found: {vcvars_path}")
 
+    compiler_version = None
+    if toolchain == "msvc":
+        tools = await asyncio.to_thread(detect_toolchains)
+        msvc = next(
+            (tool for tool in tools
+             if tool.get("name") == "msvc" and tool.get("version")),
+            None,
+        )
+        if msvc is not None:
+            compiler_version = msvc.get("version")
+    else:
+        compiler_version = artifacts.compiler_version(toolchain)
+    qt_bin = Path(kit["path"]) / "bin"
+    qt_debug = any(qt_bin.glob(f"Qt{qt_major}Cored.*"))
+    os_name = artifacts.os_slug()
+    artifact_dir = artifacts.build_dir(
+        os_name=os_name,
+        arch=arch,
+        compiler=toolchain,
+        compiler_version=compiler_version,
+        qt_version=version["version"],
+        qt_debug=qt_debug,
+    )
     build_id = f"qt{version['version']}/{toolchain}-{arch}/{build_type}"
-    build = Path(build_dir) if build_dir else source.parent / "builds" / build_id
+    build = (
+        Path(build_dir)
+        if build_dir
+        else artifacts.ROOT.parent / "build" / (
+            f"{os_name}-{arch}_"
+            f"{artifacts.compiler_slug(toolchain, compiler_version)}_"
+            f"{artifacts.qt_slug(version['version'], qt_debug)}"
+        )
+    )
     build.mkdir(parents=True, exist_ok=True)
     cmake = shutil.which("cmake")
     if not cmake:
@@ -625,10 +668,41 @@ async def qt_build(
                 "details": {"exit_code": code, "output": output[-8000:]},
             },
         }
+    injector = _built_file(
+        build, ("qtc-inject.exe", "qtc-inject")
+    )
+    library = _built_file(
+        build, ("qt_commander_inject.dll", "libqt_commander_inject.so")
+    )
+    artifact_manifest = None
+    bin_dir = artifact_dir / "bin"
+    lib_dir = artifact_dir / "lib"
+    if injector and library:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(injector, bin_dir / injector.name)
+        shutil.copy2(library, lib_dir / library.name)
+        artifact_manifest = artifacts.write_manifest(
+            artifact_dir,
+            os_name=os_name,
+            arch=arch,
+            compiler=toolchain,
+            compiler_version=compiler_version,
+            qt_version=version["version"],
+            qt_debug=qt_debug,
+            build_type=build_type,
+            injector=f"bin/{injector.name}",
+            library=f"lib/{library.name}",
+        )
     return {
         "ok": True,
         "build_id": build_id,
         "build_dir": str(build),
+        "artifact_dir": str(artifact_dir),
+        "injector": str(bin_dir / injector.name) if injector else None,
+        "library": str(lib_dir / library.name) if library else None,
+        "manifest": str(artifact_manifest) if artifact_manifest else None,
+        "warning": None if artifact_manifest else "build has no injector/library",
         "qt_version": version["version"],
         "kit": kit["path"],
         "toolchain": toolchain,
