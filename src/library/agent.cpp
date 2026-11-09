@@ -217,7 +217,10 @@ StartResult start(const StartOptions& options)
                       QJsonArray{QStringLiteral("query"), QStringLiteral("act"),
                                  QStringLiteral("screenshot"),
                                  QStringLiteral("get"), QStringLiteral("set"),
-                                 QStringLiteral("call"), QStringLiteral("items"), QStringLiteral("source")});
+                                 QStringLiteral("call"), QStringLiteral("items"),
+                                 QStringLiteral("source"),
+                                 QStringLiteral("windows"),
+                                 QStringLiteral("task")});
     descriptor.insert(
         QStringLiteral("exe_path"),
         QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath());

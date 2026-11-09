@@ -86,7 +86,7 @@ QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner);
 QString qmlTextContent(QQuickItem* item);
 bool qmlActionable(QQuickItem* item);
 
-constexpr const char* kLibraryVersion = "2.0.0";
+constexpr const char* kLibraryVersion = "2.1.0";
 
 bool validMatcher(const QJsonValue& spec)
 {
@@ -583,7 +583,8 @@ QJsonObject helloResult(const QString& tag)
                              QStringLiteral("screenshot"),
                              QStringLiteral("get"), QStringLiteral("set"),
                              QStringLiteral("call"), QStringLiteral("items"),
-                             QStringLiteral("source"), QStringLiteral("windows")});
+                             QStringLiteral("source"), QStringLiteral("windows"),
+                             QStringLiteral("task")});
     result.insert(QStringLiteral("session_tag"), tag);
     result.insert(QStringLiteral("limits"), limits);
     return result;
