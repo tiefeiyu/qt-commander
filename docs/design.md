@@ -11,7 +11,7 @@
 2. **Raw object tree**：对象树只做忠实记录——几何、身份、子节点、按需属性；不做 role/type/text/label/interactive 之类的语义投影。
 3. **Locator-first**：Agent 用「类/属性/文本/QML id/上下文」寻址，字符串句柄只作回执；动作在库内解析，避免 TOCTOU。
 4. **Budgeted projection**：任何返回都有节点/属性/图像预算，默认只给够用的一屏；超出返回明确错误，不静默截断。
-5. **Action = transaction**：一次 `qt_act` 完成解析、执行、settle、观察、expect；动作自己回报是否达成预期。
+5. **Action = transaction**：一次 `qt_act` 完成解析、执行、settle、观察、expect；动作自己回报是否达成预期。若目标在 `wait_ms` 内没有返回（典型是点击打开了 `exec()` 模态框），动作降级为任务：先回 `state:"running"` + `task_id`，结果由 `qt_task` 收口，期间队列不阻塞。
 6. **Typed failure**：失败是结构化数据（code / cause / retryable / hint / details），不是一句文案。
 7. **两种接入模式**：injection（闭源/黑盒）与 linked（白盒/有源码）；同一套协议与工具。
 
@@ -155,13 +155,14 @@ props: { ...过滤器... }
 | `qt_detach` | `(session_id, purge=False)`；purge 删除该会话的 descriptor 文件并触发一次 dead GC |
 | `qt_query` | `(where?, scope?, props=None, coords="parent", max_depth=-1, limit=200, include_hidden=False, occlusion=False, count_only=False, compact=False)` |
 | `qt_items` | `(owner: id|locator, where?, limit=50, offset=0, include_hidden=False, compact=False, nth=None, session_id=None)`；非 QObject 子项 |
-| `qt_act` | 单一动作入口；见 §5.3；`settle_ms>0` 走有界事件泵，`observed` 带 props/changed |
-| `qt_batch` | `(steps, stop_on_error=True, timeout_ms=30000, max_steps=50)`；steps 是 act/wait/set/get 的数组；整批共享一个 deadline，wait 被裁剪到剩余时间，超预算返回已完成步骤 + `cause="batch_timeout"`；等待预算在派发前校验 |
+| `qt_act` | 单一动作入口；见 §5.3；`settle_ms>0` 走有界事件泵，`observed` 带 props/changed；`wait_ms`（默认 1000）到期返回 `state:"running"` + `task_id` |
+| `qt_task` | `(task_id, wait_ms=0)`；读取异步任务结果：`state=running|done`，`done` 时结果在 `result`；未知/过期返回 `E_TASK_NOT_FOUND` |
+| `qt_batch` | `(steps, stop_on_error=True, timeout_ms=30000, max_steps=50)`；steps 是 act/wait/set/get 的数组；整批共享一个 deadline，wait 被裁剪到剩余时间，超预算返回已完成步骤 + `cause="batch_timeout"`；某步返回 `state:"running"` 时立即停止并返回 `cause="pending"` + `task_id`；等待预算在派发前校验 |
 | `qt_wait` | `(condition, timeout_ms=2000)`；条件同 expect |
 | `qt_screenshot` | `(target?, max_width=1024, annotate="none", where=None, max_labels=50, format="png")` |
 | `qt_get` | `(target, props=None)`；单节点/虚拟节点读取 |
-| `qt_set` | `(target, name, value)`；destructive |
-| `qt_call` | `(target, method, args=None)`；destructive；不返回 QObject* |
+| `qt_set` | `(target, name, value, wait_ms=3000)`；destructive |
+| `qt_call` | `(target, method, args=None, signature=None, wait_ms=3000)`；destructive；不返回 QObject*；`wait_ms` 到期返回 `state:"running"` + `task_id` |
 | `qt_source` | `(target, handler=None, snippet_lines=3, max_lines=20, source_dir=None)`；有界扫描 120 ms/20k 条目，返回 `search{roots,visited,truncated}`、`snippet`；`E_NO_DEBUGINFO` / `E_SOURCE_TIMEOUT` |
 
 ---
@@ -230,6 +231,7 @@ qt_act(
     expect=None,
     timeout_ms=2000,
     settle_ms=0,
+    wait_ms=1000,            # 超过后先回 running + task_id
     observe=True,
     input="auto",            # auto|pointer|api（invoke，待定）
     js_risk_ack=False,
@@ -239,6 +241,10 @@ qt_act(
 - 单一工具；`select`/`check` 不单列，用 click 组合。
 - 动作在库内、GUI 线程、执行前解析 locator；strict：多个命中返回 `E_AMBIGUOUS` + 候选，不猜。
 - 默认真实 QPA 管线；`input:"api"` 只对虚拟节点的 `invoke` 生效（待定）。
+- `wait_ms` 到期时动作仍在目标里执行（典型是点击打开了模态框）：先回
+  `{"ok": true, "state": "running", "pending": true, "task_id": "...", "elapsed_ms": ...}`，
+  动作移入 inflight，不阻塞队列；完成后结果写入任务表，由 `qt_task` 取回。
+  此时不执行 expect（没有 `resolved` 快照），Agent 应改用 `qt_task` + `qt_wait`。
 - 返回：
 
 ```json
@@ -676,9 +682,10 @@ inject：
 ### MCP 16 工具
 
 - `qt_screenshot` 在 MCP 层限制单张 PNG 约 6 MiB；超限会自动降低 `max_width` 重截并返回 `auto_downscaled/requested_max_width`，避免大图导致 MCP 连接断开。截图使用 widget grab（而不是原生窗口 grabWindow），避免 Windows 标题栏造成 annotation 偏移。`width` 是逻辑宽度，`pixel_width` 是 dpr 放大后的实际图像宽度；无 target 时只有可见普通 top-level 窗口参与歧义判断，QMenu/QToolTip 等 popup 不计入。
-- `qt_commander/server.py` 注册 16 个工具：`status/environments/build/attach/detach/windows/query/items/act/batch/wait/screenshot/get/set/call/source`。
+- `qt_commander/server.py` 注册 21 个工具：`status/target_info/processes/environments/build/build_status/attach/detach/windows/query/items/act/batch/wait/screenshot/get/set/call/methods/source/task`。
 - `scripts/mcp_linked_smoke.py` 通过 stdio 实测：`qt_attach` → `qt_windows`/`qt_query` → `qt_act` → `qt_screenshot` → `qt_detach`；另测 `qt_get`/`qt_set`/`qt_call` 和 `qt_items`。
-- 当前可用：linked/injection attach/detach、windows（top-level id/title/active/modal/screen_pos）、query、items、act（click/dblclick/type/focus/key/scroll/hover/drag）、batch/wait、screenshot、get/set/call、source、build、environments。
+- 当前可用：linked/injection attach/detach、windows（top-level id/title/active/modal/screen_pos）、query、items、act（click/dblclick/type/focus/key/scroll/hover/drag）、batch/wait、screenshot、get/set/call、source、task、build、environments。
+- 目标端所有数据请求进同一条 FIFO 队列，由事件循环里的 job 执行（`handle()` 只解析和投递），因此槽里 `exec()` 卡住时同一条连接仍能继续收请求。`act`/`call`/`set` 带 `wait_ms`（默认 1000/3000 ms）：超时先回 `{state:"running", task_id}`，任务完成后结果写入任务表（TTL 5 分钟、上限 256），`qt_task(task_id, wait_ms)` 取回；已响应但仍在执行的任务不阻塞队列，`ping` 返回 `queued/inflight/active`。
 - `qt_windows` 返回每个 top-level 窗口的 `id/class/objectName/title/rect/screen_pos/screen/visible/minimized/active/modal/popup/tooltip/child_count`；支持 `visible`、`class` matcher、`limit/offset` 过滤/分页；父窗口下的 dialog 也会在列表中出现。没有 target 的 `qt_screenshot` 在多个可见 top-level 窗口时返回 `E_AMBIGUOUS`，不会静默选 activeWindow；最小化窗口的 screenshot/act 明确返回 `E_HIDDEN`。
 - `qt_environments` 扫描显式根/常见 Qt 安装路径/PATH，返回版本、kit、compiler 和可见 C++ 工具链。
 - `qt_source` 先按 objectName 搜索 `.ui`；QQuickWidget 再取 `rootObject()->objectName()` 搜索 `.qml`。搜索根为 `QT_COMMANDER_SOURCE_DIR`、可执行目录、当前目录（各最多 500 个文件）。命中返回 `origin:"ui"|"qml"` + file/line/confidence medium；未命中返回 identity + `E_NO_DEBUGINFO`。实测 `.ui` btnA 与 QML quick 均命中。
@@ -707,8 +714,9 @@ inject：
 
 ### 测试
 
-- `uv run pytest tests/unit_server -q`：84 passed。
+- `uv run pytest tests/unit_server -q`：103 passed（含 pending/task/batch 单测）。
 - linked + MCP stdio E2E：通过（含歧义、nth、stale id、typed call、per-PID descriptor）。
+- `scripts/task_regression.py`（目标 `tests/test-apps/modal`）：快速 act、pending+task_id、pending 期间 ping/query、同连接关闭、`qt_task` 收口、未知任务、嵌套两层 exec、`WA_DeleteOnClose`+settle、batch 遇 pending 停止、服务端 `wait_ms` 默认值、8 轮 soak；MinGW/Qt5 与 Qt6 实测通过。
 
 ### 待办
 
@@ -716,6 +724,23 @@ inject：
 2. 自定义 model/复杂代理 provider。
 3. QML 构建目标与 QML source location。
 4. 每个里程碑后跑多视角子代理评审（正确性/安全、设计/复用、性能/测试）。
+
+### 历史决策（2026-11-09 评估记录）
+
+13 项优化经逐条源码核实后实施；一次性报告已删除，需要原文时见 git 历史
+（`docs/qt-commander-flow-and-playwright-comparison-2026-11-09.md`）。结论摘录：
+
+- 已实施：`qt_source` 有界扫描（GUI 68.8 s → 0.13 s，`E_SOURCE_TIMEOUT`）；
+  `qt_build` 后台 job + `wait_s` + 取消杀进程 + build 目录隔离；artifact 选择
+  “精确版本 > 唯一带版本 > 歧义” + `artifact_dir`；`qt_processes` 三级判定
+  （descriptor / adjacent / loaded modules）；`qt_items(owner=locator)`；
+  `where` 支持 `inherits`；隐藏剪枝返回 `hidden_matched`；`compact=true`；
+  `settlePump` + `settled_ms` + `observed.changed`；descriptor GC；校验错误统一为
+  `E_INVALID_ARGUMENT`。
+- 未采纳：`session_id` 全部可选（破坏性工具自动选进程是安全退化）；
+  `qt_source` 迁到 Python（丢失 `QQmlContext::baseUrl`/qrc 信息，会拆成两套实现）。
+- 暂缓：工具描述/schema 瘦身（schema 体积无法靠删描述解决）；`qt_batch` 动作 DSL
+  （步骤间传值/条件/循环）。
 
 
 

@@ -72,6 +72,16 @@ Prompt: "Operate this non-Qt process."
 
 Pass: agent does not force-attach; reports that it is not a Qt UI.
 
+### T11 — modal dialog (async task)
+
+Prompt: "Open the Settings dialog, switch the theme to dark, and close it."
+
+Pass: the click that opens the dialog returns `{"state": "running", "task_id": ...}`;
+the agent **does not retry** it, drives the dialog with `qt_windows`/`qt_query`/`qt_act`
+on the same session, then collects the original result with `qt_task(task_id)`.
+Failure modes to watch: retrying the pending click, or waiting on it without
+inspecting the dialog.
+
 ## Metrics
 
 Record:

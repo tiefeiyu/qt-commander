@@ -279,6 +279,7 @@ async def act(
     expect: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
     timeout_ms: int = 2000,
     settle_ms: int = 0,
+    wait_ms: int = 1000,
     observe: bool = True,
     input: str = "auto",
     include_hidden: bool = False,
@@ -314,6 +315,7 @@ async def act(
             "duration_ms": duration_ms,
             "timeout_ms": timeout_ms,
             "settle_ms": settle_ms,
+            "wait_ms": wait_ms,
             "observe": observe,
             "input": input,
             "js_risk_ack": js_risk_ack,
@@ -321,11 +323,12 @@ async def act(
     )
     if include_hidden:
         params["include_hidden"] = True
-    rpc_timeout = max(
-        1.0,
-        (settle_ms + duration_ms) / 1000.0 + ACT_RPC_MARGIN_S,
-    )
+    rpc_timeout = max(2.0, wait_ms / 1000.0 + ACT_RPC_MARGIN_S)
     result = await session.call("act", params, timeout=rpc_timeout)
+    if result.get("pending") or result.get("state") == "running":
+        # The action is still running inside the target; the queue has been
+        # released and the result will be available under task_id.
+        return result
     if expect_conditions is None or result.get("ok") is False:
         return result
     resolved = result.get("resolved")
@@ -376,14 +379,18 @@ async def set_property(
     value: Any,
     nth: int | None = None,
     include_hidden: bool = False,
+    *,
+    wait_ms: int = 3000,
 ) -> dict[str, Any]:
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
     params = _clean({"target": target, "name": name, "value": value,
-                     "nth": nth})
+                     "nth": nth, "wait_ms": wait_ms})
     if include_hidden:
         params["include_hidden"] = True
-    return await session.call("set", params)
+    return await session.call(
+        "set", params, timeout=max(2.0, wait_ms / 1000.0 + ACT_RPC_MARGIN_S)
+    )
 
 
 async def call_method(
@@ -394,14 +401,53 @@ async def call_method(
     nth: int | None = None,
     signature: str | None = None,
     include_hidden: bool = False,
+    *,
+    wait_ms: int = 3000,
 ) -> dict[str, Any]:
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
     params = _clean({"target": target, "method": method, "args": args,
-                     "nth": nth, "signature": signature})
+                     "nth": nth, "signature": signature,
+                     "wait_ms": wait_ms})
     if include_hidden:
         params["include_hidden"] = True
-    return await session.call("call", params)
+    return await session.call(
+        "call", params, timeout=max(2.0, wait_ms / 1000.0 + ACT_RPC_MARGIN_S)
+    )
+
+
+TASK_POLL_S = 0.1
+
+
+async def task(
+    session: Session,
+    task_id: str,
+    *,
+    wait_ms: int = 0,
+) -> dict[str, Any]:
+    """Fetch the result of an async task, optionally waiting up to wait_ms.
+
+    Returns ``{"state": "running"}`` when the task has not finished yet,
+    ``{"state": "done", "result": {...}}`` once it has, and an error
+    ``E_TASK_NOT_FOUND`` when the id is unknown or expired.
+    """
+    if not task_id:
+        raise ValueError("task_id is required")
+    if wait_ms < 0:
+        raise ValueError("wait_ms must be >= 0")
+    deadline = time.monotonic() + wait_ms / 1000.0
+    while True:
+        result = await session.call(
+            "task",
+            {"task_id": task_id},
+            timeout=max(2.0, min(30.0, wait_ms / 1000.0 + 5.0)),
+        )
+        if result.get("state") != "running":
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+        await asyncio.sleep(min(TASK_POLL_S, remaining))
 
 
 async def screenshot(
@@ -667,6 +713,7 @@ async def batch(
     results: list[dict[str, Any]] = []
     ok = True
     cause: str | None = None
+    pending_task_id: str | None = None
     for kind, payload in validated:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -706,6 +753,14 @@ async def batch(
         except (RpcError, ClientTimeout, ClientClosed, ValueError, TypeError) as exc:
             result = _batch_error(exc)
         results.append(result)
+        if result.get("pending") or result.get("state") == "running":
+            # The step is still executing in the target (typically a modal
+            # dialog opened by an act). Later steps would run while it is
+            # unsettled, so stop and hand the task id back to the caller.
+            ok = False
+            cause = "pending"
+            pending_task_id = result.get("task_id")
+            break
         failed = result.get("ok") is False or result.get("matched") is False
         if failed:
             ok = False
@@ -716,5 +771,7 @@ async def batch(
         payload_result["cause"] = cause
         payload_result["timeout_ms"] = timeout_ms
         payload_result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+        if cause == "pending" and pending_task_id:
+            payload_result["task_id"] = pending_task_id
     return payload_result
 

@@ -73,7 +73,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 
 - 本仓库实测 Qt 5.15.2（MinGW/MSVC）与 Qt 6.8.3（MinGW/MSVC），
   linked 与 injection 均验证；Ubuntu 24.04 + Qt 5.15.2 gcc_64（XCB）的
-  linked、84 个 Python 测试和 MCP stdio E2E 也已验证。
+  linked、99 个 Python 测试和 MCP stdio E2E 也已验证。
 - linked mode：应用在 `QApplication` 之后调用 `qt_commander::start()`，
   写出 rendezvous descriptor。
 - 原生 injection（Windows/Linux）：`qt_attach(pid=..., mode="injection")`
@@ -83,13 +83,19 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 20 个 MCP 工具。当前可用：
+- 已注册 21 个 MCP 工具。当前可用：
   `status`、`target_info`、`processes`、`environments`、`build`、`build_status`、
   `attach`、`detach`、`windows`、`query`、`items`、`act`、`batch`、`wait`、
-  `screenshot`、`get`、`set`、`call`、`methods`、`source`。`source` 只做有界扫描
+  `screenshot`、`get`、`set`、`call`、`methods`、`source`、`task`。`source` 只做有界扫描
   （默认 120 ms / 2 万条目预算，结果带 `search{roots,visited,truncated}`），
   未命中返回 `E_NO_DEBUGINFO`，预算耗尽返回 `E_SOURCE_TIMEOUT`；命中时可按
   `snippet_lines`/`max_lines` 返回代码片段。
+- 目标端所有数据请求进同一条 FIFO 队列、由目标的事件循环执行，所以槽卡在
+  `exec()` 里不再占用 socket：读请求、`act` 和 `qt_task` 在同一条连接上照常工作。
+  `qt_act`/`qt_call`/`qt_set` 支持 `wait_ms`（默认 1000/3000/3000 ms），超时返回
+  `{"state":"running","task_id":...}`，结果存入任务表，之后用
+  `qt_task(task_id, wait_ms=...)` 取回。这类调用**已经派发**，不要重试；
+  `ping` 会返回 `queued`/`inflight`/`active` 便于诊断。
 - `qt_build` 是后台 job：`wait_s` 内没完成会返回 `status:"running"` + `job_id`，
   用 `qt_build_status` 查询；相同参数的重复调用复用一个 job。构建目录被其它源码
   占用时会自动隔离到 `_<hash>` 后缀，不再覆盖别人的 build tree。
@@ -249,7 +255,7 @@ QQuickWindow。`qt_query(scope=...)` 可以限定到单个窗口/控件子树；
 uv run pytest tests/unit_server -q
 ```
 
-当前：**84 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
+当前：**99 passed**（Qt5 MinGW/MSVC 测试应用单独构建）。
 
 纯 QML 回归程序与 linked 使用同样的 Qt 参数构建：
 
@@ -271,6 +277,13 @@ uv run python scripts/qml_window_test.py
 
 # 原生 injection smoke（传入目标 pid）
 uv run python scripts/injection_smoke.py <pid> --mode injection
+
+# 异步任务队列：pending -> task_id -> qt_task、嵌套 exec、batch、soak
+cmake -S tests/test-apps/modal -B build/modal-mingw5 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=5 \
+  -DQt5_DIR=/path/to/Qt/5.15.2/mingw81_64/lib/cmake/Qt5
+cmake --build build/modal-mingw5
+uv run python scripts/task_regression.py
 
 # P0 benchmark
 uv run python scripts/p0_large.py --label large-7000

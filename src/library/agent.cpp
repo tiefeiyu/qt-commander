@@ -144,7 +144,7 @@ StartResult start(const StartOptions& options)
 
     QJsonObject protocol;
     protocol.insert(QStringLiteral("major"), 2);
-    protocol.insert(QStringLiteral("minor"), 0);
+    protocol.insert(QStringLiteral("minor"), 1);
 
     QJsonObject qt;
     qt.insert(QStringLiteral("major"), QT_VERSION_MAJOR);

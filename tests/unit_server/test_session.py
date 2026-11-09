@@ -32,6 +32,7 @@ class FakeClient:
         self.timeouts: list[float | None] = []
         self.query_counts: list[int] = []
         self.act_results: list[dict] = []
+        self.task_results: list[dict] = []
         self.fail_methods: dict[str, Exception] = {}
         self.closed = False
 
@@ -45,6 +46,9 @@ class FakeClient:
             return {"count": count}
         if method == "act":
             return self.act_results.pop(0) if self.act_results else {"ok": True}
+        if method == "task":
+            return (self.task_results.pop(0) if self.task_results
+                    else {"state": "done", "task_id": "t"})
         return {"ok": True, "method": method}
 
     async def call_frame(self, method, params=None, *, timeout=None, op_id=None):
@@ -200,8 +204,10 @@ async def test_items_and_property_ops():
                 "compact": True,
             },
         ),
-        ("set", {"target": "7f3a.42", "name": "text", "value": "hello"}),
-        ("call", {"target": "7f3a.42", "method": "click", "args": [1]}),
+        ("set", {"target": "7f3a.42", "name": "text", "value": "hello",
+                 "wait_ms": 3000}),
+        ("call", {"target": "7f3a.42", "method": "click", "args": [1],
+                  "wait_ms": 3000}),
     ]
 
 
@@ -475,3 +481,67 @@ async def test_session_manager_close_all():
     await manager.close_all()
     assert client.closed is True
     assert manager.list() == []
+
+
+@pytest.mark.asyncio
+async def test_act_returns_pending_without_expect_polling():
+    session, client = make_session()
+    client.act_results = [
+        {"ok": True, "state": "running", "pending": True, "task_id": "t-1"},
+    ]
+    result = await ops.act(
+        session, "7f3a.1", "click", expect={"props": {"text": "done"}}
+    )
+    assert result["state"] == "running"
+    assert result["task_id"] == "t-1"
+    assert "expect" not in result
+    # only the act itself was sent; no query polling happened
+    assert [call[0] for call in client.calls] == ["act"]
+
+
+@pytest.mark.asyncio
+async def test_task_polls_until_done():
+    session, client = make_session()
+    client.task_results = [
+        {"state": "running", "task_id": "t-9"},
+        {"state": "running", "task_id": "t-9"},
+        {"state": "done", "task_id": "t-9", "result": {"ok": True}},
+    ]
+    result = await ops.task(session, "t-9", wait_ms=2000)
+    assert result["state"] == "done"
+    assert result["result"] == {"ok": True}
+    assert [call[0] for call in client.calls] == ["task"] * 3
+    assert client.calls[0][1] == {"task_id": "t-9"}
+
+
+@pytest.mark.asyncio
+async def test_task_poll_stops_at_deadline():
+    session, client = make_session()
+    client.task_results = [{"state": "running", "task_id": "t-9"}]
+    result = await ops.task(session, "t-9", wait_ms=0)
+    assert result["state"] == "running"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_stops_at_pending_step():
+    session, client = make_session()
+    client.act_results = [
+        {"ok": True, "state": "running", "pending": True, "task_id": "t-7"},
+        {"ok": True},
+    ]
+    result = await ops.batch(
+        session,
+        [
+            {"act": {"target": "7f3a.1", "action": "click"}},
+            {"act": {"target": "7f3a.1", "action": "click"}},
+        ],
+        timeout_ms=5000,
+    )
+    assert result["ok"] is False
+    assert result["cause"] == "pending"
+    assert result["task_id"] == "t-7"
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["task_id"] == "t-7"
+    # the second step was never dispatched
+    assert [call[0] for call in client.calls] == ["act"]

@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QAction>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QObject>
 #include <QPersistentModelIndex>
 #include <QPointer>
+#include <QQueue>
 #include <QRect>
 #include <QVariant>
 #include <QSet>
@@ -15,6 +17,7 @@
 #include "protocol.h"
 
 class QTcpSocket;
+class QTimer;
 class QWidget;
 class QQuickItem;
 class QQuickWidget;
@@ -22,6 +25,22 @@ class QQuickWindow;
 class QWindow;
 
 namespace qt_commander {
+
+// One queued request. Every data request is turned into a Task and executed
+// from the event loop instead of from onReadyRead(), so a blocking slot can
+// never hold the socket read path.
+struct Task {
+    QString id;
+    QString method;
+    QJsonObject params;
+    QJsonValue requestId;
+    QPointer<QTcpSocket> socket;
+    bool mutating = false;
+    bool responded = false;
+    int waitMs = -1; // < 0: no deadline
+    QTimer* timer = nullptr;
+    QElapsedTimer clock;
+};
 
 class Server : public QObject {
     Q_OBJECT
@@ -70,6 +89,17 @@ private:
     };
 
     void handle(QTcpSocket* socket, const QJsonObject& message);
+    void enqueue(QTcpSocket* socket, const QJsonValue& id,
+                 const QString& method, const QJsonObject& params);
+    void pump();
+    void runNext();
+    void onTaskTimeout(Task* task);
+    void finishTask(Task* task, const QJsonObject& result,
+                    const QByteArray& binary);
+    QJsonObject taskInfo(const QJsonObject& params);
+    void pruneTasks();
+    void sendOperationError(QTcpSocket* socket, const QJsonValue& id,
+                            const QJsonObject& result);
     void sendResult(QTcpSocket* socket, const QJsonValue& id,
                     const QJsonObject& result);
     void sendError(QTcpSocket* socket, const QJsonValue& id,
@@ -147,6 +177,16 @@ private:
     QHash<QTcpSocket*, FrameParser> parsers_;
     QSet<QTcpSocket*> authenticated_;
     QSet<QTcpSocket*> handling_;
+    QQueue<Task*> queue_;
+    Task* active_ = nullptr;
+    QHash<QString, Task*> inflight_;
+    struct CompletedTask {
+        QJsonObject result;
+        QByteArray binary;
+        QElapsedTimer finishedAt;
+    };
+    QHash<QString, CompletedTask> completed_;
+    quint64 taskCounter_ = 0;
     QHash<QWidget*, QString> ids_;
     QHash<QString, QPointer<QWidget>> idToWidget_;
     QHash<QWindow*, QString> windowIds_;

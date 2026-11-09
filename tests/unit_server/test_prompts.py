@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "qt_call",
     "qt_methods",
     "qt_source",
+    "qt_task",
 }
 
 
@@ -49,6 +50,9 @@ async def test_mcp_instructions_cover_the_operating_loop():
     assert "E_HIDDEN" in instructions
     assert "include_hidden" in instructions
     assert "qt_methods" in instructions
+    assert "qt_task" in instructions
+    assert 'state": "running"' in instructions or "state" in instructions
+    assert "wait_ms" in instructions
     assert "property setters" in " ".join(instructions.split())
 
 
@@ -64,6 +68,10 @@ async def test_tool_descriptions_match_current_features():
     assert '"get":' in tools["qt_batch"].description
     assert "batch_timeout" in tools["qt_batch"].description
     assert "Q_INVOKABLE" in tools["qt_call"].description
+    assert "wait_ms" in tools["qt_act"].parameters["properties"]
+    assert "wait_ms" in tools["qt_call"].parameters["properties"]
+    assert "task_id" in tools["qt_task"].description
+    assert "running" in tools["qt_task"].description
     assert "source_dir" in tools["qt_source"].description
     assert "E_NO_DEBUGINFO" in tools["qt_source"].description
     assert "pending" not in tools["qt_source"].description.lower()

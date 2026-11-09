@@ -55,6 +55,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QTreeView>
 #include <QWheelEvent>
 #include <QQmlContext>
@@ -1033,6 +1034,10 @@ Server::Server(QString token, QString tag, QObject* parent)
 {
     connect(&server_, &QTcpServer::newConnection,
             this, &Server::onNewConnection);
+    auto* prune = new QTimer(this);
+    prune->setInterval(30000);
+    connect(prune, &QTimer::timeout, this, &Server::pruneTasks);
+    prune->start();
 }
 
 bool Server::listen(quint16* port, QString* error)
@@ -1098,6 +1103,14 @@ void Server::onDisconnected()
     parsers_.remove(socket);
     authenticated_.remove(socket);
     handling_.remove(socket);
+    for (auto it = queue_.begin(); it != queue_.end();) {
+        if ((*it)->socket == socket) {
+            delete *it;
+            it = queue_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     socket->deleteLater();
 }
 
@@ -1142,14 +1155,6 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     const QJsonValue id = message.value(QStringLiteral("id"));
     const QString method = message.value(QStringLiteral("method")).toString();
     const QJsonObject params = message.value(QStringLiteral("params")).toObject();
-    auto sendOperationError = [&](const QJsonObject& result) {
-        QJsonObject details;
-        if (result.contains(QStringLiteral("candidates")))
-            details.insert(QStringLiteral("candidates"),
-                           result.value(QStringLiteral("candidates")));
-        sendError(socket, id, result.value(QStringLiteral("error")).toString(),
-                  result.value(QStringLiteral("message")).toString(), details);
-    };
 
     if (method == QStringLiteral("hello")) {
         if (params.value(QStringLiteral("protocol")).toInt(0) != 2) {
@@ -1180,94 +1185,10 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
     if (method == QStringLiteral("ping")) {
         QJsonObject result;
         result.insert(QStringLiteral("pong"), true);
+        result.insert(QStringLiteral("queued"), queue_.size());
+        result.insert(QStringLiteral("inflight"), inflight_.size());
+        result.insert(QStringLiteral("active"), active_ != nullptr);
         sendResult(socket, id, result);
-        return;
-    }
-    if (method == QStringLiteral("windows")) {
-        QJsonObject result = windows(params);
-        sendResult(socket, id, result);
-        return;
-    }
-    if (method == QStringLiteral("query")) {
-        QJsonObject result = query(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("act")) {
-        QJsonObject result = act(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("screenshot")) {
-        QByteArray binary;
-        QJsonObject result = screenshot(params, &binary);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendBinaryResult(socket, id, result, binary);
-        }
-        return;
-    }
-    if (method == QStringLiteral("get")) {
-        QJsonObject result = get(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("set")) {
-        QJsonObject result = setProperty(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("call")) {
-        QJsonObject result = call(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("methods")) {
-        QJsonObject result = methods(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("items")) {
-        QJsonObject result = items(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
-        return;
-    }
-    if (method == QStringLiteral("source")) {
-        QJsonObject result = source(params);
-        if (result.contains(QStringLiteral("error"))) {
-            sendOperationError(result);
-        } else {
-            sendResult(socket, id, result);
-        }
         return;
     }
     if (method == QStringLiteral("shutdown")) {
@@ -1275,8 +1196,247 @@ void Server::handle(QTcpSocket* socket, const QJsonObject& message)
         socket->disconnectFromHost();
         return;
     }
+    if (method == QStringLiteral("task")) {
+        QJsonObject result = taskInfo(params);
+        if (result.contains(QStringLiteral("error"))) {
+            sendOperationError(socket, id, result);
+        } else {
+            sendResult(socket, id, result);
+        }
+        return;
+    }
+    if (method == QStringLiteral("windows") ||
+        method == QStringLiteral("query") ||
+        method == QStringLiteral("act") ||
+        method == QStringLiteral("screenshot") ||
+        method == QStringLiteral("get") ||
+        method == QStringLiteral("set") ||
+        method == QStringLiteral("call") ||
+        method == QStringLiteral("methods") ||
+        method == QStringLiteral("items") ||
+        method == QStringLiteral("source")) {
+        enqueue(socket, id, method, params);
+        return;
+    }
     sendError(socket, id, QStringLiteral("E_PROTOCOL"),
               QStringLiteral("unknown method: %1").arg(method));
+}
+
+void Server::sendOperationError(QTcpSocket* socket, const QJsonValue& id,
+                                const QJsonObject& result)
+{
+    QJsonObject details;
+    if (result.contains(QStringLiteral("candidates")))
+        details.insert(QStringLiteral("candidates"),
+                       result.value(QStringLiteral("candidates")));
+    sendError(socket, id, result.value(QStringLiteral("error")).toString(),
+              result.value(QStringLiteral("message")).toString(), details);
+}
+
+void Server::enqueue(QTcpSocket* socket, const QJsonValue& id,
+                     const QString& method, const QJsonObject& params)
+{
+    auto* task = new Task;
+    task->id = tag_ + QLatin1Char('-') + QString::number(++taskCounter_);
+    task->method = method;
+    task->params = params;
+    task->requestId = id;
+    task->socket = socket;
+    task->mutating = method == QStringLiteral("act") ||
+                     method == QStringLiteral("call") ||
+                     method == QStringLiteral("set");
+    if (params.contains(QStringLiteral("wait_ms")))
+        task->waitMs = params.value(QStringLiteral("wait_ms")).toInt(-1);
+    else if (task->mutating)
+        task->waitMs =
+            method == QStringLiteral("act") ? 1000 : 3000;
+    task->clock.start();
+    queue_.enqueue(task);
+    pump();
+}
+
+void Server::pump()
+{
+    if (active_ || queue_.isEmpty())
+        return;
+    // Never start the next task from inside a response callback: post it so
+    // nested event loops (modal dialogs) pick it up on their own turn.
+    QMetaObject::invokeMethod(
+        this, [this]() { runNext(); }, Qt::QueuedConnection);
+}
+
+void Server::runNext()
+{
+    if (active_ || queue_.isEmpty())
+        return;
+    Task* task = queue_.dequeue();
+    if (task->socket.isNull()) {
+        delete task;
+        pump();
+        return;
+    }
+    active_ = task;
+    if (task->waitMs >= 0) {
+        auto* timer = new QTimer(this);
+        timer->setSingleShot(true);
+        timer->setTimerType(Qt::PreciseTimer);
+        task->timer = timer;
+        connect(timer, &QTimer::timeout, this,
+                [this, task]() { onTaskTimeout(task); });
+        timer->start(task->waitMs);
+    }
+    const QString method = task->method;
+    QJsonObject result;
+    QByteArray binary;
+    if (method == QStringLiteral("windows")) {
+        result = windows(task->params);
+    } else if (method == QStringLiteral("query")) {
+        result = query(task->params);
+    } else if (method == QStringLiteral("act")) {
+        result = act(task->params);
+    } else if (method == QStringLiteral("screenshot")) {
+        result = screenshot(task->params, &binary);
+    } else if (method == QStringLiteral("get")) {
+        result = get(task->params);
+    } else if (method == QStringLiteral("set")) {
+        result = setProperty(task->params);
+    } else if (method == QStringLiteral("call")) {
+        result = call(task->params);
+    } else if (method == QStringLiteral("methods")) {
+        result = methods(task->params);
+    } else if (method == QStringLiteral("items")) {
+        result = items(task->params);
+    } else if (method == QStringLiteral("source")) {
+        result = source(task->params);
+    } else {
+        result.insert(QStringLiteral("error"), QStringLiteral("E_PROTOCOL"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("unknown queued method"));
+    }
+    finishTask(task, result, binary);
+}
+
+void Server::onTaskTimeout(Task* task)
+{
+    if (!task || task->responded || active_ != task)
+        return;
+    task->responded = true;
+    if (task->timer) {
+        task->timer->stop();
+        task->timer->deleteLater();
+        task->timer = nullptr;
+    }
+    if (!task->socket.isNull()) {
+        QJsonObject pending;
+        pending.insert(QStringLiteral("ok"), true);
+        pending.insert(QStringLiteral("state"), QStringLiteral("running"));
+        pending.insert(QStringLiteral("pending"), true);
+        pending.insert(QStringLiteral("task_id"), task->id);
+        pending.insert(QStringLiteral("method"), task->method);
+        pending.insert(QStringLiteral("elapsed_ms"),
+                       int(task->clock.elapsed()));
+        sendResult(task->socket, task->requestId, pending);
+    }
+    // The task is still on the stack; keep it alive until it finishes, but
+    // let the queue advance now.
+    inflight_.insert(task->id, task);
+    active_ = nullptr;
+    pump();
+}
+
+void Server::finishTask(Task* task, const QJsonObject& result,
+                        const QByteArray& binary)
+{
+    if (!task)
+        return;
+    if (task->timer) {
+        task->timer->stop();
+        task->timer->deleteLater();
+        task->timer = nullptr;
+    }
+    if (task->responded) {
+        CompletedTask done;
+        done.result = result;
+        done.binary = binary;
+        done.finishedAt.start();
+        completed_.insert(task->id, done);
+    } else if (!task->socket.isNull()) {
+        if (result.contains(QStringLiteral("error"))) {
+            sendOperationError(task->socket, task->requestId, result);
+        } else if (!binary.isEmpty()) {
+            sendBinaryResult(task->socket, task->requestId, result, binary);
+        } else {
+            sendResult(task->socket, task->requestId, result);
+        }
+    }
+    inflight_.remove(task->id);
+    if (active_ == task)
+        active_ = nullptr;
+    delete task;
+    pump();
+}
+
+QJsonObject Server::taskInfo(const QJsonObject& params)
+{
+    const QString id = params.value(QStringLiteral("task_id")).toString();
+    QJsonObject result;
+    if (id.isEmpty()) {
+        result.insert(QStringLiteral("error"),
+                      QStringLiteral("E_INVALID_ARGUMENT"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("task_id is required"));
+        return result;
+    }
+    if (Task* running = inflight_.value(id, nullptr)) {
+        result.insert(QStringLiteral("state"), QStringLiteral("running"));
+        result.insert(QStringLiteral("task_id"), id);
+        result.insert(QStringLiteral("pending"), true);
+        result.insert(QStringLiteral("method"), running->method);
+        result.insert(QStringLiteral("elapsed_ms"),
+                      int(running->clock.elapsed()));
+        return result;
+    }
+    auto it = completed_.constFind(id);
+    if (it != completed_.constEnd()) {
+        result.insert(QStringLiteral("state"), QStringLiteral("done"));
+        result.insert(QStringLiteral("task_id"), id);
+        result.insert(QStringLiteral("result"), it->result);
+        if (!it->binary.isEmpty())
+            result.insert(QStringLiteral("binary_bytes"), it->binary.size());
+        return result;
+    }
+    result.insert(QStringLiteral("error"), QStringLiteral("E_TASK_NOT_FOUND"));
+    result.insert(QStringLiteral("message"),
+                  QStringLiteral("unknown or expired task: %1").arg(id));
+    return result;
+}
+
+void Server::pruneTasks()
+{
+    constexpr qint64 kTtlMs = 5 * 60 * 1000;
+    for (auto it = completed_.begin(); it != completed_.end();) {
+        if (it->finishedAt.isValid() && it->finishedAt.elapsed() > kTtlMs)
+            it = completed_.erase(it);
+        else
+            ++it;
+    }
+    constexpr int kMaxCompleted = 256;
+    while (completed_.size() > kMaxCompleted) {
+        QString oldest;
+        qint64 oldestAge = -1;
+        for (auto it = completed_.constBegin(); it != completed_.constEnd();
+             ++it) {
+            const qint64 age =
+                it->finishedAt.isValid() ? it->finishedAt.elapsed() : 0;
+            if (age > oldestAge) {
+                oldestAge = age;
+                oldest = it.key();
+            }
+        }
+        if (oldest.isEmpty())
+            break;
+        completed_.remove(oldest);
+    }
 }
 
 QJsonObject Server::windows(const QJsonObject& params)

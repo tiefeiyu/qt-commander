@@ -79,7 +79,7 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 
 - Qt 5.15.2 verified with MinGW/MSVC; Qt 6.8.3 verified with both MinGW and
   MSVC for linked and injection. Ubuntu 24.04 + Qt 5.15.2 gcc_64 (XCB)
-  verified for linked, the 84-test Python suite, and MCP stdio E2E.
+  verified for linked, the 99-test Python suite, and MCP stdio E2E.
 - Linked mode: the application calls `qt_commander::start()` after
   `QApplication` and writes a rendezvous descriptor.
 - Native injection (Windows and Linux): `qt_attach(pid=..., mode="injection")`
@@ -90,12 +90,21 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
-- 19 MCP tools are registered. Working today:
-  `status`, `target_info`, `processes`, `environments`, `build`, `attach`,
-  `detach`, `windows`, `query`, `items`, `act`, `batch`, `wait`, `screenshot`,
-  `get`, `set`, `call`, `methods`, `source`. `source` searches the target's source tree (and
-  `QT_COMMANDER_SOURCE_DIR` / an explicit `source_dir`) for matching `.ui` or
-  `.qml`; unresolved targets return identity with `E_NO_DEBUGINFO`.
+- 21 MCP tools are registered. Working today:
+  `status`, `target_info`, `processes`, `environments`, `build`, `build_status`,
+  `attach`, `detach`, `windows`, `query`, `items`, `act`, `batch`, `wait`,
+  `screenshot`, `get`, `set`, `call`, `methods`, `source`, `task`. `source`
+  searches the target's source tree (and `QT_COMMANDER_SOURCE_DIR` / an
+  explicit `source_dir`) for matching `.ui` or `.qml`; unresolved targets
+  return identity with `E_NO_DEBUGINFO`.
+- Every data request is executed from a per-server FIFO queue driven by the
+  target's event loop, so a slot blocked in `exec()` no longer holds the
+  socket: reads, acts and `qt_task` keep working on the same connection.
+  `qt_act`/`qt_call`/`qt_set` take `wait_ms` (defaults 1000/3000/3000 ms);
+  when it expires they return `{"state": "running", "task_id": ...}` and the
+  result is stored for `qt_task(task_id, wait_ms=...)`. Such a call has
+  already been dispatched — never retry it. `qt_ping` reports
+  `queued`/`inflight`/`active` for diagnostics.
 - `items` covers `QTabWidget`/`QTabBar`, `QMenuBar`/`QMenu`, `QHeaderView`,
   `QTableView`, `QTreeView`, `QListView`, `QComboBox`, `QScrollBar`,
   `QSlider`, `QSpinBox`, checkable `QGroupBox`, `QDockWidget` title buttons,
@@ -257,7 +266,7 @@ part of the QWidget query tree.
 uv run pytest tests/unit_server -q
 ```
 
-Current suite: **84 passed** (Qt5 MinGW/ MSVC test apps are built separately).
+Current suite: **99 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
 The pure-QML regression app is built with the same options as the linked app:
 
@@ -279,6 +288,13 @@ uv run python scripts/qml_window_test.py
 
 # native injection smoke (pass the target pid)
 uv run python scripts/injection_smoke.py <pid> --mode injection
+
+# async task queue: pending -> task_id -> qt_task, nested exec, batch, soak
+cmake -S tests/test-apps/modal -B build/modal-mingw5 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=5 \
+  -DQt5_DIR=/path/to/Qt/5.15.2/mingw81_64/lib/cmake/Qt5
+cmake --build build/modal-mingw5
+uv run python scripts/task_regression.py
 
 # P0 benchmarks
 uv run python scripts/p0_large.py --label large-7000

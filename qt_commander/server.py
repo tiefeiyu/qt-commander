@@ -47,12 +47,25 @@ How to use:
    rebuild; do not bypass it.
 3. qt_attach(pid=..., mode="injection"), then qt_windows to choose a window.
    Keep one session per process.
-4. qt_query to locate a target; then act/read/write/call.
-5. Verify with query/get/screenshot, close popups you opened, and qt_detach.
+Step 4: qt_query to locate a target; then act/read/write/call.
+5. Verify with query/get/screenshot, collect any pending task with qt_task,
+   close popups you opened, and qt_detach.
+
+Long-running calls:
+- qt_act/qt_call/qt_set return {"state": "running", "task_id": ...} when the
+  call is still executing in the target after wait_ms (1000 ms for act, 3000 ms
+  for call/set). This is normal when the action opened a modal dialog.
+- The action has already been dispatched: do not retry it. Call
+  qt_task(task_id=<id>) to collect the result once the target finishes.
+- The session is not blocked while a task runs: qt_windows/qt_query/qt_act and
+  qt_task keep working on the same session, so drive the dialog instead of
+  waiting.
 
 Critical rules:
 - The tree is live; re-query when a target may be stale. A successful act is
   not proof; verify the resulting state.
+- A "running" task is not a failure and not a timeout; it means the target is
+  still inside the call. Collect it with qt_task before acting on the result.
 - Targets: returned id, string QML id, or {"qml_id":...}/{"text":...}/
   {"class":...}/{"object_name":...}. Combine fields for repeated delegates;
   use nth for ambiguity.
@@ -1298,6 +1311,7 @@ async def qt_act(
     expect: dict[str, Any] | list[dict[str, Any]] | None = None,
     timeout_ms: int = 2000,
     settle_ms: int = 0,
+    wait_ms: int = 1000,
     observe: bool = True,
     input: str = "auto",
     include_hidden: bool = False,
@@ -1312,6 +1326,12 @@ async def qt_act(
     an object with id/qml_id/text/class/objectName; use ``nth`` for
     ambiguity. Hidden targets require ``include_hidden=true``. ``expect`` verifies a
     declarative state; ``type`` accepts clear/submit.
+
+    ``wait_ms`` (default 1000) is how long the call may stay blocked inside the
+    target before it returns ``{"state": "running", "task_id": ...}`` — for
+    example when the click opened a modal dialog. Use qt_task with that id to
+    collect the final result; the action has already been dispatched, so never
+    retry it blindly.
     """
     session = _session(session_id)
     if isinstance(session, dict):
@@ -1337,6 +1357,7 @@ async def qt_act(
             expect=expect,
             timeout_ms=timeout_ms,
             settle_ms=settle_ms,
+            wait_ms=wait_ms,
             observe=observe,
             input=input,
             include_hidden=include_hidden,
@@ -1362,7 +1383,9 @@ async def qt_batch(
     ``timeout_ms`` (100..60000): waits are clamped to the remaining time, and
     an exhausted budget returns the completed steps with
     ``cause="batch_timeout"`` instead of losing the whole call. ``max_steps``
-    bounds the sequence length.
+    bounds the sequence length. If a step is still running in the target
+    (``state: "running"``), the batch stops at once with ``cause="pending"``
+    plus that step's ``task_id``; collect it with qt_task before continuing.
     """
     session = _session(session_id)
     if isinstance(session, dict):
@@ -1398,6 +1421,31 @@ async def qt_wait(
         return await ops.wait(
             session, condition, timeout_ms=timeout_ms, poll_ms=poll_ms
         )
+    except Exception as exc:
+        return _map_error(exc)
+
+
+@mcp.tool
+async def qt_task(
+    session_id: str,
+    task_id: str,
+    wait_ms: int = 0,
+) -> dict[str, Any]:
+    """Read the result of an asynchronous task.
+
+    ``qt_act``/``qt_call``/``qt_set`` return ``{"state": "running",
+    "task_id": ...}`` when the call is still executing inside the target after
+    its ``wait_ms`` budget. Pass that id here to collect the result.
+    ``state`` stays ``running`` while the work is in progress and becomes
+    ``done`` once the result is available (the payload is under ``result``).
+    A running task must not be retried: the call may already have had side
+    effects. ``wait_ms`` on this tool only polls; it never starts work.
+    """
+    session = _session(session_id)
+    if isinstance(session, dict):
+        return session
+    try:
+        return await ops.task(session, task_id, wait_ms=wait_ms)
     except Exception as exc:
         return _map_error(exc)
 
@@ -1485,19 +1533,22 @@ async def qt_set(
     value: Any,
     nth: int | None = None,
     include_hidden: bool = False,
+    wait_ms: int = 3000,
 ) -> dict[str, Any]:
     """Write one property (destructive).
 
     Use for property setters such as
     QPushButton::setText, which are not qt_call methods. Hidden QML targets
-    require ``include_hidden=true``.
+    require ``include_hidden=true``. ``wait_ms`` bounds how long the call may
+    block before it returns a ``task_id`` (0 = return as soon as it is queued).
     """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
         return await ops.set_property(session, target, name, value, nth=nth,
-                                      include_hidden=include_hidden)
+                                      include_hidden=include_hidden,
+                                      wait_ms=wait_ms)
     except Exception as exc:
         return _map_error(exc)
 
@@ -1511,6 +1562,7 @@ async def qt_call(
     nth: int | None = None,
     signature: str | None = None,
     include_hidden: bool = False,
+    wait_ms: int = 3000,
 ) -> dict[str, Any]:
     """Invoke a Qt metaobject method (destructive).
 
@@ -1528,7 +1580,8 @@ async def qt_call(
     try:
         return await ops.call_method(session, target, method, args=args, nth=nth,
                                      signature=signature,
-                                     include_hidden=include_hidden)
+                                     include_hidden=include_hidden,
+                                     wait_ms=wait_ms)
     except Exception as exc:
         return _map_error(exc)
 
