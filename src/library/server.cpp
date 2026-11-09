@@ -1,6 +1,7 @@
 #include "server.h"
 
 #include <QAbstractButton>
+#include <QAbstractEventDispatcher>
 #include <QAbstractItemView>
 #include <QAccessible>
 #include <QAction>
@@ -9,7 +10,8 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
-#include <QDirIterator>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -54,7 +56,6 @@
 #include <QToolButton>
 #include <QTcpSocket>
 #include <QTreeView>
-#include <QThread>
 #include <QWheelEvent>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -538,6 +539,34 @@ bool matchText(const QJsonValue& spec, const QString& actual)
     return false;
 }
 
+// "inherits" matches any class name in the metaobject chain, so a filter on
+// QAbstractButton also reaches QPushButton.
+QStringList classNameChain(const QObject* object)
+{
+    QStringList names;
+    if (!object)
+        return names;
+    for (const QMetaObject* meta = object->metaObject(); meta;
+         meta = meta->superClass()) {
+        const QString name = QString::fromLatin1(meta->className());
+        if (!name.isEmpty() && !names.contains(name))
+            names.append(name);
+    }
+    return names;
+}
+
+bool matchInherits(const QJsonValue& spec, const QObject* object)
+{
+    if (!object || !validMatcher(spec))
+        return false;
+    const QStringList chain = classNameChain(object);
+    for (const QString& name : chain) {
+        if (matchText(spec, name))
+            return true;
+    }
+    return false;
+}
+
 QJsonObject helloResult(const QString& tag)
 {
     QJsonObject limits;
@@ -579,11 +608,113 @@ bool constantTimeEqual(const QString& left, const QString& right)
 struct UiHit {
     QString file;
     int line = 0;
+    bool truncated = false;
 };
 
 // Repeated source lookups are common while an agent inspects several controls
 // from the same QML file. Keep successful lookups for this process lifetime.
 QHash<QString, UiHit> qmlSourceCache;
+
+// A missed lookup is expensive to retry; remember it per origin/roots/name.
+// An entry whose file is empty is a negative result.
+QHash<QString, UiHit> sourceMissCache;
+
+constexpr int kSourceCacheLimit = 512;
+
+// Source scans run on the GUI thread, so every walk is bounded: a fixed depth,
+// a fixed number of entries and a short wall-clock budget.
+struct ScanBudget {
+    QElapsedTimer clock;
+    int visited = 0;
+    bool truncated = false;
+    int maxDepth = 8;
+    int maxVisited = 20000;
+    int budgetMs = 120;
+
+    ScanBudget() { clock.start(); }
+
+    bool exhausted()
+    {
+        if (truncated)
+            return true;
+        if (visited >= maxVisited || clock.elapsed() >= budgetMs) {
+            truncated = true;
+            return true;
+        }
+        return false;
+    }
+};
+
+bool skipSourceDir(const QString& name)
+{
+    static const QSet<QString> skipped{
+        QStringLiteral(".git"), QStringLiteral(".venv"),
+        QStringLiteral("venv"), QStringLiteral("node_modules"),
+        QStringLiteral("CMakeFiles"), QStringLiteral("__pycache__"),
+        QStringLiteral(".cache"), QStringLiteral(".tox"),
+        QStringLiteral(".pytest_cache")};
+    return skipped.contains(name);
+}
+
+QStringList walkFiles(const QStringList& roots, const QStringList& nameFilters,
+                      ScanBudget* budget)
+{
+    ScanBudget localBudget;
+    if (!budget)
+        budget = &localBudget;
+    QStringList files;
+    QSet<QString> seen;
+    std::function<void(const QDir&, int)> walk = [&](const QDir& dir,
+                                                     int depth) {
+        if (budget->exhausted())
+            return;
+        const QFileInfoList entries = dir.entryInfoList(
+            QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+        for (const QFileInfo& entry : entries) {
+            if (budget->exhausted())
+                return;
+            ++budget->visited;
+            if (entry.isDir()) {
+                if (depth >= budget->maxDepth ||
+                    skipSourceDir(entry.fileName()))
+                    continue;
+                // A CMake cache marks a build tree; its copies are generated.
+                if (QFileInfo(entry.absoluteFilePath() +
+                              QStringLiteral("/CMakeCache.txt"))
+                        .isFile())
+                    continue;
+                walk(QDir(entry.absoluteFilePath()), depth + 1);
+                continue;
+            }
+            if (!entry.isFile() ||
+                !QDir::match(nameFilters, entry.fileName()))
+                continue;
+            // absoluteFilePath() de-duplicates nested roots; canonical paths
+            // would be far too slow to resolve for every file on Windows.
+            const QString path = entry.absoluteFilePath();
+            if (seen.contains(path))
+                continue;
+            seen.insert(path);
+            files.append(path);
+        }
+    };
+    for (const QString& root : roots) {
+        if (budget->exhausted())
+            break;
+        const QDir dir(root);
+        if (!dir.exists())
+            continue;
+        walk(dir, 0);
+    }
+    return files;
+}
+
+QString sourceCacheKey(const QString& origin, const QStringList& roots,
+                       const QString& name)
+{
+    return origin + QChar(0x1f) + roots.join(QChar(0x1f)) +
+           QChar(0x1f) + name;
+}
 
 QObject* objectFromVariant(const QVariant& value)
 {
@@ -596,8 +727,12 @@ QObject* objectFromVariant(const QVariant& value)
     return nullptr;
 }
 
-QStringList sourceRoots()
+QStringList sourceRoots(const QString& overrideDir = QString())
 {
+    // An explicit source_dir is exclusive: never widen it to other candidates.
+    if (!overrideDir.isEmpty()) {
+        return {QDir::cleanPath(QFileInfo(overrideDir).absoluteFilePath())};
+    }
     QStringList roots;
     const QByteArray configured = qgetenv("QT_COMMANDER_SOURCE_DIR");
     if (!configured.isEmpty())
@@ -626,38 +761,29 @@ QStringList sourceRoots()
     return roots;
 }
 
-bool findUiLocation(const QString& objectName, UiHit* hit)
+bool findUiLocation(const QString& objectName, const QStringList& roots,
+                    UiHit* hit, ScanBudget* budget)
 {
     if (objectName.isEmpty())
         return false;
-    const QStringList roots = sourceRoots();
-    QSet<QString> seen;
-    int scanned = 0;
-    for (const QString& root : roots) {
-        QDirIterator it(root, {QStringLiteral("*.ui")}, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext() && scanned < 5000) {
-            const QString path = it.next();
-            const QString canonical = QFileInfo(path).canonicalFilePath();
-            if (canonical.isEmpty() || seen.contains(canonical))
+    const QStringList files =
+        walkFiles(roots, {QStringLiteral("*.ui")}, budget);
+    for (const QString& path : files) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            continue;
+        QXmlStreamReader xml(&file);
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (!xml.isStartElement() || xml.name() != QStringLiteral("widget"))
                 continue;
-            seen.insert(canonical);
-            ++scanned;
-            QFile file(path);
-            if (!file.open(QIODevice::ReadOnly))
-                continue;
-            QXmlStreamReader xml(&file);
-            while (!xml.atEnd()) {
-                xml.readNext();
-                if (!xml.isStartElement() || xml.name() != QStringLiteral("widget"))
-                    continue;
-                const QXmlStreamAttributes attributes = xml.attributes();
-                if (attributes.value(QStringLiteral("name")).toString() ==
-                    objectName) {
-                    hit->file = canonical;
-                    hit->line = int(xml.lineNumber());
-                    return true;
-                }
+            const QXmlStreamAttributes attributes = xml.attributes();
+            if (attributes.value(QStringLiteral("name")).toString() ==
+                objectName) {
+                hit->file = path;
+                hit->line = int(xml.lineNumber());
+                hit->truncated = budget && budget->truncated;
+                return true;
             }
         }
     }
@@ -684,13 +810,13 @@ bool findQmlLocationInFile(const QString& path, const QString& name,
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return false;
-    const QString canonical = info.canonicalFilePath();
     int line = 0;
     while (!file.atEnd()) {
         const QString text = QString::fromUtf8(file.readLine());
         ++line;
         if (lineDeclaresName(text, name)) {
-            hit->file = canonical;
+            // Resolve the canonical path only for an actual match.
+            hit->file = info.canonicalFilePath();
             hit->line = line;
             return true;
         }
@@ -699,69 +825,205 @@ bool findQmlLocationInFile(const QString& path, const QString& name,
 }
 
 bool findQmlLocationByFileName(const QString& fileName, const QString& name,
-                               UiHit* hit)
+                               const QStringList& roots, UiHit* hit,
+                               ScanBudget* budget)
 {
     if (fileName.isEmpty() || name.isEmpty())
         return false;
-    const QStringList roots = sourceRoots();
-    QSet<QString> seen;
-    int scanned = 0;
-    for (const QString& root : roots) {
-        QDirIterator it(root, {fileName}, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext() && scanned < 2000) {
-            const QString path = it.next();
-            const QString canonical = QFileInfo(path).canonicalFilePath();
-            if (canonical.isEmpty() || seen.contains(canonical))
-                continue;
-            seen.insert(canonical);
-            ++scanned;
-            if (findQmlLocationInFile(canonical, name, hit))
-                return true;
+    const QStringList files = walkFiles(roots, {fileName}, budget);
+    for (const QString& path : files) {
+        if (findQmlLocationInFile(path, name, hit))
+            return true;
+    }
+    return false;
+}
+
+bool findQmlLocation(const QString& objectName, const QStringList& roots,
+                     UiHit* hit, ScanBudget* budget)
+{
+    if (objectName.isEmpty())
+        return false;
+    // Scope the success cache by roots so an explicit source_dir stays
+    // exclusive instead of reusing results from a wider scan.
+    const QString cacheKey =
+        roots.join(QChar(0x1f)) + QChar(0x1f) + objectName;
+    const auto cached = qmlSourceCache.constFind(cacheKey);
+    if (cached != qmlSourceCache.constEnd()) {
+        *hit = cached.value();
+        return true;
+    }
+    const QStringList files =
+        walkFiles(roots, {QStringLiteral("*.qml")}, budget);
+    for (const QString& path : files) {
+        if (findQmlLocationInFile(path, objectName, hit)) {
+            hit->truncated = budget && budget->truncated;
+            qmlSourceCache.insert(cacheKey, *hit);
+            return true;
         }
     }
     return false;
 }
 
-bool findQmlLocation(const QString& objectName, UiHit* hit)
+// Read the lines around a hit. Bounded by the line window and an 8 KiB cap so
+// the response stays inside the payload budget.
+QJsonObject snippetFor(const UiHit& hit, int snippetLines, int maxLines)
 {
-    if (objectName.isEmpty())
-        return false;
-    const auto cached = qmlSourceCache.constFind(objectName);
-    if (cached != qmlSourceCache.constEnd()) {
-        *hit = cached.value();
-        return true;
-    }
-    const QStringList roots = sourceRoots();
-    QSet<QString> seen;
-    int scanned = 0;
-    for (const QString& root : roots) {
-        QDirIterator it(root, {QStringLiteral("*.qml")}, QDir::Files,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext() && scanned < 5000) {
-            const QString path = it.next();
-            const QString canonical = QFileInfo(path).canonicalFilePath();
-            if (canonical.isEmpty() || seen.contains(canonical))
-                continue;
-            seen.insert(canonical);
-            ++scanned;
-            QFile file(path);
-            if (!file.open(QIODevice::ReadOnly))
-                continue;
-            int line = 0;
-            while (!file.atEnd()) {
-                const QString text = QString::fromUtf8(file.readLine());
-                ++line;
-                if (lineDeclaresName(text, objectName)) {
-                    hit->file = canonical;
-                    hit->line = line;
-                    qmlSourceCache.insert(objectName, *hit);
-                    return true;
-                }
-            }
+    if (hit.file.isEmpty() || hit.line <= 0)
+        return {};
+    QFile file(hit.file);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const int context = qBound(0, snippetLines, 50);
+    const int start = qMax(1, hit.line - context);
+    const int window = qMax(1, maxLines);
+    const int end =
+        qMax(hit.line, qMin(hit.line + context, start + window - 1));
+    QStringList lines;
+    qint64 bytes = 0;
+    bool clipped = false;
+    int number = 0;
+    while (!file.atEnd() && number < end) {
+        const QByteArray raw = file.readLine();
+        ++number;
+        if (number < start)
+            continue;
+        if (bytes + raw.size() > 8 * 1024) {
+            clipped = true;
+            break;
         }
+        bytes += raw.size();
+        QString text = QString::fromUtf8(raw);
+        while (text.endsWith(QLatin1Char('\n')) ||
+               text.endsWith(QLatin1Char('\r')))
+            text.chop(1);
+        lines.append(text);
     }
-    return false;
+    if (lines.isEmpty() && !clipped)
+        return {};
+    QJsonObject snippet;
+    snippet.insert(QStringLiteral("startLine"), start);
+    snippet.insert(QStringLiteral("lines"), QJsonArray::fromStringList(lines));
+    if (clipped)
+        snippet.insert(QStringLiteral("truncated"), true);
+    return snippet;
+}
+
+// Find the line that declares a QML signal handler ("on<Handler>" or
+// "handler:") within the configured line range of the matched location.
+int findHandlerLine(const QString& file, int aroundLine, int range,
+                    const QString& handler)
+{
+    if (file.isEmpty() || handler.isEmpty() || aroundLine <= 0)
+        return 0;
+    QFile source(file);
+    if (!source.open(QIODevice::ReadOnly))
+        return 0;
+    QString name = handler;
+    if (name.size() > 2 && name.startsWith(QStringLiteral("on")) &&
+        name.at(2).isUpper())
+        name = name.mid(2);
+    const QRegularExpression pattern(
+        QStringLiteral("\\bon%1\\b|handler\\s*:")
+            .arg(QRegularExpression::escape(name)),
+        QRegularExpression::CaseInsensitiveOption);
+    const int span = qMax(1, range);
+    const int from = qMax(1, aroundLine - span);
+    const int to = aroundLine + span;
+    int number = 0;
+    while (!source.atEnd()) {
+        const QString text = QString::fromUtf8(source.readLine());
+        ++number;
+        if (number < from)
+            continue;
+        if (number > to)
+            break;
+        if (pattern.match(text).hasMatch())
+            return number;
+    }
+    return 0;
+}
+
+QJsonObject searchInfo(const QStringList& roots, const ScanBudget& budget)
+{
+    QJsonObject search;
+    search.insert(QStringLiteral("roots"), QJsonArray::fromStringList(roots));
+    search.insert(QStringLiteral("visited"), budget.visited);
+    search.insert(QStringLiteral("truncated"), budget.truncated);
+    search.insert(QStringLiteral("budget_ms"), budget.budgetMs);
+    return search;
+}
+
+// Bounded event pump used after dispatching input. It keeps the GUI thread
+// responsive instead of sleeping, but never exceeds the settle budget.
+int settlePump(int budgetMs)
+{
+    if (budgetMs <= 0)
+        return 0;
+    QElapsedTimer clock;
+    clock.start();
+    // QAbstractEventDispatcher::processEvents() returns whether it handled
+    // anything in both Qt 5 and Qt 6; QCoreApplication::processEvents() became
+    // void in Qt 6, and hasPendingEvents() was removed there.
+    QAbstractEventDispatcher* dispatcher = QCoreApplication::eventDispatcher();
+    while (clock.elapsed() < budgetMs) {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        const bool hadEvents = dispatcher
+            && dispatcher->processEvents(QEventLoop::ExcludeUserInputEvents);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        if (!hadEvents)
+            break;
+    }
+    return int(clock.elapsed());
+}
+
+QJsonObject propertySnapshot(const QObject* object)
+{
+    QJsonObject props;
+    if (!object)
+        return props;
+    static const char* const names[] = {"text", "visible", "enabled",
+                                        "checked"};
+    const QMetaObject* meta = object->metaObject();
+    for (const char* name : names) {
+        const int index = meta->indexOfProperty(name);
+        if (index < 0)
+            continue;
+        const QMetaProperty property = meta->property(index);
+        if (!property.isReadable())
+            continue;
+        const QVariant value = property.read(object);
+        if (value.isValid())
+            props.insert(QString::fromLatin1(name),
+                         QJsonValue::fromVariant(value));
+    }
+    return props;
+}
+
+QJsonObject changedProperties(const QJsonObject& before,
+                              const QJsonObject& after)
+{
+    QJsonObject changed;
+    for (auto it = after.begin(); it != after.end(); ++it) {
+        const QJsonValue previous = before.value(it.key());
+        if (previous == it.value())
+            continue;
+        QJsonObject delta;
+        delta.insert(QStringLiteral("old"), previous);
+        delta.insert(QStringLiteral("new"), it.value());
+        changed.insert(it.key(), delta);
+    }
+    return changed;
+}
+
+void addObservedChanges(QJsonObject* observed, const QObject* object,
+                        const QJsonObject& before)
+{
+    if (!observed)
+        return;
+    const QJsonObject after = propertySnapshot(object);
+    observed->insert(QStringLiteral("props"), after);
+    observed->insert(QStringLiteral("changed"),
+                     changedProperties(before, after));
 }
 
 } // namespace
@@ -1155,7 +1417,8 @@ QJsonObject Server::query(const QJsonObject& params)
         QStringLiteral("id"), QStringLiteral("class"),
         QStringLiteral("object_name"), QStringLiteral("objectName"),
         QStringLiteral("qml_id"), QStringLiteral("qml_type"),
-        QStringLiteral("text"), QStringLiteral("props")};
+        QStringLiteral("text"), QStringLiteral("props"),
+        QStringLiteral("inherits")};
     for (auto it = context.where.begin(); it != context.where.end(); ++it) {
         if (!allowedWhere.contains(it.key())) {
             QJsonObject error;
@@ -1165,7 +1428,8 @@ QJsonObject Server::query(const QJsonObject& params)
                 QStringLiteral("message"),
                 QStringLiteral(
                     "unsupported locator key: %1 (supported: id, class, "
-                    "object_name/objectName, qml_id, qml_type, text, props)")
+                    "object_name/objectName, qml_id, qml_type, text, props, "
+                    "inherits)")
                     .arg(it.key()));
             return error;
         }
@@ -1201,6 +1465,7 @@ QJsonObject Server::query(const QJsonObject& params)
     context.includeHidden =
         params.value(QStringLiteral("include_hidden")).toBool(false);
     context.maxDepth = params.value(QStringLiteral("max_depth")).toInt(-1);
+    context.compact = params.value(QStringLiteral("compact")).toBool(false);
     const int limit = params.value(QStringLiteral("limit")).toInt(200);
     const bool countOnly =
         params.value(QStringLiteral("count_only")).toBool(false);
@@ -1368,8 +1633,13 @@ QJsonObject Server::query(const QJsonObject& params)
 
     if (countOnly) {
         for (QWidget* root : roots) {
-            if (isCandidate(root, context.includeHidden))
-                countNode(root, context, 0);
+            if (!root)
+                continue;
+            if (!isCandidate(root, context.includeHidden)) {
+                ++context.hiddenPruned;
+                continue;
+            }
+            countNode(root, context, 0);
         }
         for (QQuickWindow* root : quickRoots) {
             bool any = false;
@@ -1384,13 +1654,20 @@ QJsonObject Server::query(const QJsonObject& params)
         QJsonObject result;
         result.insert(QStringLiteral("count"),
                       context.hasWhere ? context.matched : context.total);
+        if (!context.includeHidden && context.hiddenPruned > 0)
+            result.insert(QStringLiteral("hidden_pruned"),
+                          context.hiddenPruned);
         return result;
     }
 
     QJsonArray tree;
     for (QWidget* root : roots) {
-        if (!isCandidate(root, context.includeHidden))
+        if (!root)
             continue;
+        if (!isCandidate(root, context.includeHidden)) {
+            ++context.hiddenPruned;
+            continue;
+        }
         bool any = false;
         const QJsonObject node = buildNode(root, context, 0, true, &any);
         if (any)
@@ -1432,6 +1709,8 @@ QJsonObject Server::query(const QJsonObject& params)
     result.insert(QStringLiteral("limit"), limit);
     result.insert(QStringLiteral("truncated"), truncated);
     result.insert(QStringLiteral("virtual_count"), virtuals_.size());
+    if (!context.includeHidden && context.hiddenPruned > 0)
+        result.insert(QStringLiteral("hidden_pruned"), context.hiddenPruned);
     if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() >
         2 * 1024 * 1024) {
         QJsonObject error;
@@ -1774,6 +2053,7 @@ QJsonObject Server::act(const QJsonObject& params)
     resolved.insert(QStringLiteral("class"),
                     QString::fromLatin1(widget->metaObject()->className()));
     resolved.insert(QStringLiteral("objectName"), widget->objectName());
+    const QJsonObject observedBefore = propertySnapshot(widget);
 
     auto sendClick = [&](QEvent::Type type) {
         const QPointer<QWidget> guard(widget);
@@ -1975,14 +2255,13 @@ QJsonObject Server::act(const QJsonObject& params)
     }
 
     const int settleMs = params.value(QStringLiteral("settle_ms")).toInt(0);
-    if (settleMs > 0)
-        QThread::msleep(static_cast<unsigned long>(settleMs));
+    const int settledMs = settlePump(settleMs);
 
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("action"), action);
     result.insert(QStringLiteral("dispatched"), true);
-    result.insert(QStringLiteral("settled_ms"), settleMs);
+    result.insert(QStringLiteral("settled_ms"), settledMs);
     if (action == QStringLiteral("type"))
         result.insert(QStringLiteral("text_after"), typeTextAfter);
     result.insert(QStringLiteral("resolved"), resolved);
@@ -1995,6 +2274,7 @@ QJsonObject Server::act(const QJsonObject& params)
         observed.insert(QStringLiteral("class"),
                         QString::fromLatin1(observedWidget->metaObject()->className()));
         observed.insert(QStringLiteral("objectName"), observedWidget->objectName());
+        addObservedChanges(&observed, observedWidget, observedBefore);
         result.insert(QStringLiteral("observed"), observed);
     }
     return result;
@@ -4590,6 +4870,7 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
                       QStringLiteral("only click/dblclick/key/type work on virtual items"));
         return result;
     }
+    const int settleMs = params.value(QStringLiteral("settle_ms")).toInt(0);
     QRect rect;
     if (!virtualRect(ref, &rect)) {
         QJsonObject result;
@@ -4728,6 +5009,7 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
                 ? item->mapToScene(sourceRect.center())
                 : clickItem->mapToScene(clickItem->boundingRect().center());
         const int clicks = action == QStringLiteral("dblclick") ? 2 : 1;
+        const QJsonObject observedBefore = propertySnapshot(item);
         clickItem->forceActiveFocus();
         for (int i = 0; i < clicks; ++i) {
             QMouseEvent move(QEvent::MouseMove, point, point,
@@ -4745,17 +5027,22 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
             QCoreApplication::sendEvent(window, &release);
             QCoreApplication::processEvents();
         }
+        const int settledMs = settlePump(settleMs);
         QJsonObject resolved;
         resolved.insert(QStringLiteral("id"), id);
         resolved.insert(QStringLiteral("class"), ref.className);
         resolved.insert(QStringLiteral("virtual"), true);
+        QJsonObject observed = resolved;
+        if (QObject* observedObject = ref.qmlObject.data())
+            addObservedChanges(&observed, observedObject, observedBefore);
         QJsonObject result;
         result.insert(QStringLiteral("ok"), true);
         result.insert(QStringLiteral("action"), action);
         result.insert(QStringLiteral("dispatched"), true);
         result.insert(QStringLiteral("input"), QStringLiteral("mouse"));
+        result.insert(QStringLiteral("settled_ms"), settledMs);
         result.insert(QStringLiteral("resolved"), resolved);
-        result.insert(QStringLiteral("observed"), resolved);
+        result.insert(QStringLiteral("observed"), observed);
         return result;
     }
     if (ref.kind == QStringLiteral("spin_button")) {
@@ -4853,6 +5140,7 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         target = ref.page.data();
     }
     const QPoint global = target->mapToGlobal(local);
+    const QJsonObject observedBefore = propertySnapshot(target);
     const QPointer<QWidget> targetGuard(target);
     QMouseEvent press(QEvent::MouseButtonPress, QPointF(local), QPointF(global),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
@@ -4876,16 +5164,21 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         }
     }
 
+    const int settledMs = settlePump(settleMs);
     QJsonObject resolved;
     resolved.insert(QStringLiteral("id"), id);
     resolved.insert(QStringLiteral("class"), ref.className);
     resolved.insert(QStringLiteral("virtual"), true);
+    QJsonObject observed = resolved;
+    if (!targetGuard.isNull())
+        addObservedChanges(&observed, targetGuard.data(), observedBefore);
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("action"), action);
     result.insert(QStringLiteral("dispatched"), true);
+    result.insert(QStringLiteral("settled_ms"), settledMs);
     result.insert(QStringLiteral("resolved"), resolved);
-    result.insert(QStringLiteral("observed"), resolved);
+    result.insert(QStringLiteral("observed"), observed);
     return result;
 }
 
@@ -5001,22 +5294,44 @@ QJsonObject Server::quickItems(QWindow* window, QQuickItem* root,
 
 QJsonObject Server::source(const QJsonObject& params)
 {
-    const QString sourceDir =
+    const QString overrideDir =
         params.value(QStringLiteral("source_dir")).toString();
-    const QByteArray previousSourceDir =
-        qgetenv("QT_COMMANDER_SOURCE_DIR");
-    if (!sourceDir.isEmpty())
-        qputenv("QT_COMMANDER_SOURCE_DIR", sourceDir.toLocal8Bit());
-    struct RestoreSourceDir {
-        QByteArray previous;
-        ~RestoreSourceDir()
-        {
-            if (previous.isEmpty())
-                qunsetenv("QT_COMMANDER_SOURCE_DIR");
-            else
-                qputenv("QT_COMMANDER_SOURCE_DIR", previous);
+    // source_dir is exclusive: it replaces every heuristic root.
+    const QStringList roots = sourceRoots(overrideDir);
+    ScanBudget budget;
+    const int snippetLines =
+        params.value(QStringLiteral("snippet_lines")).toInt(3);
+    const int maxLines =
+        qMax(1, params.value(QStringLiteral("max_lines")).toInt(20));
+    const QString handler =
+        params.value(QStringLiteral("handler")).toString();
+    UiHit hit;
+    // Locate once per origin/roots/name. Misses are cached unless the scan was
+    // truncated, because a retry with a wider budget may still succeed.
+    auto locate = [&](const QString& origin, const QString& name,
+                      const std::function<bool(UiHit*)>& scan) {
+        if (name.isEmpty())
+            return false;
+        const QString key = sourceCacheKey(origin, roots, name);
+        const auto cached = sourceMissCache.constFind(key);
+        if (cached != sourceMissCache.constEnd()) {
+            if (cached.value().file.isEmpty())
+                return false;
+            hit = cached.value();
+            return true;
         }
-    } restoreSourceDir{previousSourceDir};
+        if (sourceMissCache.size() >= kSourceCacheLimit)
+            sourceMissCache.clear();
+        UiHit candidate;
+        if (!scan(&candidate)) {
+            if (!budget.truncated)
+                sourceMissCache.insert(key, UiHit{});
+            return false;
+        }
+        sourceMissCache.insert(key, candidate);
+        hit = candidate;
+        return true;
+    };
 
     const QJsonValue sourceTarget = params.value(QStringLiteral("target"));
     QString sourceVirtualId;
@@ -5070,7 +5385,6 @@ QJsonObject Server::source(const QJsonObject& params)
         const VirtualRef ref = virtuals_.value(sourceVirtualId);
         auto* item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
         if (ref.kind == QStringLiteral("qml_item") && item) {
-            UiHit hit;
             const QString queryName =
                 !item->objectName().isEmpty()
                     ? item->objectName()
@@ -5082,14 +5396,31 @@ QJsonObject Server::source(const QJsonObject& params)
             if (!queryName.isEmpty()) {
                 QQmlContext* qmlContext =
                     QQmlEngine::contextForObject(item);
-                if (qmlContext && qmlContext->baseUrl().isLocalFile())
-                    located = findQmlLocationInFile(
-                        qmlContext->baseUrl().toLocalFile(), queryName, &hit);
-                if (!located && qmlContext)
-                    located = findQmlLocationByFileName(
-                        qmlContext->baseUrl().fileName(), queryName, &hit);
+                if (qmlContext && qmlContext->baseUrl().isLocalFile()) {
+                    const QString localFile =
+                        qmlContext->baseUrl().toLocalFile();
+                    located = locate(
+                        QStringLiteral("qml-file:") + localFile, queryName,
+                        [&](UiHit* out) {
+                            return findQmlLocationInFile(localFile, queryName,
+                                                         out);
+                        });
+                }
+                if (!located && qmlContext) {
+                    const QString fileName = qmlContext->baseUrl().fileName();
+                    located = locate(
+                        QStringLiteral("qml-file-name:") + fileName,
+                        queryName, [&](UiHit* out) {
+                            return findQmlLocationByFileName(
+                                fileName, queryName, roots, out, &budget);
+                        });
+                }
                 if (!located)
-                    located = findQmlLocation(queryName, &hit);
+                    located = locate(
+                        QStringLiteral("qml"), queryName, [&](UiHit* out) {
+                            return findQmlLocation(queryName, roots, out,
+                                                   &budget);
+                        });
             }
             QJsonObject target;
             target.insert(QStringLiteral("id"), sourceVirtualId);
@@ -5126,18 +5457,57 @@ QJsonObject Server::source(const QJsonObject& params)
                                  ->nameForObject(item)
                            : QString());
             QJsonArray diagnostics;
-            if (!located)
-                diagnostics.append(QStringLiteral(
-                    "No .qml source with this QML id/objectName was found."));
+            if (!located) {
+                if (budget.truncated)
+                    diagnostics.append(QStringLiteral(
+                        "Source scan stopped after %1 entries (%2 ms budget) "
+                        "before finding a match; pass source_dir to narrow "
+                        "the search.")
+                        .arg(budget.visited)
+                        .arg(budget.budgetMs));
+                else
+                    diagnostics.append(QStringLiteral(
+                        "No .qml source with this QML id/objectName was "
+                        "found."));
+            }
             QJsonObject result;
             result.insert(QStringLiteral("available"), located);
             if (!located)
                 result.insert(QStringLiteral("code"),
-                              QStringLiteral("E_NO_DEBUGINFO"));
+                              budget.truncated
+                                  ? QStringLiteral("E_SOURCE_TIMEOUT")
+                                  : QStringLiteral("E_NO_DEBUGINFO"));
             result.insert(QStringLiteral("kind"), QStringLiteral("qml"));
             result.insert(QStringLiteral("target"), target);
             result.insert(QStringLiteral("location"), location);
             result.insert(QStringLiteral("qml"), qml);
+            if (located) {
+                const QJsonObject snippet =
+                    snippetFor(hit, snippetLines, maxLines);
+                if (!snippet.isEmpty())
+                    result.insert(QStringLiteral("snippet"), snippet);
+                if (!handler.isEmpty()) {
+                    const int handlerLine = findHandlerLine(
+                        hit.file, hit.line, maxLines, handler);
+                    if (handlerLine > 0) {
+                        result.insert(
+                            QStringLiteral("handler"),
+                            QJsonObject{
+                                {QStringLiteral("name"), handler},
+                                {QStringLiteral("line"), handlerLine}});
+                    } else {
+                        result.insert(QStringLiteral("code"),
+                                      QStringLiteral("E_HANDLER_NOT_FOUND"));
+                        diagnostics.append(QStringLiteral(
+                            "E_HANDLER_NOT_FOUND: no on%1/handler: "
+                            "declaration within %2 lines of the match.")
+                            .arg(handler)
+                            .arg(maxLines));
+                    }
+                }
+            }
+            result.insert(QStringLiteral("search"),
+                          searchInfo(roots, budget));
             result.insert(QStringLiteral("diagnostics"), diagnostics);
             return result;
         }
@@ -5161,26 +5531,29 @@ QJsonObject Server::source(const QJsonObject& params)
                   QString::fromLatin1(widget->metaObject()->className()));
     target.insert(QStringLiteral("objectName"), widget->objectName());
 
-    UiHit hit;
     QString origin = QStringLiteral("none");
-    bool located = findUiLocation(widget->objectName(), &hit);
+    bool located =
+        locate(QStringLiteral("ui"), widget->objectName(), [&](UiHit* out) {
+            return findUiLocation(widget->objectName(), roots, out, &budget);
+        });
     if (located) {
         origin = QStringLiteral("ui");
     } else {
-        const QVariant root = widget->property("rootObject");
-        if (auto* object = objectFromVariant(root)) {
-            located = findQmlLocation(object->objectName(), &hit);
-            if (located)
-                origin = QStringLiteral("qml");
-        }
-        if (!located) {
+        QString qmlName;
+        if (auto* object = objectFromVariant(widget->property("rootObject")))
+            qmlName = object->objectName();
+        if (qmlName.isEmpty()) {
             if (auto* quick = qobject_cast<QQuickWidget*>(widget)) {
-                if (QQuickItem* qmlRoot = quick->rootObject()) {
-                    located = findQmlLocation(qmlRoot->objectName(), &hit);
-                    if (located)
-                        origin = QStringLiteral("qml");
-                }
+                if (QQuickItem* qmlRoot = quick->rootObject())
+                    qmlName = qmlRoot->objectName();
             }
+        }
+        if (!qmlName.isEmpty() &&
+            locate(QStringLiteral("qml"), qmlName, [&](UiHit* out) {
+                return findQmlLocation(qmlName, roots, out, &budget);
+            })) {
+            located = true;
+            origin = QStringLiteral("qml");
         }
     }
     QJsonObject location;
@@ -5203,9 +5576,18 @@ QJsonObject Server::source(const QJsonObject& params)
 
     QJsonArray diagnostics;
     if (!located) {
-        diagnostics.append(QStringLiteral(
-            "No .ui/.qml source with this objectName was found near the "
-            "executable or source root; this build exposes identity only."));
+        if (budget.truncated) {
+            diagnostics.append(QStringLiteral(
+                "Source scan stopped after %1 entries (%2 ms budget) before "
+                "finding a match; pass source_dir to narrow the search.")
+                .arg(budget.visited)
+                .arg(budget.budgetMs));
+        } else {
+            diagnostics.append(QStringLiteral(
+                "No .ui/.qml source with this objectName was found near the "
+                "executable or source root; this build exposes identity "
+                "only."));
+        }
     } else {
         diagnostics.append(QStringLiteral(
             "Matched a %1 source by objectName (heuristic).").arg(origin));
@@ -5214,11 +5596,20 @@ QJsonObject Server::source(const QJsonObject& params)
     QJsonObject result;
     result.insert(QStringLiteral("available"), located);
     if (!located)
-        result.insert(QStringLiteral("code"), QStringLiteral("E_NO_DEBUGINFO"));
+        result.insert(QStringLiteral("code"),
+                      budget.truncated
+                          ? QStringLiteral("E_SOURCE_TIMEOUT")
+                          : QStringLiteral("E_NO_DEBUGINFO"));
     result.insert(QStringLiteral("kind"), QStringLiteral("widget"));
     result.insert(QStringLiteral("target"), target);
     result.insert(QStringLiteral("location"), location);
     result.insert(QStringLiteral("widget"), widgetInfo);
+    if (located) {
+        const QJsonObject snippet = snippetFor(hit, snippetLines, maxLines);
+        if (!snippet.isEmpty())
+            result.insert(QStringLiteral("snippet"), snippet);
+    }
+    result.insert(QStringLiteral("search"), searchInfo(roots, budget));
     result.insert(QStringLiteral("diagnostics"), diagnostics);
     return result;
 }
@@ -5307,14 +5698,15 @@ QWidget* Server::resolveTarget(const QJsonValue& target, QString* error,
     static const QSet<QString> allowed{
         QStringLiteral("class"), QStringLiteral("object_name"),
         QStringLiteral("objectName"), QStringLiteral("text"),
-        QStringLiteral("props")};
+        QStringLiteral("props"), QStringLiteral("inherits")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key())) {
             lastResolveCode_ = QStringLiteral("E_INVALID_FILTER");
             if (error)
                 *error = QStringLiteral(
                              "unsupported locator key: %1 (supported: id, "
-                             "class, object_name/objectName, text, props)")
+                             "class, object_name/objectName, text, props, "
+                             "inherits)")
                              .arg(it.key());
             return nullptr;
         }
@@ -5428,13 +5820,32 @@ QString qmlIdName(const QQuickItem* item)
                    : QString();
 }
 
-QString qmlTypeName(const QQuickItem* item)
+QString stripQmlTypeSuffix(QString name)
 {
-    QString name = QString::fromLatin1(item->metaObject()->className());
     name.replace(QRegularExpression(QStringLiteral("_QMLTYPE_\\d+")),
                  QString());
     name.replace(QRegularExpression(QStringLiteral("_QML_\\d+")), QString());
     return name;
+}
+
+QString qmlTypeName(const QQuickItem* item)
+{
+    return stripQmlTypeSuffix(
+        QString::fromLatin1(item->metaObject()->className()));
+}
+
+bool qmlMatchInherits(const QJsonValue& spec, const QQuickItem* item)
+{
+    if (!item || !validMatcher(spec))
+        return false;
+    for (const QMetaObject* meta = item->metaObject(); meta;
+         meta = meta->superClass()) {
+        const QString name = stripQmlTypeSuffix(
+            QString::fromLatin1(meta->className()));
+        if (!name.isEmpty() && matchText(spec, name))
+            return true;
+    }
+    return false;
 }
 
 QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner)
@@ -5454,7 +5865,7 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
         QStringLiteral("class"), QStringLiteral("object_name"),
         QStringLiteral("objectName"), QStringLiteral("qml_id"),
         QStringLiteral("qml_type"), QStringLiteral("text"),
-        QStringLiteral("props")};
+        QStringLiteral("props"), QStringLiteral("inherits")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key()))
             return false;
@@ -5463,6 +5874,9 @@ bool qmlMatches(const QQuickItem* item, const QJsonObject& where)
         QString::fromLatin1(item->metaObject()->className());
     if (where.contains(QStringLiteral("class")) &&
         !matchText(where.value(QStringLiteral("class")), className))
+        return false;
+    if (where.contains(QStringLiteral("inherits")) &&
+        !qmlMatchInherits(where.value(QStringLiteral("inherits")), item))
         return false;
     const QJsonValue objectNameSpec =
         where.contains(QStringLiteral("object_name"))
@@ -5560,8 +5974,13 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
     QJsonArray children;
     bool childAny = false;
     for (QQuickItem* child : item->childItems()) {
-        if (!child || !child->isVisible())
+        if (!child)
             continue;
+        if (!child->isVisible()) {
+            if (!context.includeHidden)
+                ++context.hiddenPruned;
+            continue;
+        }
         ++childCount;
         if (context.maxDepth >= 0 && depth >= context.maxDepth)
             continue;
@@ -5583,14 +6002,19 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
     ++context.emitted;
 
     QJsonObject node;
+    const QString qmlType = qmlTypeName(item);
+    const QString qmlId = qmlIdName(item);
     node.insert(QStringLiteral("id"),
                 registerQml(owner, item, (*serial)++, rect, props));
-    node.insert(QStringLiteral("class"), qmlTypeName(item));
-    node.insert(QStringLiteral("qml_type"), qmlTypeName(item));
-    node.insert(QStringLiteral("qml_id"), qmlIdName(item));
+    node.insert(QStringLiteral("class"), qmlType);
+    if (!context.compact || !qmlType.isEmpty())
+        node.insert(QStringLiteral("qml_type"), qmlType);
+    if (!context.compact || !qmlId.isEmpty())
+        node.insert(QStringLiteral("qml_id"), qmlId);
     node.insert(QStringLiteral("objectName"), item->objectName());
     node.insert(QStringLiteral("qml"), true);
-    node.insert(QStringLiteral("window"), false);
+    if (!context.compact)
+        node.insert(QStringLiteral("window"), false);
     QJsonObject rectObject;
     rectObject.insert(QStringLiteral("x"), rect.x());
     rectObject.insert(QStringLiteral("y"), rect.y());
@@ -5606,8 +6030,10 @@ QJsonObject Server::buildQmlNode(QWidget* owner, QQuickItem* item,
         screenRect.insert(QStringLiteral("h"), rect.height());
         node.insert(QStringLiteral("screen_rect"), screenRect);
     }
-    node.insert(QStringLiteral("child_count"), childCount);
-    node.insert(QStringLiteral("children"), children);
+    if (!context.compact || childCount > 0)
+        node.insert(QStringLiteral("child_count"), childCount);
+    if (!context.compact || !children.isEmpty())
+        node.insert(QStringLiteral("children"), children);
     node.insert(QStringLiteral("props"), props);
     if (context.hasWhere)
         node.insert(QStringLiteral("matched"), selfMatch);
@@ -5656,8 +6082,12 @@ QJsonObject Server::buildQuickItemNode(QQuickWindow* window, QQuickItem* item,
     if ((context.includeHidden || item->isVisible()) &&
         context.emitted < QueryContext::kMaxEmitted) {
         for (QQuickItem* child : item->childItems()) {
-            if (!child || (!context.includeHidden && !child->isVisible()))
+            if (!child)
                 continue;
+            if (!context.includeHidden && !child->isVisible()) {
+                ++context.hiddenPruned;
+                continue;
+            }
             bool childMatch = false;
             const QJsonObject node =
                 buildQuickItemNode(window, child, context, depth + 1, serial,
@@ -5679,17 +6109,24 @@ QJsonObject Server::buildQuickItemNode(QQuickWindow* window, QQuickItem* item,
     ++context.emitted;
 
     const QString id = registerQuickQml(window, item, (*serial)++, rect, props);
+    const QString qmlType = qmlTypeName(item);
+    const QString qmlId = qmlIdName(item);
     QJsonObject node;
     node.insert(QStringLiteral("id"), id);
     node.insert(QStringLiteral("class"),
                 QString::fromLatin1(item->metaObject()->className()));
-    node.insert(QStringLiteral("qml_type"), qmlTypeName(item));
-    node.insert(QStringLiteral("qml_id"), qmlIdName(item));
+    if (!context.compact || !qmlType.isEmpty())
+        node.insert(QStringLiteral("qml_type"), qmlType);
+    if (!context.compact || !qmlId.isEmpty())
+        node.insert(QStringLiteral("qml_id"), qmlId);
     node.insert(QStringLiteral("objectName"), item->objectName());
     node.insert(QStringLiteral("qml"), true);
-    node.insert(QStringLiteral("window"), false);
-    node.insert(QStringLiteral("child_count"), childCount);
-    node.insert(QStringLiteral("children"), children);
+    if (!context.compact)
+        node.insert(QStringLiteral("window"), false);
+    if (!context.compact || childCount > 0)
+        node.insert(QStringLiteral("child_count"), childCount);
+    if (!context.compact || !children.isEmpty())
+        node.insert(QStringLiteral("children"), children);
     node.insert(QStringLiteral("props"), props);
     node.insert(QStringLiteral("rect"), QJsonObject{
         {QStringLiteral("x"), rect.x()}, {QStringLiteral("y"), rect.y()},
@@ -5728,6 +6165,9 @@ QJsonObject Server::buildQuickWindowNode(QQuickWindow* window,
         else if (context.where.contains(QStringLiteral("text")))
             selfMatch = matchText(context.where.value(QStringLiteral("text")),
                                   window->title());
+        else if (context.where.contains(QStringLiteral("inherits")))
+            selfMatch = matchInherits(
+                context.where.value(QStringLiteral("inherits")), window);
         else
             selfMatch = false;
     }
@@ -5741,8 +6181,12 @@ QJsonObject Server::buildQuickWindowNode(QQuickWindow* window,
     if (window->contentItem() &&
         context.emitted < QueryContext::kMaxEmitted) {
         for (QQuickItem* child : window->contentItem()->childItems()) {
-            if (!child || (!context.includeHidden && !child->isVisible()))
+            if (!child)
                 continue;
+            if (!context.includeHidden && !child->isVisible()) {
+                ++context.hiddenPruned;
+                continue;
+            }
             bool childMatch = false;
             int serial = 0;
             const QJsonObject node =
@@ -5767,15 +6211,19 @@ QJsonObject Server::buildQuickWindowNode(QQuickWindow* window,
     QJsonObject node;
     node.insert(QStringLiteral("id"), idForWindow(window));
     node.insert(QStringLiteral("class"), windowClass);
-    node.insert(QStringLiteral("qml_type"), QJsonValue::Null);
-    node.insert(QStringLiteral("qml_id"), QString());
+    if (!context.compact) {
+        node.insert(QStringLiteral("qml_type"), QJsonValue::Null);
+        node.insert(QStringLiteral("qml_id"), QString());
+    }
     node.insert(QStringLiteral("objectName"), window->objectName());
     node.insert(QStringLiteral("qml"), true);
     node.insert(QStringLiteral("window"), true);
     node.insert(QStringLiteral("minimized"),
                 window->windowStates().testFlag(Qt::WindowMinimized));
-    node.insert(QStringLiteral("child_count"), childCount);
-    node.insert(QStringLiteral("children"), children);
+    if (!context.compact || childCount > 0)
+        node.insert(QStringLiteral("child_count"), childCount);
+    if (!context.compact || !children.isEmpty())
+        node.insert(QStringLiteral("children"), children);
     node.insert(QStringLiteral("rect"), QJsonObject{
         {QStringLiteral("x"), 0}, {QStringLiteral("y"), 0},
         {QStringLiteral("w"), window->width()}, {QStringLiteral("h"), window->height()}});
@@ -5810,8 +6258,12 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
     bool childAny = false;
     for (QObject* object : children) {
         auto* child = qobject_cast<QWidget*>(object);
-        if (!child || !isCandidate(child, context.includeHidden))
+        if (!child)
             continue;
+        if (!isCandidate(child, context.includeHidden)) {
+            ++context.hiddenPruned;
+            continue;
+        }
         ++childCount;
         if (context.maxDepth >= 0 && depth >= context.maxDepth)
             continue;
@@ -5851,9 +6303,11 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
     node.insert(QStringLiteral("id"), idFor(widget));
     node.insert(QStringLiteral("class"),
                 QString::fromLatin1(widget->metaObject()->className()));
-    node.insert(QStringLiteral("qml_type"), QJsonValue::Null);
+    if (!context.compact) {
+        node.insert(QStringLiteral("qml_type"), QJsonValue::Null);
+        node.insert(QStringLiteral("qml_id"), QStringLiteral(""));
+    }
     node.insert(QStringLiteral("objectName"), widget->objectName());
-    node.insert(QStringLiteral("qml_id"), QStringLiteral(""));
 
     const bool window = widget->isWindow();
     QJsonObject rect;
@@ -5867,7 +6321,8 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
     rect.insert(QStringLiteral("w"), widget->width());
     rect.insert(QStringLiteral("h"), widget->height());
     node.insert(QStringLiteral("rect"), rect);
-    node.insert(QStringLiteral("window"), window);
+    if (!context.compact || window)
+        node.insert(QStringLiteral("window"), window);
     if (window)
         node.insert(QStringLiteral("minimized"), widget->isMinimized());
 
@@ -5892,8 +6347,10 @@ QJsonObject Server::buildNode(QWidget* widget, QueryContext& context,
         node.insert(QStringLiteral("matched"), selfMatch);
 
     addProps(&node, widget, context.props);
-    node.insert(QStringLiteral("child_count"), childCount);
-    node.insert(QStringLiteral("children"), childNodes);
+    if (!context.compact || childCount > 0)
+        node.insert(QStringLiteral("child_count"), childCount);
+    if (!context.compact || !childNodes.isEmpty())
+        node.insert(QStringLiteral("children"), childNodes);
     return node;
 }
 
@@ -5909,15 +6366,23 @@ void Server::countNode(QWidget* widget, QueryContext& context, int depth)
     const QObjectList children = widget->children();
     for (QObject* object : children) {
         auto* child = qobject_cast<QWidget*>(object);
-        if (!child || !isCandidate(child, context.includeHidden))
+        if (!child)
             continue;
+        if (!isCandidate(child, context.includeHidden)) {
+            ++context.hiddenPruned;
+            continue;
+        }
         countNode(child, context, depth + 1);
     }
     if (auto* quick = qobject_cast<QQuickWidget*>(widget)) {
         std::function<void(QQuickItem*, int)> countQml =
             [&](QQuickItem* item, int qmlDepth) {
-                if (!item || (!context.includeHidden && !item->isVisible()))
+                if (!item)
                     return;
+                if (!context.includeHidden && !item->isVisible()) {
+                    ++context.hiddenPruned;
+                    return;
+                }
                 ++context.total;
                 if (context.hasWhere && qmlMatches(item, context.where))
                     ++context.matched;
@@ -5936,7 +6401,8 @@ bool Server::matches(QWidget* widget, const QJsonObject& where) const
         QStringLiteral("id"), QStringLiteral("class"),
         QStringLiteral("object_name"), QStringLiteral("objectName"),
         QStringLiteral("qml_id"), QStringLiteral("qml_type"),
-        QStringLiteral("text"), QStringLiteral("props")};
+        QStringLiteral("text"), QStringLiteral("props"),
+        QStringLiteral("inherits")};
     for (auto it = where.begin(); it != where.end(); ++it) {
         if (!allowed.contains(it.key()))
             return false;
@@ -5951,6 +6417,9 @@ bool Server::matches(QWidget* widget, const QJsonObject& where) const
         QString::fromLatin1(widget->metaObject()->className());
     if (where.contains(QStringLiteral("class")) &&
         !matchText(where.value(QStringLiteral("class")), className))
+        return false;
+    if (where.contains(QStringLiteral("inherits")) &&
+        !matchInherits(where.value(QStringLiteral("inherits")), widget))
         return false;
     const QJsonValue objectNameSpec =
         where.contains(QStringLiteral("object_name"))

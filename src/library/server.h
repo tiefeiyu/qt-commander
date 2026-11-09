@@ -44,10 +44,12 @@ private:
         QJsonValue props;
         bool includeHidden = false;
         bool screenCoords = false;
+        bool compact = false;
         int maxDepth = -1;
         int matched = 0;
         int total = 0;
         int emitted = 0;
+        int hiddenPruned = 0;
         bool tooLarge = false;
         static constexpr int kMaxEmitted = 2000;
     };
