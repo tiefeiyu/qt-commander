@@ -156,7 +156,7 @@ props: { ...过滤器... }
 | `qt_query` | `(where?, scope?, props=None, coords="parent", max_depth=-1, limit=200, include_hidden=False, occlusion=False, count_only=False, compact=False)` |
 | `qt_items` | `(owner: id|locator, where?, limit=50, offset=0, include_hidden=False, compact=False, nth=None, session_id=None)`；非 QObject 子项 |
 | `qt_act` | 单一动作入口；见 §5.3；`settle_ms>0` 走有界事件泵，`observed` 带 props/changed |
-| `qt_batch` | `(steps, stop_on_error=True)`；steps 是 act/wait 的数组 |
+| `qt_batch` | `(steps, stop_on_error=True, timeout_ms=30000, max_steps=50)`；steps 是 act/wait/set/get 的数组；整批共享一个 deadline，wait 被裁剪到剩余时间，超预算返回已完成步骤 + `cause="batch_timeout"`；等待预算在派发前校验 |
 | `qt_wait` | `(condition, timeout_ms=2000)`；条件同 expect |
 | `qt_screenshot` | `(target?, max_width=1024, annotate="none", where=None, max_labels=50, format="png")` |
 | `qt_get` | `(target, props=None)`；单节点/虚拟节点读取 |

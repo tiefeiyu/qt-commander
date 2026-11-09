@@ -62,6 +62,7 @@ async def test_tool_descriptions_match_current_features():
     assert "set_geometry" in tools["qt_act"].description
     assert '"set":' in tools["qt_batch"].description
     assert '"get":' in tools["qt_batch"].description
+    assert "batch_timeout" in tools["qt_batch"].description
     assert "Q_INVOKABLE" in tools["qt_call"].description
     assert "source_dir" in tools["qt_source"].description
     assert "E_NO_DEBUGINFO" in tools["qt_source"].description

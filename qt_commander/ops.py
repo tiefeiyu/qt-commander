@@ -631,23 +631,78 @@ async def batch(
     steps: list[Mapping[str, Any]],
     *,
     stop_on_error: bool = True,
+    timeout_ms: int = 30000,
+    max_steps: int = 50,
 ) -> dict[str, Any]:
-    """Execute act/wait/set/get steps sequentially without a round-trip."""
+    """Execute act/wait/set/get steps sequentially within one budget.
+
+    The whole batch shares a single deadline so a long sequence cannot outlive
+    the MCP caller's timeout: every step runs with the remaining time, wait
+    steps are clamped to it, and an exhausted budget returns the completed
+    steps plus ``cause="batch_timeout"`` instead of losing everything.
+    """
     if not isinstance(steps, list):
         raise TypeError("steps must be a list")
+    if not 100 <= timeout_ms <= 60000:
+        raise ValueError("timeout_ms must be between 100 and 60000")
+    if not 1 <= max_steps <= 500:
+        raise ValueError("max_steps must be between 1 and 500")
+    if len(steps) > max_steps:
+        raise ValueError(
+            f"batch has {len(steps)} steps; max_steps is {max_steps}"
+        )
     validated = [_validate_step(step) for step in steps]
+    planned_wait = sum(
+        int(payload.get("timeout_ms", 2000))
+        for kind, payload in validated
+        if kind == "wait"
+    )
+    if planned_wait > timeout_ms:
+        raise ValueError(
+            f"wait steps alone may block {planned_wait} ms, above the batch "
+            f"budget of {timeout_ms} ms; raise timeout_ms or shorten the waits"
+        )
+    started = time.monotonic()
+    deadline = started + timeout_ms / 1000.0
     results: list[dict[str, Any]] = []
     ok = True
+    cause: str | None = None
     for kind, payload in validated:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            ok = False
+            cause = "batch_timeout"
+            break
+        step_payload = dict(payload)
+        if kind == "wait":
+            step_payload["timeout_ms"] = min(
+                int(step_payload.get("timeout_ms", 2000)),
+                max(1, int(remaining * 1000)),
+            )
         try:
             if kind == "act":
-                result = await act(session, **payload)
+                step = act(session, **step_payload)
             elif kind == "set":
-                result = await set_property(session, **payload)
+                step = set_property(session, **step_payload)
             elif kind == "get":
-                result = await get(session, **payload)
+                step = get(session, **step_payload)
             else:
-                result = await wait(session, **payload)
+                step = wait(session, **step_payload)
+            result = await asyncio.wait_for(step, timeout=remaining)
+        except asyncio.TimeoutError:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": ErrorCode.BATCH_TIMEOUT.value,
+                    "message": f"batch exceeded its {timeout_ms} ms budget "
+                               f"during {kind}",
+                    "retryable": False,
+                },
+            }
+            results.append(result)
+            ok = False
+            cause = "batch_timeout"
+            break
         except (RpcError, ClientTimeout, ClientClosed, ValueError, TypeError) as exc:
             result = _batch_error(exc)
         results.append(result)
@@ -656,5 +711,10 @@ async def batch(
             ok = False
             if stop_on_error:
                 break
-    return {"ok": ok, "steps": results}
+    payload_result: dict[str, Any] = {"ok": ok, "steps": results}
+    if cause:
+        payload_result["cause"] = cause
+        payload_result["timeout_ms"] = timeout_ms
+        payload_result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+    return payload_result
 

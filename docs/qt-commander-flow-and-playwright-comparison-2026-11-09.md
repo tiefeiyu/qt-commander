@@ -671,3 +671,17 @@ node .test-workspace\pw_bench.js
 > 重新 `qt_build` 并重启目标进程；Python 侧的 job/GC/中间件/`qt_items` locator
 > 需要重启 MCP server 进程。两者都只重启其中一个时，会出现“工具接受了参数但
 > 行为没变”的假象。
+
+### 10.4 后续小改动：qt_batch 预算（2026-11-09）
+
+评估结论是「暂不补动作 DSL，只补安全阀」：
+
+- `qt_batch(..., timeout_ms=30000, max_steps=50)`：整批共享一个 deadline，
+  每步用剩余时间执行，`wait` 的 `timeout_ms` 被裁剪到剩余预算；预算耗尽时
+  返回**已完成步骤** + `cause="batch_timeout"` + `elapsed_ms`，而不是让整个
+  MCP 调用被客户端 60 s 上限掐断、结果全丢。
+- 派发前校验：`sum(wait.timeout_ms) > timeout_ms` 或步数超过 `max_steps`
+  直接返回 `E_INVALID_ARGUMENT`，不会执行任何一步。
+- 实测：正常 2 步（click+expect → get）**22.9 ms**；`timeout_ms=500` +
+  `wait.timeout_ms=60000` 被拒；`max_steps=1` 的 2 步批次被拒。
+- 未做：步骤间传值、条件/循环、库内原子复合动作——评估认为当前无证据支持。

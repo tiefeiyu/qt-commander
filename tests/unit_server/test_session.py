@@ -1,6 +1,7 @@
 """Unit tests for session registry and typed request builders."""
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -360,6 +361,59 @@ async def test_batch_preserves_completed_steps_on_transport_error():
     assert result["ok"] is False
     assert len(result["steps"]) == 1
     assert result["steps"][0]["error"]["code"] == "E_TARGET_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_waits_above_budget():
+    session, client = make_session()
+    with pytest.raises(ValueError, match="budget"):
+        await ops.batch(
+            session,
+            [{"wait": {"condition": {"where": {"id": "x"}},
+                       "timeout_ms": 5000}}],
+            timeout_ms=1000,
+        )
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_too_many_steps():
+    session, client = make_session()
+    steps = [{"act": {"target": "x", "action": "click"}} for _ in range(3)]
+    with pytest.raises(ValueError, match="max_steps"):
+        await ops.batch(session, steps, max_steps=2)
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_batch_timeout_preserves_completed_steps(monkeypatch):
+    session, client = make_session()
+    client.act_results = [{"ok": True}]
+    real_act = ops.act
+    calls = {"n": 0}
+
+    async def act_with_slow_second(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return await real_act(*args, **kwargs)
+        await asyncio.sleep(0.5)
+        return {"ok": True}
+
+    monkeypatch.setattr(ops, "act", act_with_slow_second)
+    result = await ops.batch(
+        session,
+        [
+            {"act": {"target": "x", "action": "click"}},
+            {"act": {"target": "y", "action": "click"}},
+        ],
+        timeout_ms=200,
+    )
+    assert result["ok"] is False
+    assert result["cause"] == "batch_timeout"
+    assert result["elapsed_ms"] < 1000
+    assert len(result["steps"]) == 2
+    assert result["steps"][0].get("ok") is True
+    assert result["steps"][1]["error"]["code"] == "E_BATCH_TIMEOUT"
 
 
 @pytest.mark.asyncio

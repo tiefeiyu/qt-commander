@@ -1351,18 +1351,30 @@ async def qt_batch(
     session_id: str,
     steps: list[dict[str, Any]],
     stop_on_error: bool = True,
+    timeout_ms: int = 30000,
+    max_steps: int = 50,
 ) -> dict[str, Any]:
-    """Run steps sequentially.
+    """Run steps sequentially within one budget.
 
     Each step is exactly one of {"act": {...}}, {"wait": {...}},
     {"set": {...}}, or {"get": {...}}. Useful for write/read/restore
-    sequences; ``stop_on_error`` is true by default.
+    sequences; ``stop_on_error`` is true by default. The whole batch shares
+    ``timeout_ms`` (100..60000): waits are clamped to the remaining time, and
+    an exhausted budget returns the completed steps with
+    ``cause="batch_timeout"`` instead of losing the whole call. ``max_steps``
+    bounds the sequence length.
     """
     session = _session(session_id)
     if isinstance(session, dict):
         return session
     try:
-        return await ops.batch(session, steps, stop_on_error=stop_on_error)
+        return await ops.batch(
+            session,
+            steps,
+            stop_on_error=stop_on_error,
+            timeout_ms=timeout_ms,
+            max_steps=max_steps,
+        )
     except Exception as exc:
         return _map_error(exc)
 

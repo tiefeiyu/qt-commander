@@ -128,7 +128,10 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
 - `qt_screenshot(annotate=...)` 支持 `annotate_offset` 分页；legend 的 `n`
   跨页连续。
 - `qt_batch` 每步必须是 `{"act": ...}`、`{"wait": ...}`、`{"set": ...}` 或
-  `{"get": ...}` 之一，按顺序完成写入/读取/恢复（失败不自动回滚）。
+  `{"get": ...}` 之一，按顺序完成写入/读取/恢复（失败不自动回滚）。整批共享
+  `timeout_ms`（默认 30000，上限 60000）：`wait` 会被裁剪到剩余时间，超预算时
+  返回已完成步骤 + `cause="batch_timeout"`，不会让整个调用被客户端掐断；
+  `max_steps`（默认 50）限制步数，等待预算在派发前校验。
 - `qt_act(target=<窗口 id>, action="minimize"|"restore")` 可最小化/恢复
   QWindow/QQuickWindow；restore 保持原几何。
   `action="set_geometry"` + `geometry={x,y,w,h}` 返回实际 `resolved.rect`
