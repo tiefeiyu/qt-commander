@@ -1233,9 +1233,25 @@ void Server::sendOperationError(QTcpSocket* socket, const QJsonValue& id,
               result.value(QStringLiteral("message")).toString(), details);
 }
 
+Server::~Server()
+{
+    // Requests that never started are safe to drop. Tasks still in inflight_
+    // are sitting on a stack frame inside the target and must not be deleted.
+    for (Task* task : queue_)
+        delete task;
+    queue_.clear();
+}
+
 void Server::enqueue(QTcpSocket* socket, const QJsonValue& id,
                      const QString& method, const QJsonObject& params)
 {
+    constexpr int kMaxQueued = 256;
+    if (queue_.size() >= kMaxQueued) {
+        sendError(socket, id, QStringLiteral("E_BUSY"),
+                  QStringLiteral("too many queued requests; retry after the "
+                                 "current task completes"));
+        return;
+    }
     auto* task = new Task;
     task->id = tag_ + QLatin1Char('-') + QString::number(++taskCounter_);
     task->method = method;

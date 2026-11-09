@@ -46,10 +46,15 @@ class Server : public QObject {
     Q_OBJECT
 public:
     Server(QString token, QString tag, QObject* parent = nullptr);
+    ~Server() override;
 
     bool listen(quint16* port, QString* error);
     QString token() const { return token_; }
     QString sessionTag() const { return tag_; }
+    // True while a request is executing (or already responded but still on the
+    // target's stack). Deleting the Server in that state would free memory the
+    // running frame still touches, so shutdown leaks it instead.
+    bool busy() const { return active_ != nullptr || !inflight_.isEmpty(); }
 
 private slots:
     void onNewConnection();

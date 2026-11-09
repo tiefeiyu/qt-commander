@@ -252,7 +252,15 @@ StartResult start(const StartOptions& options)
 
 void stop()
 {
-    g_server.reset();
+    if (g_server && g_server->busy()) {
+        // A request (or a completed-but-running task) still lives on the
+        // target's stack. Freeing the Server here would leave that frame
+        // writing into freed memory, so leak it deliberately: the process is
+        // shutting down and the OS reclaims everything anyway.
+        g_server.release();
+    } else {
+        g_server.reset();
+    }
     if (!g_descriptorPath.isEmpty())
         QFile::remove(g_descriptorPath);
     g_descriptorPath.clear();
