@@ -143,25 +143,26 @@ props: { ...过滤器... }
 
 ---
 
-## 4. 工具面（15）
+## 4. 工具面（20）
 
 | 工具 | 签名与要点 |
 |---|---|
-| `qt_status` | `(session_id=None)`；构建、进程、内存会话、磁盘可 resume 会话、平台能力；有 session 时带 live ping |
+| `qt_status` | `(session_id=None)`；构建、进程、内存会话、磁盘可 resume 会话、平台能力；有 session 时带 live ping；`descriptor_info` 只给 alive + 最近 5 个 dead，另给 `descriptor_total/dead` |
 | `qt_environments` | 发现 VS / MinGW / Qt |
-| `qt_build` | `(toolchain, qt_major, arch, build_type, qt_env, vcvars_path?, ...)`；单一 build（QML+JS） |
-| `qt_attach` | `(pid=None, session_id=None, build_id=None, mode="auto")`；pid 新接入，session_id 手动 resume |
-| `qt_detach` | `(session_id, purge=False)` |
-| `qt_query` | `(where?, scope?, props=None, coords="parent", max_depth=-1, limit=200, include_hidden=False, occlusion=False, count_only=False)` |
-| `qt_items` | `(owner, where?, limit=50, offset=0, include_hidden=False)`；非 QObject 子项 |
-| `qt_act` | 单一动作入口；见 §5.3 |
+| `qt_build` | `(toolchain, qt_major, arch, build_type, qt_env, vcvars_path?, ..., timeout_s=300, wait_s=20)`；单一 build（QML+JS）；超出 `wait_s` 返回 `status="running"` + `job_id`，同参数复用同一 job |
+| `qt_build_status` | `(job_id=None)`；后台构建 job 的进度/结果，`None` 时列最近 5 个 |
+| `qt_attach` | `(pid=None, session_id=None, build_id=None, mode="auto", artifact_dir=None)`；pid 新接入，session_id 手动 resume，artifact_dir 消除歧义 |
+| `qt_detach` | `(session_id, purge=False)`；purge 删除该会话的 descriptor 文件并触发一次 dead GC |
+| `qt_query` | `(where?, scope?, props=None, coords="parent", max_depth=-1, limit=200, include_hidden=False, occlusion=False, count_only=False, compact=False)` |
+| `qt_items` | `(owner: id|locator, where?, limit=50, offset=0, include_hidden=False, compact=False, nth=None, session_id=None)`；非 QObject 子项 |
+| `qt_act` | 单一动作入口；见 §5.3；`settle_ms>0` 走有界事件泵，`observed` 带 props/changed |
 | `qt_batch` | `(steps, stop_on_error=True)`；steps 是 act/wait 的数组 |
 | `qt_wait` | `(condition, timeout_ms=2000)`；条件同 expect |
 | `qt_screenshot` | `(target?, max_width=1024, annotate="none", where=None, max_labels=50, format="png")` |
 | `qt_get` | `(target, props=None)`；单节点/虚拟节点读取 |
 | `qt_set` | `(target, name, value)`；destructive |
 | `qt_call` | `(target, method, args=None)`；destructive；不返回 QObject* |
-| `qt_source` | `(target, context_lines=0)`；源码位置/handler，待子代理定稿 |
+| `qt_source` | `(target, handler=None, snippet_lines=3, max_lines=20, source_dir=None)`；有界扫描 120 ms/20k 条目，返回 `search{roots,visited,truncated}`、`snippet`；`E_NO_DEBUGINFO` / `E_SOURCE_TIMEOUT` |
 
 ---
 
@@ -171,7 +172,7 @@ props: { ...过滤器... }
 
 - `where`：locator，字段 `class`、`inherits`、`object_name`、`qml_id`、`props`、`within`、`window`；全部 AND。
 - `scope`：`{id}` 或 `{window}`；缺省所有顶层窗口；已支持限定到任意 widget 子树。
-- `where` 支持 `id/class/object_name`（兼容 `objectName`）`/qml_id/qml_type/text/props`；字符串默认精确匹配，支持 `*`/`?` 通配和 `{contains/startsWith/regex/equals: "..."}`；无效值返回 `E_INVALID_FILTER` 并列出支持键。
+- `where` 支持 `id`/`class`/`inherits`/`object_name`（兼容 `objectName`）/`qml_id`/`qml_type`/`text`/`props`；字符串默认精确匹配，支持 `*`/`?` 通配和 `{contains/startsWith/regex/equals: "..."}`；无效值返回 `E_INVALID_FILTER` 并列出支持键。`inherits` 沿 metaobject 继承链匹配，`{"inherits":"QTableView"}` 可命中 `QTableWidget`。
 - `coords:"screen"` 为每个节点增加 `screen_rect`；`coords:"parent"`（默认）只给局部 rect。截图 legend 也带 `screen_rect`。
 - QML-only 应用（QQuickWindow/QQuickView，没有 QWidget 顶层）也作为顶层根：`qt_windows` 返回 `QQuickWindow`，`qt_query`/`qt_items`/`qt_get`/`qt_act`/`qt_screenshot` 走通用 QML item 路径；QML 虚拟 id 形如 `<tag>.vqml.<window>.<ptr>`。QML 点击会沿 parentItem 找到可接受左键的祖先/AbstractButton/MouseArea；QML `key` 发到窗口，`type`/`set` 写 `text`/可写属性并返回 `text_after`/old/new；对 QML 虚拟 id 截图会裁剪到该 item 的 scene rect。
 - `limit` 是软截断：超出时返回部分树并置 `count/total/limit/truncated`，不再用 `E_RESULT_TOO_LARGE` 直接拒绝；硬上限仍是 2000。
@@ -179,7 +180,8 @@ props: { ...过滤器... }
 - `where` 存在时返回剪枝树：命中节点带 `matched:true`，祖先保留结构。
 - `count_only:true` 只返回 `{count}`，不建树、不序列化；expect 轮询用它。
 - **all-or-nothing**：结果超过 `limit` 或硬上限（2000 节点 / 2 MB）→ `E_RESULT_TOO_LARGE`，不返回部分树。
-- `include_hidden`：默认剪掉隐藏子树；`true` 才纳入。
+- `include_hidden`：默认剪掉隐藏子树；`true` 才纳入。被剪掉的子树根数通过 `hidden_pruned` 返回（仅非 0 时出现）；`where` 未命中且存在隐藏命中时，MCP 层补一次 `include_hidden+count_only` 探测并返回 `hidden_matched` + hint，避免 `count:0` 被误读成“不存在”。
+- `compact`：默认 `false`；`true` 时省略默认值字段（`children:[]`、`child_count:0`、`qml_id:""`、`qml_type:null`、`window:false`），`id/class/objectName/rect/props` 永远保留。
 - `occlusion:true`：对返回节点计算 `visible_ratio`/`covered_by`，只在同窗口内计算；窗口之间永不互相遮挡。
 - 顺序确定：窗口顺序 + 树序；不随机。
 
@@ -320,6 +322,7 @@ qt_source(target, handler=None, snippet_lines=3, max_lines=20)
 - Widgets：`.ui` 不在运行时通常不可得；PDB/DWARF 只到类构造/方法行；`objectName`+`.ui`（qrc/本地）才能精确到 `.ui` 行。
 - 版本校验：`unitData()->qtVersion` vs `qVersion()`；manifest/source hash；不符 `stale:true, confidence:"low"`。
 - 默认不扫全盘、不下载 PDB；`source_root`/`path_map`/`qrc_map`/`ui_roots`/`manifest` 显式配置；snippet 默认 3 行、上限 20 行/8KB；root 外不返回本地路径。
+- 有界扫描：默认预算 120 ms / 20000 条目 / 深度 8，跳过 `.git/.venv/build/node_modules/CMakeFiles/__pycache__`；超出返回 `E_SOURCE_TIMEOUT` + `search{roots,visited,truncated,budget_ms}`。显式 `source_dir` 时**只扫该目录**，不再追加 exe 目录/cwd/祖先。命中与未命中都进缓存（未命中 512 条上限）。
 - Qt5/6 分别编译（`QQmlData` 布局不同）；启动 `qVersion()` 门控；未知版本 `E_UNSUPPORTED_QT`。
 - 错误：`E_NO_LOCATION`、`E_SOURCE_UNAVAILABLE`、`E_SOURCE_DISCARDED`、`E_SOURCE_STALE`、`E_NO_DEBUGINFO`、`E_MAPPING_AMBIGUOUS`、`E_HANDLER_NOT_FOUND`、`E_UNSUPPORTED_QT`。
 - `available` 仅指源码文本；位置本身永远尽量返回，不因源码缺失报 RPC 错误。
@@ -424,7 +427,7 @@ manifest：
 }
 ```
 
-- 同一路径 rebuild in place；source_hash 一致复用。
+- 同一路径 rebuild in place；source_hash 一致复用。artifact 选择规则：编译器版本必须由**构建实际使用的编译器**探测（不再依赖 PATH 里的 `g++`）；多个候选时先精确版本、再唯一带版本、都没有才 `E_ARTIFACT_AMBIGUOUS`；歧义时客户端可传 `qt_attach(artifact_dir=...)` 指定。默认 build 目录若已被其它源码占用，自动隔离为 `<dir>_<hash8>`，不覆盖他人 build tree。
 - `qt_build` 不再接受 `with_qml`/`with_js`。
 - `qt_attach` 匹配四个维度；不做 Quick 选 build；`build_id` 显式覆盖。
 

@@ -83,12 +83,26 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 19 个 MCP 工具。当前可用：
-  `status`、`target_info`、`processes`、`environments`、`build`、`attach`、
-  `detach`、`windows`、`query`、`items`、`act`、`batch`、`wait`、`screenshot`、
-  `get`、`set`、`call`、`methods`、`source`。`source` 会搜索目标源码树（以及
-  `QT_COMMANDER_SOURCE_DIR` / 显式 `source_dir`）中的 `.ui`/`.qml`，未命中才
-  返回身份信息和 `E_NO_DEBUGINFO`。
+- 已注册 20 个 MCP 工具。当前可用：
+  `status`、`target_info`、`processes`、`environments`、`build`、`build_status`、
+  `attach`、`detach`、`windows`、`query`、`items`、`act`、`batch`、`wait`、
+  `screenshot`、`get`、`set`、`call`、`methods`、`source`。`source` 只做有界扫描
+  （默认 120 ms / 2 万条目预算，结果带 `search{roots,visited,truncated}`），
+  未命中返回 `E_NO_DEBUGINFO`，预算耗尽返回 `E_SOURCE_TIMEOUT`；命中时可按
+  `snippet_lines`/`max_lines` 返回代码片段。
+- `qt_build` 是后台 job：`wait_s` 内没完成会返回 `status:"running"` + `job_id`，
+  用 `qt_build_status` 查询；相同参数的重复调用复用一个 job。构建目录被其它源码
+  占用时会自动隔离到 `_<hash>` 后缀，不再覆盖别人的 build tree。
+- `qt_processes` 三级判定：live descriptor → exe 邻接 Qt 运行时 → **进程已加载的
+  模块**（`psutil.memory_maps`，带 2 s 预算与缓存）。每条结果带
+  `evidence: descriptor|adjacent|module`；`QT_COMMANDER_PROCESS_MODULES=0` 可关闭
+  模块扫描。
+- `qt_query` 的 `where` 支持 `inherits`（沿 metaobject 继承链匹配，例如
+  `{"inherits":"QTableView"}` 能命中 `QTableWidget`）；`compact=true` 省略默认值
+  字段以省 token；隐藏剪枝会通过 `hidden_pruned` 与
+  `hidden_matched` + hint 暴露出来，不再静默 `count:0`。
+- `qt_attach(artifact_dir=...)` 可在多个 artifact 匹配时指定目录；artifact 选择
+  优先“精确版本 > 唯一带版本 > 报歧义”。
 - `items` 已覆盖 `QTabWidget`/`QTabBar`、`QMenuBar`/`QMenu`、`QHeaderView`、
   `QTableView`、`QTreeView`、`QListView`、`QComboBox`、`QScrollBar`、`QSlider`、
   `QSpinBox`、可勾选的 `QGroupBox`、`QDockWidget` 标题按钮、`QSplitter`
