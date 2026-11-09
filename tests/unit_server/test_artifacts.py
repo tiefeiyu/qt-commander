@@ -7,6 +7,42 @@ import json
 from qt_commander import artifacts
 
 
+def _make_artifact(tmp_path, version, qt_debug=False):
+    directory = artifacts.build_dir(
+        os_name="windows",
+        arch="x64",
+        compiler="mingw",
+        compiler_version=version,
+        qt_version="5.15.2",
+        qt_debug=qt_debug,
+        root=tmp_path,
+    )
+    artifacts.write_manifest(
+        directory,
+        os_name="windows",
+        arch="x64",
+        compiler="mingw",
+        compiler_version=version,
+        qt_version="5.15.2",
+        qt_debug=qt_debug,
+        build_type="Debug",
+        injector="bin/qtc-inject.exe",
+        library="lib/qt_commander_inject.dll",
+    )
+    return directory
+
+
+def _target(**extra):
+    return {
+        "os": "windows",
+        "arch": "x64",
+        "qt_version": "5.15.2",
+        "debug": False,
+        "toolchain": "mingw",
+        **extra,
+    }
+
+
 def test_build_dir_is_nested_and_compact(tmp_path):
     path = artifacts.build_dir(
         os_name="windows",
@@ -98,3 +134,29 @@ def test_find_rejects_wrong_qt(tmp_path):
     )
     assert found["ok"] is False
     assert found["error"] == "E_ARTIFACT_NOT_FOUND"
+
+
+def test_find_prefers_versioned_over_unknown(tmp_path):
+    good = _make_artifact(tmp_path, "13.1.0")
+    _make_artifact(tmp_path, None)
+    found = artifacts.find(_target(), root=tmp_path)
+    assert found["ok"] is True
+    assert found["directory"] == good
+
+
+def test_find_prefers_exact_version(tmp_path):
+    exact = _make_artifact(tmp_path, "13.1.0")
+    _make_artifact(tmp_path, "14.2.0")
+    found = artifacts.find(_target(compiler_version="13.1.0"), root=tmp_path)
+    assert found["ok"] is True
+    assert found["directory"] == exact
+
+
+def test_find_stays_ambiguous_when_both_versioned(tmp_path):
+    _make_artifact(tmp_path, "13.1.0")
+    _make_artifact(tmp_path, "14.2.0")
+    found = artifacts.find(_target(), root=tmp_path)
+    assert found["ok"] is False
+    assert found["error"] == "E_ARTIFACT_AMBIGUOUS"
+    assert found["candidates"]
+    assert "artifact_dir" in found["hint"]

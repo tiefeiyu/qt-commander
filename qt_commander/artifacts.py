@@ -171,7 +171,13 @@ def listing(root: Path = ROOT) -> list[dict[str, Any]]:
 
 
 def find(target: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
-    """Find exactly one artifact matching target metadata under one root."""
+    """Find exactly one artifact matching target metadata under one root.
+
+    A target whose compiler version is unknown (common before injection) must
+    not be blocked by an artifact built with an unknown compiler version: when
+    several match, prefer the single artifact that pins a version, then the one
+    that matches the target version exactly.
+    """
     matches: list[tuple[Path, dict[str, Any]]] = []
     available: list[dict[str, Any]] = []
     if root.is_dir():
@@ -186,6 +192,27 @@ def find(target: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
             )
             if _matches(manifest, target):
                 matches.append((directory, manifest))
+
+    def version_of(manifest: dict[str, Any]) -> str | None:
+        return (manifest.get("compiler") or {}).get("version")
+
+    if len(matches) > 1:
+        family = (matches[0][1].get("compiler") or {}).get("family") or ""
+        target_version = target.get("compiler_version")
+        if target_version:
+            exact = [
+                item for item in matches
+                if version_of(item[1])
+                and compiler_abbrev(family, version_of(item[1]))
+                == compiler_abbrev(family, target_version)
+            ]
+            if len(exact) == 1:
+                matches = exact
+        if len(matches) > 1:
+            pinned = [item for item in matches if version_of(item[1])]
+            if len(pinned) == 1:
+                matches = pinned
+
     if not matches:
         expected = None
         try:
@@ -213,25 +240,38 @@ def find(target: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
             "available": available,
         }
     if len(matches) > 1:
+        candidates = [
+            {"directory": str(directory),
+             "compiler_version": version_of(manifest)}
+            for directory, manifest in matches
+        ]
         return {
             "ok": False,
             "error": "E_ARTIFACT_AMBIGUOUS",
-            "message": "multiple artifacts match the target; specify the "
-                       "artifact directory explicitly",
+            "message": "multiple artifacts match the target",
             "searched": str(root),
-            "candidates": [str(directory) for directory, _ in matches],
+            "candidates": candidates,
+            "hint": "retry qt_attach(pid=..., artifact_dir=<one of candidates>), "
+                    "or remove the stale duplicate artifact directory",
             "available": available,
         }
     directory, manifest = matches[0]
     return {"ok": True, "directory": directory, "manifest": manifest}
 
 
-def compiler_version(family: str) -> str | None:
-    executable = {
-        "mingw": shutil.which("g++") or shutil.which("gcc"),
-        "gcc": shutil.which("gcc"),
-        "clang": shutil.which("clang++"),
-    }.get(family)
+def compiler_version(family: str, executable: str | None = None) -> str | None:
+    """Return the compiler version, optionally from an explicit executable.
+
+    ``qt_build`` resolves the compiler it is about to use (which may live
+    outside PATH, e.g. a Qt kit toolchain); passing that executable here keeps
+    the artifact directory name and the actual build in sync.
+    """
+    if not executable:
+        executable = {
+            "mingw": shutil.which("g++") or shutil.which("gcc"),
+            "gcc": shutil.which("gcc"),
+            "clang": shutil.which("clang++"),
+        }.get(family)
     if not executable:
         return None
     try:

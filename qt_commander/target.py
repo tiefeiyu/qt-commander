@@ -10,11 +10,19 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import struct
+import time
 from pathlib import Path
 from typing import Any
 
 import psutil
+
+_MODULE_CACHE: dict[tuple[int, float], dict[str, Any]] = {}
+_MODULE_SCAN_BUDGET_SECONDS = 2.0
+_MODULE_SCAN_ENV = "QT_COMMANDER_PROCESS_MODULES"
+_MODULE_EVIDENCE_LIMIT = 8
+_SO_VERSION_RE = re.compile(r"\.so(?:\.(\d+(?:\.\d+)*))?$")
 
 _ARCH_BY_PE_MACHINE = {
     0x014C: "x86",
@@ -262,6 +270,33 @@ def _runtime_from_build_id(build_id: str | None) -> dict[str, Any]:
     return result
 
 
+def _module_basename(path: str) -> str:
+    """Return a lowercase basename for both Windows and POSIX paths."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _qt_core_major(basename: str) -> int | None:
+    """Return the Qt major version for a Qt Core module basename."""
+    name = basename[3:] if basename.startswith("lib") else basename
+    if name.startswith("qt5core"):
+        return 5
+    if name.startswith("qt6core"):
+        return 6
+    return None
+
+
+def _is_runtime_library(basename: str) -> bool:
+    """Accept Windows ``.dll`` and Linux ``.so``/``.so.<version>`` names."""
+    return basename.endswith(".dll") or bool(_SO_VERSION_RE.search(basename))
+
+
+def _shared_library_version(basename: str) -> str | None:
+    match = _SO_VERSION_RE.search(basename)
+    if match is None:
+        return None
+    return match.group(1)
+
+
 def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
     """Find a Qt runtime and derive toolchain only from that runtime's dir."""
     fallback_toolchain: str | None = None
@@ -280,15 +315,14 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
         evidence: list[str] = []
         for entry in entries:
             lower = entry.name.lower()
-            if lower.startswith("qt5core") and lower.endswith(".dll"):
-                qt_major = 5
-                qt_debug = lower.endswith("d.dll")
-                qt_version = _file_version(entry) or qt_version
-                evidence.append(str(entry))
-            elif lower.startswith("qt6core") and lower.endswith(".dll"):
-                qt_major = 6
-                qt_debug = lower.endswith("d.dll")
-                qt_version = _file_version(entry) or qt_version
+            major = _qt_core_major(lower)
+            if major is not None and _is_runtime_library(lower):
+                qt_major = major
+                if lower.endswith(".dll"):
+                    qt_debug = lower.endswith("d.dll")
+                    qt_version = _file_version(entry) or qt_version
+                else:
+                    qt_version = _shared_library_version(lower) or qt_version
                 evidence.append(str(entry))
             elif lower.startswith(("msvcp", "vcruntime")):
                 toolchain = "msvc"
@@ -331,6 +365,99 @@ def _path_runtime(process: psutil.Process) -> dict[str, Any]:
     return _scan_runtime_dirs(directories[:64])
 
 
+def _module_scan_enabled() -> bool:
+    value = os.environ.get(_MODULE_SCAN_ENV)
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _module_cache_key(process: psutil.Process) -> tuple[int, float] | None:
+    info = getattr(process, "info", None)
+    info = info if isinstance(info, dict) else {}
+    pid = info.get("pid")
+    if not isinstance(pid, int):
+        try:
+            pid = process.pid
+        except (psutil.Error, AttributeError):
+            return None
+    create_time = info.get("create_time")
+    if not isinstance(create_time, (int, float)):
+        try:
+            create_time = process.create_time()
+        except (psutil.Error, OSError, AttributeError):
+            create_time = 0.0
+    return (pid, float(create_time))
+
+
+def _scan_loaded_modules(process: psutil.Process) -> dict[str, Any]:
+    try:
+        entries = process.memory_maps()
+    except (psutil.Error, OSError, NotImplementedError):
+        return {}
+    qt_major: int | None = None
+    qt_version: str | None = None
+    debug: bool | None = None
+    toolchain: str | None = None
+    evidence: list[str] = []
+    try:
+        for entry in entries:
+            path = getattr(entry, "path", None)
+            if not isinstance(path, str) or not path:
+                continue
+            lower = _module_basename(path)
+            major = _qt_core_major(lower)
+            if major is not None:
+                if qt_major is None:
+                    qt_major = major
+                    if os.name == "nt":
+                        # Windows exposes an exact PE version; the debug
+                        # runtime is named Qt5Cored.dll.
+                        debug = lower.endswith("d.dll")
+                        qt_version = _file_version(Path(path))
+                    else:
+                        # Linux: libQt5Core.so.5.15.2 -> "5.15.2".
+                        debug = False
+                        qt_version = _shared_library_version(lower)
+                evidence.append(path)
+            elif lower.startswith(("msvcp", "vcruntime")):
+                toolchain = "msvc"
+                evidence.append(path)
+            elif lower.startswith(("libstdc++", "libgcc", "libwinpthread")):
+                toolchain = toolchain or "mingw"
+                evidence.append(path)
+    except (psutil.Error, OSError, NotImplementedError):
+        return {}
+    return {
+        "qt_major": qt_major,
+        "qt_version": qt_version,
+        "debug": debug,
+        "toolchain": toolchain,
+        "evidence": evidence[:_MODULE_EVIDENCE_LIMIT],
+    }
+
+
+def _module_runtime(process: psutil.Process) -> dict[str, Any]:
+    """Detect a Qt runtime from modules loaded into a live process.
+
+    ``psutil`` implements ``memory_maps()`` with ``VirtualQueryEx`` on
+    Windows and ``/proc/<pid>/maps`` on Linux; on macOS it raises
+    ``NotImplementedError``. All probe failures are swallowed so process
+    discovery degrades to "unknown" instead of failing.
+    """
+    cache_key = _module_cache_key(process)
+    if cache_key is not None:
+        cached = _MODULE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    result = _scan_loaded_modules(process)
+    if cache_key is not None:
+        if len(_MODULE_CACHE) >= 4096:
+            _MODULE_CACHE.clear()
+        _MODULE_CACHE[cache_key] = result
+    return result
+
+
 def list_processes(
     descriptors: dict[int, Path] | None = None,
     name: str | None = None,
@@ -340,15 +467,28 @@ def list_processes(
 ) -> dict[str, Any]:
     """List accessible processes that look like Qt targets.
 
-    Discovery is intentionally conservative: a process qualifies via a live
-    descriptor or a Qt Core runtime next to its executable. It never injects.
+    Discovery is conservative and uses three levels, in order: a live
+    descriptor, a Qt Core runtime next to the executable, and finally the Qt
+    Core modules loaded into the process (via ``psutil`` memory maps). Each
+    entry reports the matching level in ``evidence`` as ``"descriptor"``,
+    ``"adjacent"`` or ``"module"`` (``None`` for a raw non-Qt listing). Module
+    scanning is expensive, so it is cached per process and bounded by a
+    wall-clock budget; ``module_scan`` reports ``enabled``/``partial``/``ms``.
+    Set ``QT_COMMANDER_PROCESS_MODULES=0`` to disable it. Never injects.
     """
     descriptors = descriptors or {}
     needle = (name or "").lower()
     found: list[dict[str, Any]] = []
     runtime_cache: dict[Path, dict[str, Any]] = {}
     arch_cache: dict[Path, dict[str, Any]] = {}
-    for proc in psutil.process_iter(["pid", "name", "exe"]):
+    module_enabled = _module_scan_enabled()
+    scan_started = time.monotonic()
+    # A name filter already reduces the candidate set, so it lifts the budget.
+    budget_limited = module_enabled and not needle
+    deadline = scan_started + _MODULE_SCAN_BUDGET_SECONDS
+    module_partial = False
+    module_ms = 0.0
+    for proc in psutil.process_iter(["pid", "name", "exe", "create_time"]):
         info = proc.info
         pid = info.get("pid")
         if not isinstance(pid, int):
@@ -361,20 +501,42 @@ def list_processes(
         descriptor = descriptors.get(pid)
         descriptor_data = _read_descriptor(descriptor) if descriptor else {}
         descriptor_qt = _descriptor_qt(descriptor_data)
+        evidence: str | None = None
         # A live descriptor is definitive; avoid scanning every process's
         # neighbouring directories just to discover it. Runtime/arch results
         # are cached by directory/path because many processes share them.
         if descriptor:
             runtime = {}
+            evidence = "descriptor"
         elif exe:
             runtime = runtime_cache.get(exe.parent)
             if runtime is None:
                 runtime = _adjacent_runtime(exe)
                 runtime_cache[exe.parent] = runtime
+            if runtime.get("qt_major") is not None:
+                evidence = "adjacent"
         else:
             runtime = {}
-        if runtime.get("qt_major") is None and not descriptor_qt:
-            if not include_non_qt:
+        if (
+            runtime.get("qt_major") is None
+            and not descriptor_qt
+            and not include_non_qt
+        ):
+            # Third-level fallback: modules actually loaded into the process.
+            # Raw ``include_non_qt`` listings do not need it: they are never
+            # skipped, so scanning every process would only add latency.
+            module_runtime: dict[str, Any] = {}
+            if module_enabled:
+                if budget_limited and time.monotonic() >= deadline:
+                    module_partial = True
+                else:
+                    module_started = time.monotonic()
+                    module_runtime = _module_runtime(proc)
+                    module_ms += (time.monotonic() - module_started) * 1000.0
+                if module_runtime.get("qt_major") is not None:
+                    runtime = module_runtime
+                    evidence = "module"
+            if runtime.get("qt_major") is None:
                 continue
         result: dict[str, Any] = {
             "pid": pid,
@@ -392,6 +554,7 @@ def list_processes(
             "qt_version": runtime.get("qt_version") or descriptor_qt.get("qt_version"),
             "debug": runtime.get("debug"),
             "toolchain": runtime.get("toolchain"),
+            "evidence": evidence,
             "has_descriptor": descriptor is not None,
             "descriptor": str(descriptor) if descriptor else None,
             "session_id": descriptor_data.get("session_id"),
@@ -419,14 +582,30 @@ def list_processes(
         found.append(result)
     total = len(found)
     page = found[offset:offset + max(1, limit)]
-    return {
+    payload: dict[str, Any] = {
         "count": len(page),
         "total": total,
         "limit": max(1, limit),
         "offset": offset,
         "truncated": offset + len(page) < total,
         "processes": page,
+        "module_scan": {
+            "enabled": module_enabled,
+            "partial": module_partial,
+            "ms": int(module_ms),
+        },
     }
+    if not page and not include_non_qt:
+        payload["hint"] = (
+            "no Qt target matched; retry with include_non_qt=true "
+            "for a raw process list"
+        )
+    elif module_partial:
+        payload["hint"] = (
+            "module scan hit its time budget before every process was "
+            "inspected; pass name= to scan a specific process"
+        )
+    return payload
 
 
 def target_info(pid: int | None = None,

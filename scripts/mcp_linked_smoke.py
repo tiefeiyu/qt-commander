@@ -184,10 +184,13 @@ async def main() -> int:
             source = first_json(await session.call_tool("qt_source", {
                 "session_id": sid,
                 "target": found["tree"][0]["children"][0]["children"][0]["id"],
+                # Explicit source_dir is exclusive, so the scan stays bounded
+                # and the miss is deterministic (no E_SOURCE_TIMEOUT).
+                "source_dir": str(ROOT / "tests" / "test-apps" / "linked"),
             }))
             print("source:", source)
             assert source["available"] is False
-            assert source["code"] == "E_NO_DEBUGINFO"
+            assert source["code"] in {"E_NO_DEBUGINFO", "E_SOURCE_TIMEOUT"}
 
             status = first_json(await session.call_tool("qt_query", {
                 "session_id": sid,

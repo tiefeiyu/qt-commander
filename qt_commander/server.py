@@ -2,18 +2,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import psutil
 from fastmcp import FastMCP
+from fastmcp.exceptions import ValidationError as ToolValidationError
+from fastmcp.server.middleware import Middleware
+from fastmcp.tools import ToolResult
 from fastmcp.utilities.types import Image
 
 from . import artifacts, inject, ops, target
@@ -146,6 +151,32 @@ def _descriptor_summary(path: Path) -> dict[str, Any]:
     return summary
 
 
+def _gc_descriptors(min_age_s: float = 300.0) -> int:
+    """Delete descriptors whose process is gone (best effort, never raises).
+
+    Only called from write paths (attach/detach): ``qt_status`` stays read-only.
+    """
+    removed = 0
+    now = time.time()
+    for path in _descriptor_candidates():
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            summary = _descriptor_summary(path)
+            pid = summary.get("pid")
+            if not isinstance(pid, int) or summary.get("pid_alive") is not False:
+                continue
+            if now - path.stat().st_mtime < min_age_s:
+                continue
+            if psutil.pid_exists(pid):
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def _error(code: str, message: str, *, retryable: bool = False,
            hint: str | None = None) -> dict[str, Any]:
     error: dict[str, Any] = {
@@ -206,25 +237,35 @@ async def _await_descriptor_for_pid(pid: int, timeout_s: float = 20.0) -> Path |
     return None
 
 
-async def _inject_target(pid: int) -> Path | dict[str, Any]:
-    dll = inject.default_dll_path(pid)
+async def _inject_target(pid: int,
+                         artifact_dir: str | None = None) -> Path | dict[str, Any]:
+    dll = inject.default_dll_path(pid, artifact_dir)
     if dll is None:
-        detail = inject.artifact_detail(pid)
+        detail = inject.artifact_detail(pid, artifact_dir)
         result = _error(
             ErrorCode.INJECTION_FAILED.value,
             "no injector artifact matches the target",
             hint="run qt_build for this target or set "
                  "QT_COMMANDER_INJECT_DLL",
         )
+        if detail.get("error") == ErrorCode.ARTIFACT_AMBIGUOUS.value:
+            result["error"]["message"] = "multiple injector artifacts match the target"
+            result["error"]["hint"] = (
+                "retry qt_attach(pid=..., artifact_dir=<candidate>) or remove "
+                "the stale duplicate artifact directory"
+            )
         result["error"]["details"] = detail
         return result
+    injector = inject.default_injector_path(pid, artifact_dir)
     status_path = Path(tempfile.gettempdir()) / f"qtc-inject-status-{pid}.txt"
     try:
         status_path.unlink(missing_ok=True)
     except OSError:
         pass
     try:
-        await asyncio.to_thread(inject.inject_library, pid, dll)
+        await asyncio.to_thread(inject.inject_library, pid, dll,
+                                artifact_dir=artifact_dir,
+                                injector_path=injector)
     except inject.InjectionError as exc:
         return _error(exc.code, str(exc))
     path = await _await_descriptor_for_pid(pid)
@@ -251,11 +292,20 @@ async def qt_status(session_id: str | None = None) -> dict[str, Any]:
     descriptor files and their process liveness.
     """
     candidates = _descriptor_candidates()
+    summaries = [_descriptor_summary(path) for path in candidates]
+    alive = [item for item in summaries if item.get("pid_alive") is True]
+    dead = [item for item in summaries if item.get("pid_alive") is not True]
+    recent_dead = sorted(
+        dead, key=lambda item: str(item.get("started_at") or ""), reverse=True
+    )[:5]
+    live = _live_descriptors()
     result: dict[str, Any] = {
         "sessions": [asdict(info) for info in sessions.list()],
         "descriptors": [str(path) for path in candidates],
-        "descriptor_info": [_descriptor_summary(path) for path in candidates],
-        "descriptor": str(candidates[0]) if len(candidates) == 1 else None,
+        "descriptor_info": alive + recent_dead,
+        "descriptor_total": len(summaries),
+        "descriptor_dead": len(dead),
+        "descriptor": str(live[0]) if len(live) == 1 else None,
         "artifacts": artifacts.listing(),
         "protocol": 2,
     }
@@ -294,7 +344,7 @@ async def qt_target_info(
     pid/descriptor it uses the sole live descriptor.
     """
     if pid is None and descriptor is None:
-        candidates = _descriptor_candidates()
+        candidates = _live_descriptors()
         if len(candidates) != 1:
             return _error(
                 "E_AMBIGUOUS",
@@ -361,7 +411,8 @@ async def qt_windows(
     Use after attach to choose the window to inspect. ``include_hidden`` also
     returns hidden QWidget/QQuickWindow roots.
     ``visible`` and ``class_name`` filter the result; ``limit``/``offset``
-    paginate. Returned ids are valid targets for this session.
+    paginate. Window ids are accepted by qt_act and qt_screenshot; element ids
+    from qt_query/qt_get are accepted by every target-taking tool.
     """
     session = _session(session_id)
     if isinstance(session, dict):
@@ -442,6 +493,22 @@ async def _run_build_command(
             process.kill()
         await process.wait()
         return -1, f"command timed out after {timeout_s}s"
+    except asyncio.CancelledError:
+        # Server shutdown / task cancellation must not leave an orphan ninja
+        # writing into the build tree.
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            process.kill()
+        try:
+            await process.wait()
+        except Exception:
+            pass
+        raise
     return process.returncode or 0, output.decode("utf-8", "replace")
 
 
@@ -457,6 +524,205 @@ def _built_file(build: Path, names: tuple[str, ...]) -> Path | None:
     return None
 
 
+def _cmake_cache_home(cache: Path) -> str | None:
+    try:
+        for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("CMAKE_HOME_DIRECTORY:"):
+                return line.split("=", 1)[1].strip() or None
+    except OSError:
+        return None
+    return None
+
+
+@dataclass
+class _BuildPlan:
+    configure_command: list[str]
+    build_command: list[str]
+    build: Path
+    build_id: str
+    artifact_dir: Path
+    os_name: str
+    arch: str
+    toolchain: str
+    compiler_version: str | None
+    qt_version: str
+    qt_debug: bool
+    build_type: str
+    timeout_s: int
+
+
+@dataclass
+class _BuildJob:
+    job_id: str
+    key: str
+    plan: _BuildPlan
+    status: str = "running"
+    stage: str = "configure"
+    started_at: float = field(default_factory=time.monotonic)
+    finished_at: float | None = None
+    output: str = ""
+    result: dict[str, Any] | None = None
+    task: asyncio.Task | None = None
+
+
+_build_jobs: dict[str, _BuildJob] = {}
+_build_jobs_by_key: dict[str, str] = {}
+
+
+def _job_key(plan: _BuildPlan) -> str:
+    return "|".join([
+        str(plan.build),
+        plan.build_id,
+        plan.toolchain,
+        plan.compiler_version or "",
+        plan.build_type,
+        str(plan.timeout_s),
+    ])
+
+
+def _job_summary(job: _BuildJob) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "stage": job.stage,
+        "build_id": job.plan.build_id,
+        "build_dir": str(job.plan.build),
+        "artifact_dir": str(job.plan.artifact_dir),
+        "elapsed_s": round(
+            (job.finished_at or time.monotonic()) - job.started_at, 1
+        ),
+    }
+    if job.output:
+        summary["output_tail"] = job.output[-2000:]
+    if job.result is not None:
+        summary["result"] = job.result
+    return summary
+
+
+def _build_result(plan: _BuildPlan, *, ok: bool, stage: str,
+                  message: str, details: dict[str, Any] | None = None,
+                  output: str = "") -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "ok": ok,
+        "status": "ok" if ok else "failed",
+        "build_id": plan.build_id,
+        "build_dir": str(plan.build),
+        "artifact_dir": str(plan.artifact_dir),
+        "stage": stage,
+        "compiler_version": plan.compiler_version,
+    }
+    if not ok:
+        error: dict[str, Any] = {
+            "code": ErrorCode.BUILD_FAILED.value,
+            "message": message,
+        }
+        if details:
+            error["details"] = details
+        result["error"] = error
+    if output:
+        result["output"] = output[-4000:]
+    return result
+
+
+async def _run_build_job(job: _BuildJob) -> None:
+    plan = job.plan
+    deadline = time.monotonic() + plan.timeout_s
+    try:
+        job.stage = "configure"
+        code, output = await _run_build_command(
+            plan.configure_command,
+            max(1, int(deadline - time.monotonic())),
+        )
+        job.output = output
+        if code == -1:
+            job.result = _build_result(
+                plan, ok=False, stage="timeout",
+                message="cmake configure timed out", output=output)
+        elif code != 0:
+            job.result = _build_result(
+                plan, ok=False, stage="configure",
+                message="cmake configure failed",
+                details={"exit_code": code, "output": output[-8000:]},
+                output=output)
+        else:
+            job.stage = "build"
+            code, output = await _run_build_command(
+                plan.build_command,
+                max(1, int(deadline - time.monotonic())),
+            )
+            job.output = output
+            if code == -1:
+                job.result = _build_result(
+                    plan, ok=False, stage="timeout",
+                    message="cmake build timed out", output=output)
+            elif code != 0:
+                job.result = _build_result(
+                    plan, ok=False, stage="build",
+                    message="cmake build failed",
+                    details={"exit_code": code, "output": output[-8000:]},
+                    output=output)
+            else:
+                job.stage = "artifact"
+                job.result = _collect_artifacts(plan, output)
+    except asyncio.CancelledError:
+        job.status = "cancelled"
+        job.stage = "cancelled"
+        job.finished_at = time.monotonic()
+        raise
+    except OSError as exc:
+        job.result = _build_result(
+            plan, ok=False, stage=job.stage, message=str(exc))
+    finally:
+        if job.status == "running":
+            job.status = "ok" if (job.result or {}).get("ok") else "failed"
+        job.finished_at = job.finished_at or time.monotonic()
+
+
+def _collect_artifacts(plan: _BuildPlan, output: str) -> dict[str, Any]:
+    build = plan.build
+    artifact_dir = plan.artifact_dir
+    injector = _built_file(build, ("qtc-inject.exe", "qtc-inject"))
+    library = _built_file(
+        build, ("qt_commander_inject.dll", "libqt_commander_inject.so")
+    )
+    artifact_manifest = None
+    bin_dir = artifact_dir / "bin"
+    lib_dir = artifact_dir / "lib"
+    if injector and library:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(injector, bin_dir / injector.name)
+        shutil.copy2(library, lib_dir / library.name)
+        artifact_manifest = artifacts.write_manifest(
+            artifact_dir,
+            os_name=plan.os_name,
+            arch=plan.arch,
+            compiler=plan.toolchain,
+            compiler_version=plan.compiler_version,
+            qt_version=plan.qt_version,
+            qt_debug=plan.qt_debug,
+            build_type=plan.build_type,
+            injector=f"bin/{injector.name}",
+            library=f"lib/{library.name}",
+        )
+    return {
+        "ok": True,
+        "status": "ok",
+        "build_id": plan.build_id,
+        "build_dir": str(build),
+        "artifact_dir": str(artifact_dir),
+        "injector": str(bin_dir / injector.name) if injector else None,
+        "library": str(lib_dir / library.name) if library else None,
+        "manifest": str(artifact_manifest) if artifact_manifest else None,
+        "warning": None if artifact_manifest else "build has no injector/library",
+        "qt_version": plan.qt_version,
+        "toolchain": plan.toolchain,
+        "compiler_version": plan.compiler_version,
+        "build_type": plan.build_type,
+        "output": output[-4000:],
+    }
+
+
 @mcp.tool
 async def qt_build(
     source_dir: str,
@@ -470,12 +736,18 @@ async def qt_build(
     vcvars_path: str | None = None,
     extra_args: list[str] | None = None,
     timeout_s: int = 300,
+    wait_s: float = 20.0,
 ) -> dict[str, Any]:
     """Configure and build a CMake project against a discovered Qt kit.
 
     This builds a test/target runtime; it does not attach to or launch the
     application. The build must match the target process's Qt major version,
     toolchain, architecture, and build type.
+
+    ``timeout_s`` is the total build budget; ``wait_s`` is how long this call
+    blocks. Builds that outlive ``wait_s`` keep running in the server and
+    return ``status="running"`` with a ``job_id``; poll ``qt_build_status`` or
+    repeat the call with the same arguments (they are de-duplicated).
     """
     source = Path(source_dir)
     if not (source / "CMakeLists.txt").is_file():
@@ -550,6 +822,9 @@ async def qt_build(
             return _error(ErrorCode.INVALID_ARGUMENT.value,
                           f"vcvars_path not found: {vcvars_path}")
 
+    # Resolve the compiler *before* naming the artifact directory: the name must
+    # describe the compiler this build actually uses, not whatever is on PATH.
+    compilers: tuple[str, str] | None = None
     compiler_version = None
     if toolchain == "msvc":
         tools = await asyncio.to_thread(detect_toolchains)
@@ -561,7 +836,14 @@ async def qt_build(
         if msvc is not None:
             compiler_version = msvc.get("version")
     else:
-        compiler_version = artifacts.compiler_version(toolchain)
+        if toolchain == "mingw":
+            compilers = _mingw_compilers()
+            if compilers is None:
+                return _error(ErrorCode.BUILD_REQUIRED.value,
+                              "gcc/g++ not found for the mingw toolchain")
+        compiler_version = artifacts.compiler_version(
+            toolchain, compilers[1] if compilers else None
+        )
     qt_bin = Path(kit["path"]) / "bin"
     qt_debug = any(qt_bin.glob(f"Qt{qt_major}Cored.*"))
     os_name = artifacts.os_slug()
@@ -583,6 +865,15 @@ async def qt_build(
             f"{artifacts.qt_slug(version['version'], qt_debug)}"
         )
     )
+    cache = build / "CMakeCache.txt"
+    if build_dir is None and cache.is_file():
+        cached_home = _cmake_cache_home(cache)
+        if cached_home and Path(cached_home).resolve() != source.resolve():
+            # The default build dir is keyed by Qt/toolchain only, so a
+            # previous project may have claimed it. Isolate instead of
+            # deleting someone else's build tree.
+            digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()
+            build = build.with_name(f"{build.name}_{digest[:8]}")
     build.mkdir(parents=True, exist_ok=True)
     cmake = shutil.which("cmake")
     if not cmake:
@@ -597,11 +888,7 @@ async def qt_build(
     ]
     if ninja:
         configure += ["-G", "Ninja"]
-    if toolchain == "mingw":
-        compilers = _mingw_compilers()
-        if compilers is None:
-            return _error(ErrorCode.BUILD_REQUIRED.value,
-                          "gcc/g++ not found for the mingw toolchain")
+    if toolchain == "mingw" and compilers is not None:
         configure += [f"-DCMAKE_C_COMPILER={compilers[0]}",
                       f"-DCMAKE_CXX_COMPILER={compilers[1]}"]
     configure += list(extra_args or [])
@@ -611,35 +898,6 @@ async def qt_build(
         if toolchain == "msvc" and vcvars_path
         else configure
     )
-    deadline = time.monotonic() + timeout_s
-    try:
-        code, output = await _run_build_command(
-            configure_command, max(1, int(deadline - time.monotonic())))
-    except OSError as exc:
-        return _error(ErrorCode.BUILD_FAILED.value, str(exc))
-    if code == -1:
-        return {
-            "ok": False,
-            "build_id": build_id,
-            "build_dir": str(build),
-            "stage": "timeout",
-            "error": {
-                "code": ErrorCode.BUILD_FAILED.value,
-                "message": "cmake configure timed out",
-            },
-        }
-    if code != 0:
-        return {
-            "ok": False,
-            "build_id": build_id,
-            "build_dir": str(build),
-            "stage": "configure",
-            "error": {
-                "code": ErrorCode.BUILD_FAILED.value,
-                "message": "cmake configure failed",
-                "details": {"exit_code": code, "output": output[-8000:]},
-            },
-        }
 
     build_command = [cmake, "--build", str(build)]
     if target:
@@ -647,74 +905,86 @@ async def qt_build(
     if toolchain == "msvc" and vcvars_path:
         build_command = _msvc_command(vcvars_path, build_command,
                                       build / "qtc-build.bat")
-    try:
-        code, output = await _run_build_command(
-            build_command, max(1, int(deadline - time.monotonic())))
-    except OSError as exc:
-        return _error(ErrorCode.BUILD_FAILED.value, str(exc))
-    if code == -1:
-        return {
-            "ok": False,
-            "build_id": build_id,
-            "build_dir": str(build),
-            "stage": "timeout",
-            "error": {
-                "code": ErrorCode.BUILD_FAILED.value,
-                "message": "cmake build timed out",
-            },
-        }
-    if code != 0:
-        return {
-            "ok": False,
-            "build_id": build_id,
-            "build_dir": str(build),
-            "stage": "build",
-            "error": {
-                "code": ErrorCode.BUILD_FAILED.value,
-                "message": "cmake build failed",
-                "details": {"exit_code": code, "output": output[-8000:]},
-            },
-        }
-    injector = _built_file(
-        build, ("qtc-inject.exe", "qtc-inject")
+
+    plan = _BuildPlan(
+        configure_command=configure_command,
+        build_command=build_command,
+        build=build,
+        build_id=build_id,
+        artifact_dir=artifact_dir,
+        os_name=os_name,
+        arch=arch,
+        toolchain=toolchain,
+        compiler_version=compiler_version,
+        qt_version=version["version"],
+        qt_debug=qt_debug,
+        build_type=build_type,
+        timeout_s=timeout_s,
     )
-    library = _built_file(
-        build, ("qt_commander_inject.dll", "libqt_commander_inject.so")
-    )
-    artifact_manifest = None
-    bin_dir = artifact_dir / "bin"
-    lib_dir = artifact_dir / "lib"
-    if injector and library:
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        lib_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(injector, bin_dir / injector.name)
-        shutil.copy2(library, lib_dir / library.name)
-        artifact_manifest = artifacts.write_manifest(
-            artifact_dir,
-            os_name=os_name,
-            arch=arch,
-            compiler=toolchain,
-            compiler_version=compiler_version,
-            qt_version=version["version"],
-            qt_debug=qt_debug,
-            build_type=build_type,
-            injector=f"bin/{injector.name}",
-            library=f"lib/{library.name}",
-        )
+    key = _job_key(plan)
+    job: _BuildJob | None = None
+    running_id = _build_jobs_by_key.get(key)
+    if running_id:
+        candidate = _build_jobs.get(running_id)
+        if candidate is not None and candidate.status == "running":
+            job = candidate
+    if job is None:
+        job = _BuildJob(job_id=secrets.token_hex(4), key=key, plan=plan)
+        _build_jobs[job.job_id] = job
+        _build_jobs_by_key[key] = job.job_id
+        job.task = asyncio.create_task(_run_build_job(job))
+        # Keep the registry bounded; finished jobs are still queryable briefly.
+        if len(_build_jobs) > 16:
+            for stale in sorted(_build_jobs.values(),
+                                key=lambda item: item.started_at)[:-8]:
+                if stale.status != "running":
+                    _build_jobs.pop(stale.job_id, None)
+                    _build_jobs_by_key.pop(stale.key, None)
+
+    if wait_s > 0 and job.task is not None and job.status == "running":
+        await asyncio.wait({job.task}, timeout=wait_s)
+    if job.status == "running":
+        return {
+            "ok": True,
+            "status": "running",
+            "job_id": job.job_id,
+            "build_id": plan.build_id,
+            "build_dir": str(plan.build),
+            "artifact_dir": str(plan.artifact_dir),
+            "stage": job.stage,
+            "elapsed_s": round(time.monotonic() - job.started_at, 1),
+            "hint": "build continues in the server; call qt_build_status("
+                    "job_id=...) or repeat qt_build with the same arguments",
+        }
+    if job.result is None:
+        return _build_result(plan, ok=False, stage=job.stage,
+                             message=f"build {job.status}")
+    job.result.setdefault("job_id", job.job_id)
+    job.result.setdefault("kit", kit["path"])
+    return job.result
+
+
+@mcp.tool
+async def qt_build_status(job_id: str | None = None) -> dict[str, Any]:
+    """Report background build jobs started by qt_build.
+
+    Pass ``job_id`` for one job; without it, returns running jobs first and
+    then the most recent finished ones (max 5).
+    """
+    if job_id is not None:
+        job = _build_jobs.get(job_id)
+        if job is None:
+            return _error(ErrorCode.NOT_FOUND.value,
+                          f"unknown build job: {job_id}")
+        return {"ok": True, "jobs": [_job_summary(job)]}
+    jobs = sorted(_build_jobs.values(), key=lambda item: item.started_at,
+                  reverse=True)
+    running = [job for job in jobs if job.status == "running"]
+    finished = [job for job in jobs if job.status != "running"]
     return {
         "ok": True,
-        "build_id": build_id,
-        "build_dir": str(build),
-        "artifact_dir": str(artifact_dir),
-        "injector": str(bin_dir / injector.name) if injector else None,
-        "library": str(lib_dir / library.name) if library else None,
-        "manifest": str(artifact_manifest) if artifact_manifest else None,
-        "warning": None if artifact_manifest else "build has no injector/library",
-        "qt_version": version["version"],
-        "kit": kit["path"],
-        "toolchain": toolchain,
-        "build_type": build_type,
-        "output": output[-4000:],
+        "running": len(running),
+        "jobs": [_job_summary(job) for job in (running + finished)[:5]],
     }
 
 
@@ -725,6 +995,7 @@ async def qt_attach(
     session_id: str | None = None,
     mode: str = "auto",
     build_id: str | None = None,
+    artifact_dir: str | None = None,
 ) -> dict[str, Any]:
     """Attach to a live Qt process.
 
@@ -733,11 +1004,18 @@ async def qt_attach(
     ``mode="injection"``. ``mode="auto"`` uses a live descriptor when
     available and otherwise injects. ``build_id`` guards against attaching a
     runtime built for a different library; a mismatch must be rebuilt/reinjected
-    rather than bypassed.
+    rather than bypassed. ``artifact_dir`` pins one artifact directory when
+    several match the target.
     """
     if mode not in {"auto", "linked", "injection"}:
         return _error(ErrorCode.INVALID_ARGUMENT.value,
                       f"unsupported attach mode: {mode}")
+    if artifact_dir is not None:
+        directory = Path(artifact_dir)
+        if not (directory / "manifest.json").is_file():
+            return _error(ErrorCode.INVALID_ARGUMENT.value,
+                          f"artifact_dir has no manifest.json: {directory}")
+    _gc_descriptors()
     if mode == "injection" and descriptor:
         return _error(ErrorCode.INVALID_ARGUMENT.value,
                       "descriptor cannot be combined with injection mode")
@@ -753,7 +1031,7 @@ async def qt_attach(
         if existing:
             return _error(ErrorCode.MODE_CONFLICT.value,
                           "target already has a descriptor")
-        injected = await _inject_target(pid)
+        injected = await _inject_target(pid, artifact_dir)
         if isinstance(injected, dict):
             return injected
         path = injected
@@ -769,7 +1047,7 @@ async def qt_attach(
                           if _descriptor_session_id(p) == session_id]
         if not candidates:
             if mode == "auto" and pid is not None:
-                injected = await _inject_target(pid)
+                injected = await _inject_target(pid, artifact_dir)
                 if isinstance(injected, dict):
                     return injected
                 path = injected
@@ -863,7 +1141,8 @@ async def qt_attach(
             await client.close()
             return _error(ErrorCode.LINKED_IDENTITY.value,
                           "descriptor and runtime identity mismatch")
-        session = Session(session_id, descriptor_pid, client, client.hello)
+        session = Session(session_id, descriptor_pid, client, client.hello,
+                          descriptor=str(path))
         sessions.add(session)
     except SessionExists:
         if client is not None:
@@ -885,20 +1164,25 @@ async def qt_attach(
 
 @mcp.tool
 async def qt_detach(session_id: str, purge: bool = False) -> dict[str, Any]:
-    """Close a session; ``purge=True`` requests descriptor removal.
+    """Close a session; ``purge=True`` also removes its descriptor file.
 
     Detach before rebuilding/reinjecting a library if the old DLL is loaded.
     """
-    if purge:
-        return _error(ErrorCode.NOT_IMPLEMENTED.value,
-                      "purge is not implemented")
     try:
         session = sessions.remove(session_id)
     except SessionNotFound:
         return _error(ErrorCode.SESSION_EXPIRED.value,
                       f"unknown session: {session_id}")
     await session.close()
-    return {"ok": True, "session_id": session_id}
+    purged = False
+    if purge and session.descriptor:
+        try:
+            Path(session.descriptor).unlink(missing_ok=True)
+            purged = True
+        except OSError:
+            purged = False
+    _gc_descriptors()
+    return {"ok": True, "session_id": session_id, "purged": purged}
 
 
 @mcp.tool
@@ -913,16 +1197,20 @@ async def qt_query(
     include_hidden: bool = False,
     occlusion: bool = False,
     count_only: bool = False,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """Query the live object tree.
 
     Use when the target is unknown, or to survey a subtree. For one already
     known target, prefer qt_get. ``where`` accepts
-    id/class/object_name/objectName/qml_id/qml_type/text/
+    id/class/inherits/object_name/objectName/qml_id/qml_type/text/
     props; strings support exact, wildcard, and contains/startsWith/regex/
     equals matchers. ``scope`` limits to a window or subtree. Without
     ``props``, nodes include text/visible/enabled. ``limit`` is a soft
-    truncation reported via count/total/limit/truncated.
+    truncation reported via count/total/limit/truncated. A filtered miss that
+    only matches hidden nodes returns ``count:0`` plus ``hidden_matched`` and a
+    hint. ``compact`` omits default-valued fields (children/child_count/
+    qml_id/qml_type/window) to save tokens.
     """
     session = _session(session_id)
     if isinstance(session, dict):
@@ -939,6 +1227,7 @@ async def qt_query(
             include_hidden=include_hidden,
             occlusion=occlusion,
             count_only=count_only,
+            compact=compact,
         )
     except Exception as exc:
         return _map_error(exc)
@@ -946,12 +1235,13 @@ async def qt_query(
 
 @mcp.tool
 async def qt_items(
-    owner: str,
+    owner: str | dict[str, Any],
     where: dict[str, Any] | None = None,
     limit: int = 50,
     offset: int = 0,
     include_hidden: bool = False,
     compact: bool = False,
+    nth: int | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """List provider-backed children of a widget/QML owner.
@@ -960,9 +1250,16 @@ async def qt_items(
     items, or splitter handles. Covers actions, tabs, table/list/tree cells,
     dock/toolbar items, splitter
     handles, and QML item children. These children are virtual and are not
-    part of the QWidget query tree.
+    part of the QWidget query tree. ``owner`` accepts a node id or a locator
+    (class/object_name/text/props) like the other target parameters; use
+    ``nth`` when the locator is ambiguous.
     """
-    session = _session(session_id or owner.split(".")[0])
+    hint_id = owner if isinstance(owner, str) else ""
+    resolved = session_id or (hint_id.split(".")[0] if hint_id else None)
+    if resolved is None:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "session_id is required when owner is a locator")
+    session = _session(resolved)
     if isinstance(session, dict):
         return session
     try:
@@ -974,6 +1271,7 @@ async def qt_items(
             offset=offset,
             include_hidden=include_hidden,
             compact=compact,
+            nth=nth,
         )
     except Exception as exc:
         return _map_error(exc)
@@ -1267,9 +1565,12 @@ async def qt_source(
     """Resolve a widget/QML target to source.
 
     Use after a UI target is identified; this is not a free-form code search.
-    Searches the target's source tree (and QT_COMMANDER_SOURCE_DIR) for a
-    matching .ui/.qml; ``source_dir`` adds an explicit root for qrc/embedded
-    QML. Returns file/line/url when found, otherwise E_NO_DEBUGINFO.
+    Scans the target's source tree (and QT_COMMANDER_SOURCE_DIR) with a bounded
+    budget (120 ms / 20k entries) and returns file/line/url plus a ``snippet``
+    when found. ``source_dir`` restricts the search to exactly that directory
+    (it does not add roots). A miss returns ``E_NO_DEBUGINFO``; when the budget
+    runs out first the code is ``E_SOURCE_TIMEOUT`` and ``search.truncated`` is
+    true, so pass ``source_dir`` to narrow the scan.
     """
     session = _session(session_id)
     if isinstance(session, dict):
@@ -1287,6 +1588,33 @@ async def qt_source(
         )
     except Exception as exc:
         return _map_error(exc)
+
+
+class _ActionableErrors(Middleware):
+    """Turn schema/validation failures into the same error envelope as tools.
+
+    Without this, a missing ``session_id`` surfaces as a raw pydantic
+    validation error from the MCP layer instead of ``{"ok": false, "error":
+    {"code": "E_INVALID_ARGUMENT"}}``.
+    """
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            return await call_next(context)
+        except ToolValidationError as exc:
+            name = getattr(context.message, "name", "tool")
+            first_line = str(exc).splitlines()[0][:200] if str(exc) else ""
+            return ToolResult(
+                structured_content=_error(
+                    ErrorCode.INVALID_ARGUMENT.value,
+                    f"invalid arguments for {name}",
+                    hint=first_line,
+                ),
+                is_error=False,
+            )
+
+
+mcp.add_middleware(_ActionableErrors())
 
 
 def main() -> None:

@@ -5,10 +5,31 @@ from __future__ import annotations
 import json
 import os
 import struct
+import types
 
+import psutil
 import pytest
 
 from qt_commander import server, target
+
+
+@pytest.fixture(autouse=True)
+def _module_scan_off(monkeypatch):
+    """Keep the suite fast: module scanning is opt-in per test."""
+    monkeypatch.setenv("QT_COMMANDER_PROCESS_MODULES", "0")
+    target._MODULE_CACHE.clear()
+    yield
+    target._MODULE_CACHE.clear()
+
+
+def _empty_runtime():
+    return {
+        "qt_major": None,
+        "qt_version": None,
+        "debug": None,
+        "toolchain": None,
+        "evidence": [],
+    }
 
 
 def _write_fake_pe(path):
@@ -83,6 +104,49 @@ def test_adjacent_runtime_evidence(tmp_path):
     assert info["qt_major"] == 5
     assert info["debug"] is True
     assert info["toolchain"] == "msvc"
+
+
+def test_adjacent_runtime_detects_linux_qt_core(tmp_path):
+    exe = tmp_path / "app"
+    _write_fake_elf(exe)
+    (tmp_path / "libQt5Core.so.5").write_bytes(b"")
+    info = target._adjacent_runtime(exe)
+    assert info["qt_major"] == 5
+    assert any(
+        path.endswith("libQt5Core.so.5") for path in info["evidence"]
+    )
+
+
+def test_list_processes_detects_loaded_qt_module(monkeypatch):
+    qt_core = r"C:\Qt\5.15.2\mingw81_64\bin\Qt5Core.dll"
+    monkeypatch.setenv("QT_COMMANDER_PROCESS_MODULES", "1")
+    monkeypatch.setattr(target, "_adjacent_runtime", lambda exe: _empty_runtime())
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [types.SimpleNamespace(path=qt_core)],
+    )
+    result = target.list_processes(limit=1000)
+    assert result["module_scan"]["enabled"] is True
+    entry = next(p for p in result["processes"] if p["pid"] == os.getpid())
+    assert entry["qt_major"] == 5
+    assert entry["evidence"] == "module"
+
+
+def test_list_processes_skips_process_without_qt(monkeypatch):
+    monkeypatch.setenv("QT_COMMANDER_PROCESS_MODULES", "1")
+    monkeypatch.setattr(target, "_adjacent_runtime", lambda exe: _empty_runtime())
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [
+            types.SimpleNamespace(path=r"C:\Windows\System32\ntdll.dll")
+        ],
+    )
+    result = target.list_processes(limit=1000)
+    assert result["count"] == 0
+    assert all(p["pid"] != os.getpid() for p in result["processes"])
+    assert "include_non_qt=true" in result["hint"]
 
 
 @pytest.mark.asyncio

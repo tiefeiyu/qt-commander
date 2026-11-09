@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from qt_commander import server
@@ -13,6 +15,7 @@ EXPECTED_TOOLS = {
     "qt_windows",
     "qt_environments",
     "qt_build",
+    "qt_build_status",
     "qt_attach",
     "qt_detach",
     "qt_query",
@@ -63,3 +66,9 @@ async def test_tool_descriptions_match_current_features():
     assert "source_dir" in tools["qt_source"].description
     assert "E_NO_DEBUGINFO" in tools["qt_source"].description
     assert "pending" not in tools["qt_source"].description.lower()
+
+    items_params = tools["qt_items"].parameters
+    assert "nth" in items_params["properties"]
+    assert "object" in json.dumps(items_params["properties"]["owner"])
+    assert "compact" in tools["qt_query"].parameters["properties"]
+    assert "inherits" in tools["qt_query"].description

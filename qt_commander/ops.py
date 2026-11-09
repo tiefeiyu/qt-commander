@@ -182,6 +182,7 @@ async def query(
     include_hidden: bool = False,
     occlusion: bool = False,
     count_only: bool = False,
+    compact: bool = False,
 ) -> dict[str, Any]:
     _choice("coords", coords, COORDS)
     if max_depth < -1:
@@ -201,7 +202,30 @@ async def query(
             "count_only": count_only,
         }
     )
-    return await session.call("query", params)
+    if compact:
+        params["compact"] = True
+    result = await session.call("query", params)
+    # A filtered miss is ambiguous to the caller: the node may exist but be
+    # pruned as hidden. Probe once (count_only, cheap) and surface the hint.
+    if (
+        where
+        and not include_hidden
+        and not count_only
+        and isinstance(result.get("count"), int)
+        and result["count"] == 0
+    ):
+        probe = await session.call(
+            "query",
+            {**params, "include_hidden": True, "count_only": True},
+        )
+        hidden = probe.get("count") or 0
+        if isinstance(hidden, int) and hidden > 0:
+            result["hidden_matched"] = hidden
+            result["hint"] = (
+                f"{hidden} node(s) match but are hidden; "
+                "pass include_hidden=true to include them"
+            )
+    return result
 
 
 async def items(
@@ -213,17 +237,21 @@ async def items(
     offset: int = 0,
     include_hidden: bool = False,
     compact: bool = False,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     if limit < 1:
         raise ValueError("limit must be >= 1")
     if offset < 0:
         raise ValueError("offset must be >= 0")
+    if nth is not None and nth < 0:
+        raise ValueError("nth must be >= 0")
     payload = {
         "owner": owner,
         "where": where,
         "limit": limit,
         "offset": offset,
         "include_hidden": include_hidden,
+        "nth": nth,
     }
     if compact:
         payload["compact"] = True

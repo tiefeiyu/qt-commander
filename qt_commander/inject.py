@@ -22,32 +22,43 @@ class InjectionError(RuntimeError):
         self.code = code
 
 
-def _artifact_for_pid(pid: int | None) -> dict:
+def _artifact_for_pid(pid: int | None, artifact_dir: str | None = None) -> dict:
+    if artifact_dir:
+        directory = Path(artifact_dir)
+        manifest = artifacts.read_manifest(directory)
+        if manifest is None:
+            return {
+                "ok": False,
+                "error": ErrorCode.ARTIFACT_NOT_FOUND.value,
+                "message": f"no manifest.json under {directory}",
+            }
+        return {"ok": True, "directory": directory, "manifest": manifest}
     if pid is None:
         return {
             "ok": False,
-            "error": "E_ARTIFACT_NOT_FOUND",
+            "error": ErrorCode.ARTIFACT_NOT_FOUND.value,
             "message": "pid is required to select an injector artifact",
         }
     try:
         info = target.target_info(pid=pid)
     except ValueError as exc:
-        return {"ok": False, "error": "E_ARTIFACT_NOT_FOUND",
+        return {"ok": False, "error": ErrorCode.ARTIFACT_NOT_FOUND.value,
                 "message": str(exc)}
     return artifacts.find(info)
 
 
-def artifact_detail(pid: int | None) -> dict:
+def artifact_detail(pid: int | None, artifact_dir: str | None = None) -> dict:
     """Return the artifact lookup result, including why it failed."""
-    return _artifact_for_pid(pid)
+    return _artifact_for_pid(pid, artifact_dir)
 
 
-def default_dll_path(pid: int | None = None) -> Path | None:
+def default_dll_path(pid: int | None = None,
+                     artifact_dir: str | None = None) -> Path | None:
     override = os.environ.get("QT_COMMANDER_INJECT_DLL")
     if override:
         path = Path(override)
         return path if path.is_file() else None
-    found = _artifact_for_pid(pid)
+    found = _artifact_for_pid(pid, artifact_dir)
     if not found.get("ok"):
         return None
     relative = (found.get("manifest") or {}).get("library")
@@ -57,12 +68,13 @@ def default_dll_path(pid: int | None = None) -> Path | None:
     return path if path.is_file() else None
 
 
-def default_injector_path(pid: int | None = None) -> Path | None:
+def default_injector_path(pid: int | None = None,
+                          artifact_dir: str | None = None) -> Path | None:
     override = os.environ.get("QT_COMMANDER_INJECTOR")
     if override:
         path = Path(override)
         return path if path.is_file() else None
-    found = _artifact_for_pid(pid)
+    found = _artifact_for_pid(pid, artifact_dir)
     if not found.get("ok"):
         return None
     relative = (found.get("manifest") or {}).get("injector")
@@ -72,8 +84,13 @@ def default_injector_path(pid: int | None = None) -> Path | None:
     return path if path.is_file() else None
 
 
-def inject_library(pid: int, lib_path: Path, *, timeout_ms: int = 8000) -> None:
-    injector = default_injector_path(pid)
+def inject_library(pid: int, lib_path: Path, *, timeout_ms: int = 8000,
+                   artifact_dir: str | None = None,
+                   injector_path: Path | None = None) -> None:
+    # Resolve the injector once from the same artifact as the library; calling
+    # default_injector_path() again would re-run artifact matching and can hit
+    # the same ambiguity twice.
+    injector = injector_path or default_injector_path(pid, artifact_dir)
     if injector is None:
         raise InjectionError(
             ErrorCode.INJECTION_FAILED.value,

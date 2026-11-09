@@ -86,7 +86,7 @@ async def main(descriptor: Path | None, label: str, node: str, text: str, iterat
             )
             assert found["count"] == 1
 
-            text = await measure(
+            text_hit = await measure(
                 "query_text",
                 ops.query(
                     session,
@@ -95,7 +95,7 @@ async def main(descriptor: Path | None, label: str, node: str, text: str, iterat
                 ),
             )
             sizes.setdefault("query_text", []).append(
-                len(json.dumps(text, ensure_ascii=False))
+                len(json.dumps(text_hit, ensure_ascii=False))
             )
 
             counted = await measure(

@@ -25,6 +25,7 @@ class Session:
     build_id: str | None = None
     disconnected_at: float | None = None
     grace_seconds: float = 60.0
+    descriptor: str | None = None
 
     @property
     def connected(self) -> bool:
