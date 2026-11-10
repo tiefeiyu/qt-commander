@@ -66,8 +66,10 @@ descriptors or live sessions.
   descriptor.
 - **Already-running target:** call
   `qt_attach(pid=<pid>, mode="injection")`; use `qt_processes` to discover a
-  PID, then `qt_target_info` when the target's Qt version/toolchain is unknown. Build the matching injector
-  and runtime if needed.
+  PID, then `qt_target_info` when the target's Qt version/toolchain is unknown.
+  Build the matching injector and runtime if needed — normally
+  `qt_build(for_pid=<pid>)`, which derives every argument from the target and
+  reports `restart_required`/`next_step`.
 
 The usual first agent interaction is:
 
@@ -128,7 +130,12 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   integer values.
 - `qt_target_info` inspects a process's PE/ELF architecture, full Qt runtime
   version (e.g. 5.15.2), build type, and toolchain before `qt_build`; it does
-  not inject or launch. `qt_processes` lists discoverable running Qt targets
+  not inject or launch. `detected_from` says which evidence won (`module` — the
+  Qt runtime actually mapped into the process, authoritative — `adjacent`,
+  `loader_path` or `descriptor`). It also reports `loaded_injector` (path,
+  artifact, build_id, stale), `expected_artifact` (what `qt_attach` would
+  inject), `injection_state` (`none`/`loaded`/`stale`/`mismatch`) and
+  `restart_required`. `qt_processes` lists discoverable running Qt targets
   with their attach hint, without injecting.
 - `qt_source` auto-discovers nearby source trees (including `src` ancestors)
   and accepts `source_dir` for qrc/embedded QML whose source tree is not next
@@ -202,11 +209,28 @@ artifacts/windows-x64/mingw-gcc-13.1/qt-5.15.2-release/
 artifacts/linux-x64/gcc-13.3/qt-6.8.3-release/
 ```
 
+`manifest.json` records `build_id` in the canonical
+`qt<version>/<compiler>-<arch>/<build_type>` form (for example
+`qt5.15.2/msvc-x64/Release`), the same string `qt_build` returns. The runtime's
+descriptor carries the compiled-in id instead (`qt5/MSVC-AMD64/Release`), so do
+not compare the two as plain strings; use
+`qt_target_info.loaded_injector.build_id` against `expected_artifact.build_id`.
+
 `qt_attach(mode="injection")` matches the target's OS/architecture,
-compiler family, Qt version, and Qt debug/release against a manifest under
-`artifacts/`; it does not scan `build/` or pick the newest file. Set
-`QT_COMMANDER_INJECTOR` / `QT_COMMANDER_INJECT_DLL` only for an explicit
+compiler family and version, Qt version, and Qt debug/release against a
+manifest under `artifacts/`; it does not scan `build/` or pick the newest file.
+Set `QT_COMMANDER_INJECTOR` / `QT_COMMANDER_INJECT_DLL` only for an explicit
 override.
+
+The Qt debug/release flavour comes from evidence, never from a guess: the Qt
+runtime actually mapped into the process wins, then the executable's own
+directory, then the loader `PATH`, then the descriptor. A directory holding
+both `Qt5Core.dll` and `Qt5Cored.dll` (a full Qt kit `bin` does) reports
+`debug: null` with `flavor_ambiguous: true`, and artifact selection then asks
+for an explicit `artifact_dir` instead of silently picking release. Picking the
+wrong flavour injects a DLL that links the other Qt runtime, loads a second Qt
+into the target, and times out waiting for `QCoreApplication` — which is why
+`qt_build` refuses to default an unknown `build_type`.
 
 ## Run the MCP server
 
@@ -236,7 +260,15 @@ tool also has a schema-aware description.
   windows do appear and have `popup: true`.
 - After changing C++ runtime code, rebuilding the artifact and restarting the
   target is required. Restarting only the MCP server leaves the already-loaded
-  runtime in the old target process.
+  runtime in the old target process. A library already mapped into a process
+  cannot be replaced by injecting again: `LoadLibraryW` on the same path only
+  increments its reference count, so `DllMain` never runs. `qt_target_info`
+  reports this as `loaded_injector.loaded` with `restart_required: true`, and
+  `qt_attach` refuses with `reason="injector_already_loaded"` instead of
+  silently doing nothing.
+- The injector's Qt debug/release flavour must match the flavour of the Qt
+  runtime the target loaded (`Qt5Core.dll` vs `Qt5Cored.dll`). See
+  [Injection artifacts](#injection-artifacts).
 
 ## Troubleshooting
 
@@ -246,9 +278,13 @@ tool also has a schema-aware description.
   `command` in the client config.
 - `qt-commander-mcp.exe` is locked: stop the old Claude/MCP process, then
   restart the client.
-- Injection fails or attaches to an incompatible runtime: run
-  `qt_target_info`, rebuild for the reported architecture/Qt major/toolchain,
-  and do not bypass a build-id mismatch.
+- Injection fails or attaches to an incompatible runtime: read
+  `error.reason` first. `injector_already_loaded` and
+  `qt_runtime_flavor_mismatch` mean the target must be restarted;
+  `artifact_missing` means run `qt_build(for_pid=<pid>)`. `error.details`
+  carries the target snapshot, the artifact that was picked, the injector
+  already loaded, and the artifact `qt_attach` expected. Do not bypass a
+  flavour mismatch by forcing `artifact_dir` — the library will not start.
 
 For multiple windows, call `qt_windows` first and pass that window's `id` to
 `qt_screenshot`. Without a target, a screenshot is refused when more than one

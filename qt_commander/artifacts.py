@@ -94,6 +94,44 @@ def build_dir(
     )
 
 
+def compose_build_id(
+    *,
+    qt_version: str | None,
+    compiler: str | None,
+    arch: str | None,
+    build_type: str | None,
+) -> str:
+    """Return the canonical build id for an artifact or a build plan.
+
+    ``qt_build`` returns this string, and ``manifest.json`` records it, so an
+    agent can compare the two without knowing the older compiled-in format
+    (``qt5/MSVC-AMD64/Release``) the runtime puts in its descriptor.
+    """
+    return (
+        f"qt{qt_version or 'unknown'}/"
+        f"{compiler or 'unknown'}-{arch or 'unknown'}/"
+        f"{build_type or 'unknown'}"
+    )
+
+
+def manifest_build_id(manifest: dict[str, Any] | None) -> str | None:
+    """Return a manifest's build id, deriving it for pre-2 manifests."""
+    if not isinstance(manifest, dict):
+        return None
+    stored = manifest.get("build_id")
+    if isinstance(stored, str) and stored:
+        return stored
+    compiler = (manifest.get("compiler") or {}).get("family")
+    target = manifest.get("target") or {}
+    qt = manifest.get("qt") or {}
+    return compose_build_id(
+        qt_version=qt.get("version"),
+        compiler=compiler,
+        arch=target.get("arch"),
+        build_type=manifest.get("build_type"),
+    )
+
+
 def write_manifest(
     directory: Path,
     *,
@@ -109,7 +147,13 @@ def write_manifest(
 ) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema": 1,
+        "schema": 2,
+        "build_id": compose_build_id(
+            qt_version=qt_version,
+            compiler=compiler,
+            arch=arch,
+            build_type=build_type,
+        ),
         "target": {"os": os_name, "arch": arch},
         "compiler": {
             "family": compiler,
@@ -143,8 +187,13 @@ def _matches(manifest: dict[str, Any], target: dict[str, Any]) -> bool:
         return False
     if m_qt.get("version") != target.get("qt_version"):
         return False
-    if bool(m_qt.get("debug")) != bool(target.get("debug")):
-        return False
+    # An unknown target flavour (for example a PATH directory that ships both
+    # Qt5Core.dll and Qt5Cored.dll) must not be silently treated as "release":
+    # picking the wrong flavour injects a DLL that loads a second Qt runtime
+    # and then times out waiting for QCoreApplication.
+    if target.get("debug") is not None:
+        if bool(m_qt.get("debug")) != bool(target.get("debug")):
+            return False
     if m_compiler.get("family") != target.get("toolchain"):
         return False
     target_compiler = target.get("compiler_version")
@@ -165,7 +214,8 @@ def listing(root: Path = ROOT) -> list[dict[str, Any]]:
             manifest = read_manifest(directory)
             if manifest:
                 result.append(
-                    {"directory": str(directory), "manifest": manifest}
+                    {"directory": str(directory), "manifest": manifest,
+                     "build_id": manifest_build_id(manifest)}
                 )
     return result
 
@@ -242,17 +292,24 @@ def find(target: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
     if len(matches) > 1:
         candidates = [
             {"directory": str(directory),
+             "build_id": manifest_build_id(manifest),
+             "build_type": manifest.get("build_type"),
              "compiler_version": version_of(manifest)}
             for directory, manifest in matches
         ]
+        hint = ("retry qt_attach(pid=..., artifact_dir=<one of candidates>), "
+                "or remove the stale duplicate artifact directory")
+        if target.get("debug") is None:
+            hint = ("target Qt debug/release is unknown; pass "
+                    "artifact_dir=<one of candidates> explicitly (rebuild with "
+                    "qt_build(for_pid=...) to pin the flavour)")
         return {
             "ok": False,
             "error": "E_ARTIFACT_AMBIGUOUS",
             "message": "multiple artifacts match the target",
             "searched": str(root),
             "candidates": candidates,
-            "hint": "retry qt_attach(pid=..., artifact_dir=<one of candidates>), "
-                    "or remove the stale duplicate artifact directory",
+            "hint": hint,
             "available": available,
         }
     directory, manifest = matches[0]

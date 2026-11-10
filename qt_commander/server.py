@@ -42,9 +42,10 @@ How to use:
    qt_attach(descriptor=...). No build or injection is needed.
 2. If the target PID is unknown, use qt_processes to discover Qt targets.
    Otherwise use qt_target_info (and qt_environments) to inspect the target
-   architecture, Qt major version, and toolchain. Use qt_build for the
-   matching injector/runtime. If attach rejects a build/architecture mismatch,
-   rebuild; do not bypass it.
+   architecture, Qt major version, toolchain and Qt debug/release. Then call
+   qt_build(for_pid=<pid>) to build the matching injector; it derives the
+   arguments, writes one artifact per target, and reports matches_target,
+   restart_required and next_step.
 3. qt_attach(pid=..., mode="injection"), then qt_windows to choose a window.
    Keep one session per process.
 Step 4: qt_query to locate a target; then act/read/write/call.
@@ -75,6 +76,15 @@ Critical rules:
   A Popup in the main window Overlay is not a separate qt_windows entry.
 - qt_call only invokes slots/Q_INVOKABLE; property setters use qt_set. Use
   qt_methods and signature= for overloads.
+- Injection: qt_attach failures carry error.reason and error.details
+  (target snapshot, chosen artifact, loaded injector, expected artifact).
+  If error.restart_required is true the target process must be restarted;
+  rebuilding the artifact does not replace a library already mapped into it.
+- The injector build type must match the target's Qt runtime (Qt5Core.dll vs
+  Qt5Cored.dll). qt_target_info.debug comes from the loaded runtime; never
+  build against a kit directory that ships both.
+- There is no build-id validation on attach; compare
+  qt_target_info.loaded_injector.build_id with expected_artifact.build_id.
 - On timeout or failure, inspect first. Retry at most once with a changed
   query/wait, then stop and report.
 - Confirm before irreversible actions (delete/upload/exit/restart or
@@ -233,7 +243,23 @@ def _session(session_id: str) -> Session | dict[str, Any]:
         )
 
 
-async def _await_descriptor_for_pid(pid: int, timeout_s: float = 20.0) -> Path | None:
+def _read_inject_status(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+async def _await_descriptor_for_pid(
+    pid: int, timeout_s: float = 20.0, status_path: Path | None = None
+) -> Path | None:
+    """Wait for a descriptor; stop early when the library reports a failure.
+
+    The injected library gives up after ~10 s and writes its reason to
+    ``qtc-inject-status-<pid>.txt``. Polling that file shortens the failure
+    from the full 20 s timeout to roughly the library's own budget, and the
+    reason is available immediately.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -246,28 +272,180 @@ async def _await_descriptor_for_pid(pid: int, timeout_s: float = 20.0) -> Path |
                 return max(candidates, key=lambda p: p.stat().st_mtime)
             except OSError:
                 pass
+        if status_path is not None:
+            message = _read_inject_status(status_path)
+            if message and message != "ok":
+                return None
         await asyncio.sleep(0.1)
     return None
 
 
+def _target_brief(info: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(info, dict) or not info:
+        return None
+    keys = ("pid", "os", "arch", "qt_major", "qt_version", "debug",
+            "toolchain", "compiler_version", "detected_from")
+    return {key: info[key] for key in keys if info.get(key) is not None}
+
+
+def _loaded_brief(loaded: dict[str, Any] | None) -> dict[str, Any]:
+    loaded = loaded or {}
+    keys = ("loaded", "path", "artifact_dir", "build_id", "stale",
+            "matches_expected", "serving", "artifact")
+    return {key: loaded.get(key) for key in keys if loaded.get(key) is not None}
+
+
+def _artifact_brief(library: Path) -> dict[str, Any]:
+    directory = library.parent
+    if directory.name.lower() in {"lib", "bin"}:
+        directory = directory.parent
+    manifest = artifacts.read_manifest(directory) or {}
+    qt = manifest.get("qt") or {}
+    return {
+        "directory": str(directory),
+        "library": str(library),
+        "build_id": artifacts.manifest_build_id(manifest),
+        "build_type": manifest.get("build_type"),
+        "qt_debug": qt.get("debug"),
+    }
+
+
+def _attach_failure(
+    code: str,
+    reason: str,
+    message: str,
+    *,
+    target_info: dict[str, Any] | None = None,
+    artifact: dict[str, Any] | None = None,
+    loaded: dict[str, Any] | None = None,
+    expected: str | None = None,
+    restart_required: bool = False,
+    hint: str | None = None,
+    retryable: bool = False,
+) -> dict[str, Any]:
+    """Build an attach error an agent can act on without reading the source."""
+    result = _error(code, message, retryable=retryable, hint=hint)
+    error = result["error"]
+    error["reason"] = reason
+    if restart_required:
+        error["restart_required"] = True
+    brief_target = _target_brief(target_info)
+    if brief_target:
+        error.setdefault("details", {})["target"] = brief_target
+    if artifact is not None:
+        error.setdefault("details", {})["artifact"] = artifact
+    if loaded is not None:
+        error.setdefault("details", {})["loaded_injector"] = _loaded_brief(loaded)
+    if expected is not None:
+        error.setdefault("details", {})["expected_artifact"] = expected
+    return result
+
+
+def _diagnose_injection_failure(
+    message: str,
+    info: dict[str, Any] | None,
+    artifact: dict[str, Any],
+    expected: str | None,
+) -> tuple[str, str]:
+    """Map a library-written status message to a reason and a next step."""
+    text = (message or "").lower()
+    info = info or {}
+    target_debug = info.get("debug")
+    artifact_debug = artifact.get("qt_debug")
+    pid = info.get("pid")
+    mismatch = (
+        target_debug is not None
+        and artifact_debug is not None
+        and bool(artifact_debug) != bool(target_debug)
+    )
+    if "timeout waiting for qcoreapplication" in text:
+        if mismatch:
+            linked = "Qt5Cored.dll" if artifact_debug else "Qt5Core.dll"
+            loaded_flavor = "debug" if target_debug else "release"
+            hint = (
+                f"the artifact is {'Debug' if artifact_debug else 'Release'} "
+                f"({linked}) but the target loaded a {loaded_flavor} Qt "
+                "runtime; the injected library can never see that "
+                "QCoreApplication instance. Restart the target, rebuild with "
+                f"qt_build(for_pid={pid}), then attach again."
+            )
+            if expected and artifact.get("directory") != expected:
+                hint += f" The matching artifact is {expected}."
+            return "qt_runtime_flavor_mismatch", hint
+        return (
+            "timeout_waiting_qcoreapp",
+            "the injected library waited 10 s for a QCoreApplication and gave "
+            "up; confirm the target really is a Qt application, then restart "
+            "the target if a previous injector attempt may still be loaded",
+        )
+    return (
+        "injection_failed",
+        "the injected library reported a failure; read details.artifact and "
+        "retry after restarting the target",
+    )
+
+
 async def _inject_target(pid: int,
                          artifact_dir: str | None = None) -> Path | dict[str, Any]:
+    info: dict[str, Any] = {}
+    info_error: str | None = None
+    try:
+        info = await asyncio.to_thread(target.target_info, pid)
+    except (ValueError, OSError) as exc:
+        info = {}
+        info_error = str(exc)
+    if not info:
+        return _attach_failure(
+            ErrorCode.PROCESS_GONE.value,
+            "target_gone",
+            info_error or f"cannot inspect pid {pid}",
+            hint="verify the pid with qt_processes; the process may have exited",
+        )
+    expected = (info.get("expected_artifact") or {}).get("directory")
+    loaded = info.get("loaded_injector")
+    if not isinstance(loaded, dict):
+        loaded = await asyncio.to_thread(
+            target.loaded_injector, pid, expected
+        )
+    if loaded.get("loaded") and not _live_descriptors(pid):
+        return _attach_failure(
+            ErrorCode.INJECTION_FAILED.value,
+            "injector_already_loaded",
+            f"target already has an injector library loaded: "
+            f"{loaded.get('path')}",
+            target_info=info,
+            loaded=loaded,
+            expected=expected,
+            restart_required=True,
+            hint=(
+                "restart the target process, then qt_attach(pid=..., "
+                "mode=\"injection\") again. Loading the same library path a "
+                "second time only increments its reference count, so DllMain "
+                "does not run and no new runtime can start."
+            ),
+        )
     dll = inject.default_dll_path(pid, artifact_dir)
     if dll is None:
         detail = inject.artifact_detail(pid, artifact_dir)
-        result = _error(
+        ambiguous = detail.get("error") == ErrorCode.ARTIFACT_AMBIGUOUS.value
+        result = _attach_failure(
             ErrorCode.INJECTION_FAILED.value,
-            "no injector artifact matches the target",
-            hint="run qt_build for this target or set "
-                 "QT_COMMANDER_INJECT_DLL",
-        )
-        if detail.get("error") == ErrorCode.ARTIFACT_AMBIGUOUS.value:
-            result["error"]["message"] = "multiple injector artifacts match the target"
-            result["error"]["hint"] = (
+            "artifact_ambiguous" if ambiguous else "artifact_missing",
+            ("multiple injector artifacts match the target" if ambiguous
+             else "no injector artifact matches the target"),
+            target_info=info,
+            loaded=loaded,
+            expected=expected,
+            hint=(
                 "retry qt_attach(pid=..., artifact_dir=<candidate>) or remove "
                 "the stale duplicate artifact directory"
-            )
-        result["error"]["details"] = detail
+                if ambiguous else
+                "run qt_build(for_pid=...) to build the matching injector, or "
+                "set QT_COMMANDER_INJECT_DLL for an explicit override"
+            ),
+        )
+        details = result["error"].setdefault("details", {})
+        details["artifact_lookup"] = detail
         return result
     injector = inject.default_injector_path(pid, artifact_dir)
     status_path = Path(tempfile.gettempdir()) / f"qtc-inject-status-{pid}.txt"
@@ -280,21 +458,54 @@ async def _inject_target(pid: int,
                                 artifact_dir=artifact_dir,
                                 injector_path=injector)
     except inject.InjectionError as exc:
-        return _error(exc.code, str(exc))
-    path = await _await_descriptor_for_pid(pid)
-    if path is None:
-        message = ""
-        try:
-            message = status_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        if message and message != "ok":
-            return _error(ErrorCode.INJECTION_FAILED.value, message)
-        return _error(
-            ErrorCode.TARGET_NOT_QT.value,
-            "DLL loaded but no descriptor appeared; target may not be a Qt app",
+        reason = ("permission_denied"
+                  if exc.code == ErrorCode.PERMISSION.value
+                  else "injection_failed")
+        return _attach_failure(
+            exc.code, reason, str(exc),
+            target_info=info,
+            artifact=_artifact_brief(dll),
+            loaded=loaded,
+            expected=expected,
+            hint=(
+                "qtc-inject could not load the library; check process "
+                "permissions (elevation, ptrace scope) and that the artifact "
+                "matches the target architecture"
+            ),
         )
-    return path
+    path = await _await_descriptor_for_pid(pid, status_path=status_path)
+    if path is not None:
+        return path
+    message = _read_inject_status(status_path)
+    artifact = _artifact_brief(dll)
+    if message and message != "ok":
+        reason, hint = _diagnose_injection_failure(
+            message, info, artifact, expected
+        )
+        return _attach_failure(
+            ErrorCode.INJECTION_FAILED.value, reason, message,
+            target_info=info,
+            artifact=artifact,
+            loaded=loaded,
+            expected=expected,
+            restart_required=True,
+            hint=hint,
+        )
+    return _attach_failure(
+        ErrorCode.TARGET_NOT_QT.value,
+        "target_not_ready",
+        "DLL loaded but no descriptor appeared; target may not be a Qt app "
+        "or its event loop may not have started yet",
+        target_info=info,
+        artifact=artifact,
+        loaded=loaded,
+        expected=expected,
+        hint=(
+            "wait for the target to finish starting, retry qt_attach, or pass "
+            "artifact_dir if the selected artifact looks wrong"
+        ),
+        retryable=True,
+    )
 
 
 @mcp.tool
@@ -350,11 +561,21 @@ async def qt_target_info(
     """Inspect a target process's architecture and Qt runtime before building.
 
     Use this before qt_build when injecting a running target. Reads the
-    executable image, loader PATH, Qt runtime DLLs, and descriptor build id;
-    it does not inject or launch anything. ``qt_version`` is the full version
-    (for example 5.15.2) when the descriptor or PE version resource provides
-    it; ``build_type`` comes from the descriptor when available. Without
-    pid/descriptor it uses the sole live descriptor.
+    executable image, the modules actually loaded into the process, the loader
+    PATH, Qt runtime DLLs, and descriptor build id; it does not inject or
+    launch anything.
+
+    ``qt_version`` is the full version (for example 5.15.2) when the loaded
+    runtime or the descriptor provides it; ``build_type`` comes from the
+    descriptor when available. ``detected_from`` says which evidence won:
+    ``module`` (the Qt runtime mapped into the process, authoritative),
+    ``adjacent``, ``loader_path`` or ``descriptor``.
+
+    ``expected_artifact`` is the artifact ``qt_attach`` would inject and
+    ``loaded_injector`` describes the injector library already mapped into the
+    target (path, artifact, build_id, stale). ``injection_state`` is
+    ``none``/``loaded``/``stale``/``mismatch``; ``restart_required`` means a
+    loaded injector cannot be replaced without restarting the process.
     """
     if pid is None and descriptor is None:
         candidates = _live_descriptors()
@@ -443,22 +664,58 @@ async def qt_windows(
         return _map_error(exc)
 
 
+def _qt_commander_environment() -> dict[str, Any]:
+    """Describe this install so a caller can build without reading the repo."""
+    root = artifacts.ROOT
+    source = root.parent
+    source_dir = str(source) if (source / "CMakeLists.txt").is_file() else None
+    available = []
+    for entry in artifacts.listing():
+        manifest = entry["manifest"]
+        available.append({
+            "directory": entry["directory"],
+            "build_id": entry.get("build_id"),
+            "build_type": manifest.get("build_type"),
+            "qt": manifest.get("qt"),
+            "compiler": manifest.get("compiler"),
+        })
+    return {
+        "source_dir": source_dir,
+        "artifact_root": str(root),
+        "artifacts": available,
+    }
+
+
 @mcp.tool
 async def qt_environments() -> dict[str, Any]:
-    """Detect Qt kits and C++ toolchains available on this machine.
+    """Detect Qt kits, C++ toolchains and this qt-commander install.
 
     Read-only; use it before qt_build when the Qt path/toolchain is unknown.
+    ``qt_commander`` reports the source directory ``qt_build`` defaults to, the
+    artifact root, and every existing artifact with its ``build_id``. When
+    exactly one live descriptor exists, ``suggested_build_call`` holds a ready
+    ``qt_build`` invocation for that target.
     """
     def detect() -> dict[str, Any]:
         return {
             "qt": detect_qt_environments(),
             "toolchains": detect_toolchains(),
+            "qt_commander": _qt_commander_environment(),
         }
 
     try:
-        return await asyncio.to_thread(detect)
+        result = await asyncio.to_thread(detect)
     except Exception as exc:
         return _map_error(exc)
+    live = _live_descriptors()
+    if len(live) == 1:
+        pid = _descriptor_pid(live[0])
+        if pid is not None:
+            result["suggested_build_call"] = {
+                "tool": "qt_build",
+                "arguments": {"for_pid": pid},
+            }
+    return result
 
 
 def _mingw_compilers() -> tuple[str, str] | None:
@@ -736,32 +993,186 @@ def _collect_artifacts(plan: _BuildPlan, output: str) -> dict[str, Any]:
     }
 
 
+def _qt_commander_source_dir() -> Path | None:
+    """Return the qt-commander CMake project shipped next to this package."""
+    candidate = artifacts.ROOT.parent
+    return candidate if (candidate / "CMakeLists.txt").is_file() else None
+
+
+def _pick_msvc(
+    tools: list[dict[str, Any]], preferred_version: str | None = None
+) -> dict[str, Any] | None:
+    """Pick the MSVC installation a build should use.
+
+    Several Visual Studio versions can be installed at once. The artifact path
+    encodes the toolset, so building with a different toolset than the target
+    was built with produces an artifact ``qt_attach`` cannot match.
+    """
+    candidates = [tool for tool in tools
+                  if tool.get("name") == "msvc" and tool.get("vcvars")]
+    if not candidates:
+        candidates = [tool for tool in tools if tool.get("name") == "msvc"]
+    if not candidates:
+        return None
+    if preferred_version:
+        wanted = artifacts.compiler_abbrev("msvc", preferred_version)
+        exact = [
+            tool for tool in candidates
+            if tool.get("version")
+            and artifacts.compiler_abbrev("msvc", tool["version"]) == wanted
+        ]
+        if exact:
+            return exact[0]
+    return candidates[0]
+
+
+def _target_build_args(pid: int) -> dict[str, Any]:
+    """Derive ``qt_build`` arguments from a live target.
+
+    Anything that cannot be observed is reported as missing instead of being
+    filled with a default: a guessed Debug/Release flavour is exactly how a
+    wrong injector artifact gets built.
+    """
+    descriptor = None
+    for candidate in _descriptor_candidates():
+        if _descriptor_pid(candidate) == pid:
+            descriptor = str(candidate)
+            break
+    info = target.target_info(pid=pid, descriptor=descriptor)
+    derived: dict[str, Any] = {}
+    missing: list[str] = []
+    if isinstance(info.get("qt_major"), int):
+        derived["qt_major"] = info["qt_major"]
+    else:
+        missing.append("qt_major")
+    if isinstance(info.get("toolchain"), str) and info["toolchain"]:
+        derived["toolchain"] = info["toolchain"]
+    else:
+        missing.append("toolchain")
+    if isinstance(info.get("arch"), str) and info["arch"]:
+        derived["arch"] = info["arch"]
+    else:
+        missing.append("arch")
+    if isinstance(info.get("debug"), bool):
+        derived["build_type"] = "Debug" if info["debug"] else "Release"
+    else:
+        missing.append("build_type")
+    if isinstance(info.get("qt_version"), str):
+        derived["qt_version"] = info["qt_version"]
+    if isinstance(info.get("compiler_version"), str):
+        derived["compiler_version"] = info["compiler_version"]
+    return {"ok": not missing, "derived": derived, "missing": missing}
+
+
+def _annotate_build_result(result: dict[str, Any], for_pid: int | None) -> None:
+    """Tell the caller whether the fresh artifact can be injected right away."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return
+    if for_pid is None:
+        result.setdefault("restart_required", False)
+        return
+    result["for_pid"] = for_pid
+    try:
+        info = target.target_info(pid=for_pid)
+    except (ValueError, OSError):
+        result["restart_required"] = True
+        return
+    loaded = info.get("loaded_injector") or {}
+    expected = (info.get("expected_artifact") or {}).get("directory")
+    artifact_dir = result.get("artifact_dir")
+    if expected and artifact_dir:
+        try:
+            result["matches_target"] = (
+                Path(expected).resolve() == Path(artifact_dir).resolve()
+            )
+        except OSError:
+            result["matches_target"] = None
+    restart = bool(loaded.get("loaded"))
+    result["restart_required"] = restart
+    result["next_step"] = (
+        f"restart pid {for_pid}, then qt_attach(pid={for_pid}, "
+        "mode=\"injection\")"
+        if restart else
+        f"qt_attach(pid={for_pid}, mode=\"injection\")"
+    )
+
+
 @mcp.tool
 async def qt_build(
-    source_dir: str,
+    source_dir: str | None = None,
     build_dir: str | None = None,
-    qt_major: int = 5,
-    toolchain: str = "mingw",
-    arch: str = "x64",
-    build_type: str = "Debug",
+    qt_major: int | None = None,
+    toolchain: str | None = None,
+    arch: str | None = None,
+    build_type: str | None = None,
     target: str | None = None,
     qt_env: str | None = None,
     vcvars_path: str | None = None,
     extra_args: list[str] | None = None,
     timeout_s: int = 300,
     wait_s: float = 20.0,
+    for_pid: int | None = None,
 ) -> dict[str, Any]:
-    """Configure and build a CMake project against a discovered Qt kit.
+    """Configure and build the qt-commander injector/runtime with CMake.
 
-    This builds a test/target runtime; it does not attach to or launch the
-    application. The build must match the target process's Qt major version,
-    toolchain, architecture, and build type.
+    This builds the injection artifacts; it does not attach to or launch the
+    application. Artifacts land under ``artifacts/<os>-<arch>/<compiler>-<version>/qt-<version>-<debug|release>/``
+    and ``qt_attach(mode="injection")`` picks one by matching the target's OS,
+    architecture, compiler family/version, Qt version and Qt debug/release.
+
+    ``qt_build(for_pid=<pid>)`` derives ``qt_major``, ``toolchain``, ``arch``,
+    ``build_type``, the Qt kit and ``vcvars_path`` from the live target; pass
+    ``for_pid`` instead of assembling those arguments by hand. Values that
+    cannot be observed are reported as missing rather than defaulted, because
+    a guessed Debug/Release flavour produces an injector that cannot start in
+    the target.
+
+    ``source_dir`` defaults to the qt-commander checkout this server was
+    started from. ``build_type`` must match the target's Qt runtime
+    (Qt5Core.dll vs Qt5Cored.dll); the result reports ``matches_target``,
+    ``restart_required`` and ``next_step``. Removing a loaded injector needs a
+    target restart, not a rebuild.
 
     ``timeout_s`` is the total build budget; ``wait_s`` is how long this call
     blocks. Builds that outlive ``wait_s`` keep running in the server and
     return ``status="running"`` with a ``job_id``; poll ``qt_build_status`` or
     repeat the call with the same arguments (they are de-duplicated).
     """
+    derived: dict[str, Any] = {}
+    if for_pid is not None:
+        try:
+            resolved = await asyncio.to_thread(_target_build_args, for_pid)
+        except (ValueError, OSError) as exc:
+            return _error(ErrorCode.NOT_FOUND.value,
+                          f"cannot inspect pid {for_pid}: {exc}")
+        derived = resolved["derived"]
+        if resolved["missing"]:
+            return _error(
+                ErrorCode.INVALID_ARGUMENT.value,
+                f"cannot derive build arguments for pid {for_pid}: unknown "
+                + ", ".join(resolved["missing"]),
+                hint=("run qt_target_info(pid=...) and pass the missing "
+                      "arguments explicitly; qt_build does not guess the Qt "
+                      "debug/release flavour"),
+            )
+    if source_dir is None:
+        default_source = _qt_commander_source_dir()
+        if default_source is None:
+            return _error(
+                ErrorCode.BUILD_REQUIRED.value,
+                "source_dir is required: this MCP server does not ship the "
+                "qt-commander CMake project",
+                hint="pass source_dir=<qt-commander checkout>",
+            )
+        source_dir = str(default_source)
+    if qt_major is None:
+        qt_major = derived.get("qt_major", 5)
+    if toolchain is None:
+        toolchain = derived.get("toolchain", "mingw")
+    if arch is None:
+        arch = derived.get("arch", "x64")
+    if build_type is None:
+        build_type = derived.get("build_type", "Debug")
     source = Path(source_dir)
     if not (source / "CMakeLists.txt").is_file():
         return _error(ErrorCode.INVALID_ARGUMENT.value,
@@ -801,36 +1212,40 @@ async def qt_build(
             return _error(ErrorCode.INVALID_ARGUMENT.value,
                           f"qt_env is not a known Qt kit: {qt_env}")
     else:
-        for item in environments:
-            if item["major"] != qt_major:
-                continue
-            for candidate in item["kits"]:
-                if candidate["compiler"] == toolchain:
-                    version, kit = item, candidate
-                    break
-            if kit is not None:
-                break
+        kits = [
+            (item, candidate)
+            for item in environments if item["major"] == qt_major
+            for candidate in item["kits"] if candidate["compiler"] == toolchain
+        ]
+        preferred_qt = derived.get("qt_version")
+        if preferred_qt:
+            exact_kits = [pair for pair in kits
+                          if pair[0]["version"] == preferred_qt]
+            if exact_kits:
+                kits = exact_kits
+        if kits:
+            version, kit = kits[0]
     if kit is None or version is None:
         return _error(ErrorCode.BUILD_REQUIRED.value,
                       f"no Qt {qt_major} {toolchain} kit found; run qt_environments")
     if version["major"] != qt_major:
         return _error(ErrorCode.INVALID_ARGUMENT.value,
                       "qt_env does not match qt_major")
+
+    # One toolchain lookup drives both vcvars and the artifact's compiler
+    # version, so the artifact name always describes the toolset actually used.
+    msvc_tool: dict[str, Any] | None = None
     if toolchain == "msvc":
+        tools = await asyncio.to_thread(detect_toolchains)
+        msvc_tool = _pick_msvc(tools, derived.get("compiler_version"))
         if not vcvars_path:
-            tools = await asyncio.to_thread(detect_toolchains)
-            msvc = next(
-                (tool for tool in tools
-                 if tool.get("name") == "msvc" and tool.get("vcvars")),
-                None,
-            )
-            if msvc is None:
+            if msvc_tool is None or not msvc_tool.get("vcvars"):
                 return _error(
                     ErrorCode.BUILD_REQUIRED.value,
                     "no MSVC vcvars environment found",
                     hint="install Visual Studio C++ tools or pass vcvars_path",
                 )
-            vcvars_path = msvc["vcvars"]
+            vcvars_path = msvc_tool["vcvars"]
         if not Path(vcvars_path).is_file():
             return _error(ErrorCode.INVALID_ARGUMENT.value,
                           f"vcvars_path not found: {vcvars_path}")
@@ -840,14 +1255,8 @@ async def qt_build(
     compilers: tuple[str, str] | None = None
     compiler_version = None
     if toolchain == "msvc":
-        tools = await asyncio.to_thread(detect_toolchains)
-        msvc = next(
-            (tool for tool in tools
-             if tool.get("name") == "msvc" and tool.get("version")),
-            None,
-        )
-        if msvc is not None:
-            compiler_version = msvc.get("version")
+        if msvc_tool is not None and msvc_tool.get("version"):
+            compiler_version = msvc_tool["version"]
     else:
         if toolchain == "mingw":
             compilers = _mingw_compilers()
@@ -966,6 +1375,7 @@ async def qt_build(
             "artifact_dir": str(plan.artifact_dir),
             "stage": job.stage,
             "elapsed_s": round(time.monotonic() - job.started_at, 1),
+            "for_pid": for_pid,
             "hint": "build continues in the server; call qt_build_status("
                     "job_id=...) or repeat qt_build with the same arguments",
         }
@@ -974,6 +1384,7 @@ async def qt_build(
                              message=f"build {job.status}")
     job.result.setdefault("job_id", job.job_id)
     job.result.setdefault("kit", kit["path"])
+    _annotate_build_result(job.result, for_pid)
     return job.result
 
 
@@ -1013,12 +1424,23 @@ async def qt_attach(
     """Attach to a live Qt process.
 
     Use this before any session-scoped tool. Use a rendezvous descriptor
-    (linked mode), or ``pid`` with
-    ``mode="injection"``. ``mode="auto"`` uses a live descriptor when
-    available and otherwise injects. ``build_id`` guards against attaching a
-    runtime built for a different library; a mismatch must be rebuilt/reinjected
-    rather than bypassed. ``artifact_dir`` pins one artifact directory when
-    several match the target.
+    (linked mode), or ``pid`` with ``mode="injection"``. ``mode="auto"`` uses a
+    live descriptor when available and otherwise injects. ``artifact_dir``
+    pins one artifact directory when several match the target.
+
+    Failures are self-describing: ``error.reason`` is one of
+    ``injector_already_loaded``, ``artifact_missing``, ``artifact_ambiguous``,
+    ``qt_runtime_flavor_mismatch``, ``timeout_waiting_qcoreapp``,
+    ``target_not_ready``, ``permission_denied`` or ``injection_failed``, and
+    ``error.details`` carries the target snapshot, the chosen artifact, the
+    already-loaded injector and the artifact ``qt_attach`` expected.
+    ``error.restart_required`` means the target must be restarted before an
+    injector can be loaded again; a rebuild alone cannot replace a library that
+    is already mapped into the process.
+
+    ``build_id`` is reserved: it is accepted but not validated yet, so it
+    always returns ``E_NOT_IMPLEMENTED``. Check
+    ``qt_target_info.loaded_injector`` / ``expected_artifact`` instead.
     """
     if mode not in {"auto", "linked", "injection"}:
         return _error(ErrorCode.INVALID_ARGUMENT.value,
@@ -1036,14 +1458,22 @@ async def qt_attach(
         return _error(ErrorCode.INVALID_ARGUMENT.value,
                       "injection mode requires pid")
     if build_id is not None:
-        return _error(ErrorCode.NOT_IMPLEMENTED.value,
-                      "build_id attach is not implemented")
+        return _error(
+            ErrorCode.NOT_IMPLEMENTED.value,
+            "build_id attach is not implemented",
+            hint="compare qt_target_info.loaded_injector.build_id with "
+                 "expected_artifact.build_id instead",
+        )
 
     if mode == "injection":
         existing = _live_descriptors(pid)
         if existing:
-            return _error(ErrorCode.MODE_CONFLICT.value,
-                          "target already has a descriptor")
+            return _error(
+                ErrorCode.MODE_CONFLICT.value,
+                "target already has a descriptor",
+                hint="attach with qt_attach(pid=...) or "
+                     "qt_attach(descriptor=...) instead of mode=\"injection\"",
+            )
         injected = await _inject_target(pid, artifact_dir)
         if isinstance(injected, dict):
             return injected
@@ -1155,6 +1585,7 @@ async def qt_attach(
             return _error(ErrorCode.LINKED_IDENTITY.value,
                           "descriptor and runtime identity mismatch")
         session = Session(session_id, descriptor_pid, client, client.hello,
+                          build_id=data.get("library_build_id"),
                           descriptor=str(path))
         sessions.add(session)
     except SessionExists:

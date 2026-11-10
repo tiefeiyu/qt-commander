@@ -156,3 +156,143 @@ async def test_target_info_for_current_process():
     assert result["arch"]
     assert result["bits"] in {32, 64}
     assert result["confidence"] in {"high", "medium", "low"}
+
+
+def test_scan_runtime_dirs_reports_ambiguous_flavour(tmp_path):
+    """A directory holding both Qt runtimes cannot name the loaded flavour."""
+    (tmp_path / "Qt5Core.dll").write_bytes(b"")
+    (tmp_path / "Qt5Cored.dll").write_bytes(b"")
+    info = target._scan_runtime_dirs([tmp_path])
+    assert info["qt_major"] == 5
+    assert info["debug"] is None
+    assert info.get("flavor_ambiguous") is True
+
+
+def test_scan_runtime_dirs_keeps_a_single_flavour(tmp_path):
+    (tmp_path / "Qt5Cored.dll").write_bytes(b"")
+    (tmp_path / "msvcp140d.dll").write_bytes(b"")
+    info = target._scan_runtime_dirs([tmp_path])
+    assert info["debug"] is True
+    assert "flavor_ambiguous" not in info
+    assert info["toolchain"] == "msvc"
+
+
+def test_target_info_prefers_loaded_runtime_module(monkeypatch):
+    """The mapped Qt runtime wins over a loader PATH that ships both DLLs."""
+    monkeypatch.setenv("QT_COMMANDER_PROCESS_MODULES", "1")
+    target._MODULE_CACHE.clear()
+    monkeypatch.setattr(target, "_adjacent_runtime", lambda exe: _empty_runtime())
+    monkeypatch.setattr(target, "_path_runtime", lambda proc: {
+        "qt_major": 5,
+        "qt_version": "5.15.2",
+        "debug": True,
+        "toolchain": "msvc",
+        "evidence": [r"C:\Qt\5.15.2\msvc2019_64\bin\Qt5Cored.dll"],
+    })
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [types.SimpleNamespace(path=r"C:\Qt\5.15.2\msvc2019_64\bin\Qt5Core.dll")],
+    )
+    info = target.target_info(pid=os.getpid())
+    assert info["debug"] is False
+    assert info["detected_from"] == "module"
+
+
+def _make_release_artifact(tmp_path):
+    from qt_commander import artifacts
+
+    directory = artifacts.build_dir(
+        os_name="windows",
+        arch="x64",
+        compiler="msvc",
+        compiler_version="19.44.35207",
+        qt_version="5.15.2",
+        qt_debug=False,
+        root=tmp_path,
+    )
+    artifacts.write_manifest(
+        directory,
+        os_name="windows",
+        arch="x64",
+        compiler="msvc",
+        compiler_version="19.44.35207",
+        qt_version="5.15.2",
+        qt_debug=False,
+        build_type="Release",
+        injector="bin/qtc-inject.exe",
+        library="lib/qt_commander_inject.dll",
+    )
+    library = directory / "lib" / "qt_commander_inject.dll"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    library.write_bytes(b"")
+    return directory, library
+
+
+def test_loaded_injector_reports_artifact(tmp_path, monkeypatch):
+    directory, library = _make_release_artifact(tmp_path)
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [types.SimpleNamespace(path=str(library))],
+    )
+    monkeypatch.setattr(
+        psutil.Process, "create_time",
+        lambda self: library.stat().st_mtime + 10.0,
+    )
+    info = target.loaded_injector(os.getpid(), expected_artifact=directory)
+    assert info["loaded"] is True
+    assert info["artifact_dir"] == str(directory)
+    assert info["build_id"] == "qt5.15.2/msvc-x64/Release"
+    assert info["matches_expected"] is True
+    assert info["stale"] is False
+
+
+def test_loaded_injector_flags_stale_library(tmp_path, monkeypatch):
+    directory, library = _make_release_artifact(tmp_path)
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [types.SimpleNamespace(path=str(library))],
+    )
+    # The process started before the library on disk was rebuilt.
+    monkeypatch.setattr(
+        psutil.Process, "create_time",
+        lambda self: library.stat().st_mtime - 10.0,
+    )
+    info = target.loaded_injector(os.getpid(), expected_artifact=directory)
+    assert info["stale"] is True
+    assert target.injection_state(info, has_descriptor=True) == ("stale", True)
+
+
+def test_loaded_injector_absent(monkeypatch):
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [types.SimpleNamespace(path=r"C:\Qt\bin\Qt5Core.dll")],
+    )
+    info = target.loaded_injector(os.getpid())
+    assert info["loaded"] is False
+    assert info["path"] is None
+    assert target.injection_state(info) == ("none", False)
+
+
+def test_injection_state_transitions():
+    assert target.injection_state({"loaded": False}) == ("none", False)
+    assert target.injection_state(
+        {"loaded": True, "matches_expected": False}, has_descriptor=True
+    ) == ("mismatch", True)
+    assert target.injection_state(
+        {"loaded": True, "matches_expected": True}, has_descriptor=False
+    ) == ("loaded", True)
+    assert target.injection_state(
+        {"loaded": True, "matches_expected": True}, has_descriptor=True
+    ) == ("loaded", False)
+
+
+def test_target_info_reports_missing_artifact():
+    info = target.target_info(pid=os.getpid())
+    assert info["expected_artifact"] is None
+    assert info["expected_artifact_error"]["error"] == "E_ARTIFACT_NOT_FOUND"
+    assert info["injection_state"] in {"none", "loaded", "stale", "mismatch"}
+    assert info["loaded_injector"]["loaded"] in {True, False}

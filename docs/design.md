@@ -147,11 +147,11 @@ props: { ...过滤器... }
 
 | 工具 | 签名与要点 |
 |---|---|
-| `qt_status` | `(session_id=None)`；构建、进程、内存会话、磁盘可 resume 会话、平台能力；有 session 时带 live ping；`descriptor_info` 只给 alive + 最近 5 个 dead，另给 `descriptor_total/dead` |
-| `qt_environments` | 发现 VS / MinGW / Qt |
-| `qt_build` | `(toolchain, qt_major, arch, build_type, qt_env, vcvars_path?, ..., timeout_s=300, wait_s=20)`；单一 build（QML+JS）；超出 `wait_s` 返回 `status="running"` + `job_id`，同参数复用同一 job |
+| `qt_status` | `(session_id=None)`；构建、进程、内存会话、磁盘可 resume 会话、平台能力；有 session 时带 live ping；`descriptor_info` 只给 alive + 最近 5 个 dead，另给 `descriptor_total/dead`；`artifacts` 每项带 `build_id` |
+| `qt_environments` | `()`；发现 VS / MinGW / Qt，并给出 `qt_commander{source_dir, artifact_root, artifacts[]}`；恰好一个 live descriptor 时给 `suggested_build_call` |
+| `qt_build` | `(source_dir=None, build_dir?, qt_major?, toolchain?, arch?, build_type?, ..., for_pid=None)`；`for_pid` 从目标推导 Qt 主版本/toolchain/arch/build_type/Qt kit/vcvars，推不出的参数报错而不是落默认值；`source_dir` 默认本仓库 checkout；单一 build（QML+JS）；超出 `wait_s` 返回 `status="running"` + `job_id`，同参数复用同一 job；结果带 `build_id/matches_target/restart_required/next_step` |
 | `qt_build_status` | `(job_id=None)`；后台构建 job 的进度/结果，`None` 时列最近 5 个 |
-| `qt_attach` | `(pid=None, session_id=None, build_id=None, mode="auto", artifact_dir=None)`；pid 新接入，session_id 手动 resume，artifact_dir 消除歧义 |
+| `qt_attach` | `(pid=None, session_id=None, build_id=None, mode="auto", artifact_dir=None)`；pid 新接入，session_id 手动 resume，artifact_dir 消除歧义；失败带 `error.reason/injection_state/restart_required/details{target,artifact,loaded_injector,expected_artifact}`；`build_id` 预留未实现 |
 | `qt_detach` | `(session_id, purge=False)`；purge 删除该会话的 descriptor 文件并触发一次 dead GC |
 | `qt_query` | `(where?, scope?, props=None, coords="parent", max_depth=-1, limit=200, include_hidden=False, occlusion=False, count_only=False, compact=False)` |
 | `qt_items` | `(owner: id|locator, where?, limit=50, offset=0, include_hidden=False, compact=False, nth=None, session_id=None)`；非 QObject 子项 |
@@ -404,38 +404,41 @@ qt_source(target, handler=None, snippet_lines=3, max_lines=20)
 
 单一 build：QML + JS 永远开启。
 
-```
-build_id = f"{qt_version}/{toolchain}-{arch}/{build_type}"
-build_dir = workspace/builds/build_id
-```
-
-例：
-
-```
-builds/qt5.15.2/msvc2019-x64/release/
-builds/qt6.8.3/mingw1310-x64/release/
+```text
+artifacts/<os>-<arch>/<compiler>-<major.minor>/qt-<version>-<debug|release>/
+  manifest.json     # schema 2，含 build_id
+  bin/qtc-inject.exe
+  lib/qt_commander_inject.dll
 ```
 
-manifest：
+规范 build id（`qt_build` 返回值与 manifest 同一个格式）：
+
+```text
+build_id = f"qt{qt_version}/{compiler}-{arch}/{build_type}"
+例：qt5.15.2/msvc-x64/Release
+```
+
+manifest（schema 2）：
 
 ```json
 {
-  "build_id": "qt5.15.2/msvc2019-x64/release",
-  "qt_version": "5.15.2",
-  "qt_major": 5,
-  "toolchain": "msvc",
-  "toolchain_version": "msvc2019",
-  "arch": "x64",
-  "build_type": "release",
-  "source_hash": "...",
-  "built_at": "...",
-  "paths": {"injector": "...", "library": "..."}
+  "schema": 2,
+  "build_id": "qt5.15.2/msvc-x64/Release",
+  "target": {"os": "windows", "arch": "x64"},
+  "compiler": {"family": "msvc", "version": "14.44.35207"},
+  "qt": {"version": "5.15.2", "debug": false},
+  "build_type": "Release",
+  "injector": "bin/qtc-inject.exe",
+  "library": "lib/qt_commander_inject.dll"
 }
 ```
 
-- 同一路径 rebuild in place；source_hash 一致复用。artifact 选择规则：编译器版本必须由**构建实际使用的编译器**探测（不再依赖 PATH 里的 `g++`）；多个候选时先精确版本、再唯一带版本、都没有才 `E_ARTIFACT_AMBIGUOUS`；歧义时客户端可传 `qt_attach(artifact_dir=...)` 指定。默认 build 目录若已被其它源码占用，自动隔离为 `<dir>_<hash8>`，不覆盖他人 build tree。
+- 运行时 descriptor 里的 `library_build_id` 是编译期宏（`qt5/MSVC-AMD64/Release`，`src/CMakeLists.txt`），与上面的规范 id 格式不同；两者不要直接字符串比较。
+- 同一路径 rebuild in place。artifact 选择规则：编译器版本必须由**构建实际使用的编译器**探测（不再依赖 PATH 里的 `g++`）；多个候选时先精确版本、再唯一带版本、都没有才 `E_ARTIFACT_AMBIGUOUS`；歧义时客户端可传 `qt_attach(artifact_dir=...)` 指定。默认 build 目录若已被其它源码占用，自动隔离为 `<dir>_<hash8>`，不覆盖他人 build tree。
+- **Qt 风味必须来自证据，不能来自猜测**：目标进程已加载的模块（`psutil.memory_maps`）优先；其次 exe 同目录；再次 loader PATH；最后 descriptor。一个目录里同时有 `Qt5Core.dll` 和 `Qt5Cored.dll`（完整 Qt kit 的 `bin` 就是）时 `debug=None` 并置 `flavor_ambiguous`，由上层走歧义而不是默认为 release —— 猜错会把另一种风味的库注入目标，加载第二份 Qt，然后 `QCoreApplication::instance()` 永远为空。
 - `qt_build` 不再接受 `with_qml`/`with_js`。
-- `qt_attach` 匹配四个维度；不做 Quick 选 build；`build_id` 显式覆盖。
+- `qt_attach` 匹配 OS/arch/编译器家族/编译器版本/Qt 版本/Qt debug；`debug` 未知时按歧义处理。`build_id` 参数预留，当前返回 `E_NOT_IMPLEMENTED`（没有 build-id 校验）。
+- 注入前先探测目标里是否已有 `qt_commander_inject` 模块：已有且无 live descriptor → `injector_already_loaded` + `restart_required`，因为同路径 `LoadLibraryW` 只加引用计数、`DllMain` 不再执行，重建产物无法替换已映射的库。
 
 ### 7.2 会话与恢复
 
@@ -510,9 +513,13 @@ ds 非空且 live 空 → GC → inject
 显式 mode=linked 且无 live → E_LINKED_NOT_FOUND
 inject：
     库答已有会话 → E_SESSION_EXISTS
+    目标已加载 qt_commander_inject 且无 live descriptor → injector_already_loaded（restart_required）
+    无匹配 artifact → artifact_missing；多个匹配 → artifact_ambiguous
     受保护/反注入 → E_INJECTION_BLOCKED
-    权限不足 → E_PERMISSION
-    非 Qt → E_TARGET_NOT_QT
+    权限不足 → E_PERMISSION（reason=permission_denied）
+    已加载 DLL 但库内等不到 QCoreApplication → timeout_waiting_qcoreapp，
+        且 artifact 与目标已加载 Qt 的 debug/release 不一致时 → qt_runtime_flavor_mismatch
+    非 Qt / 事件循环未就绪 → E_TARGET_NOT_QT（reason=target_not_ready）
     其它 → E_INJECTION_FAILED
 ```
 
@@ -522,8 +529,9 @@ inject：
 - 无 descriptor：只能 inject，不能“顺手试试 linked”。
 - 不跨模式兜底；auto 永不抛 `E_LINKED_NOT_FOUND`。
 - 显式 `mode=injection` 且存在 live descriptor → `E_MODE_CONFLICT`。
-- `build_id` 在 linked 下忽略 + warning。
+- `build_id` 参数预留（`E_NOT_IMPLEMENTED`）：需要判断“注入的是不是同一份库”时，比较 `qt_target_info.loaded_injector.build_id` 与 `expected_artifact.build_id`。
 - 闭源应用没有 descriptor，只走 inject；inject 失败不兜底 linked。
+- `error.restart_required=true` 表示重建无效：已映射进进程的库只能靠重启目标替换。
 
 ---
 

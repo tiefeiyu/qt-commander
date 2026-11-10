@@ -18,6 +18,8 @@ from typing import Any
 
 import psutil
 
+from . import artifacts
+
 _MODULE_CACHE: dict[tuple[int, float], dict[str, Any]] = {}
 _MODULE_SCAN_BUDGET_SECONDS = 2.0
 _MODULE_SCAN_ENV = "QT_COMMANDER_PROCESS_MODULES"
@@ -298,7 +300,15 @@ def _shared_library_version(basename: str) -> str | None:
 
 
 def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
-    """Find a Qt runtime and derive toolchain only from that runtime's dir."""
+    """Find a Qt runtime and derive toolchain only from that runtime's dir.
+
+    A full Qt kit ``bin`` directory ships both ``Qt5Core.dll`` and
+    ``Qt5Cored.dll``.  Seeing both means this directory cannot tell which one a
+    process loaded, so the flavour is reported as ``None`` (unknown) and
+    ``flavor_ambiguous`` is set instead of guessing from directory order: a
+    wrong guess injects a DLL that links the other Qt runtime, loads a second
+    Qt into the target, and then times out waiting for ``QCoreApplication``.
+    """
     fallback_toolchain: str | None = None
     fallback_evidence: list[str] = []
     for directory in directories:
@@ -308,21 +318,16 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
             entries = list(directory.iterdir())
         except OSError:
             continue
-        qt_major: int | None = None
-        qt_version: str | None = None
-        qt_debug = False
+        core_entries: list[Path] = []
+        core_majors: set[int] = set()
         toolchain: str | None = None
         evidence: list[str] = []
         for entry in entries:
             lower = entry.name.lower()
             major = _qt_core_major(lower)
             if major is not None and _is_runtime_library(lower):
-                qt_major = major
-                if lower.endswith(".dll"):
-                    qt_debug = lower.endswith("d.dll")
-                    qt_version = _file_version(entry) or qt_version
-                else:
-                    qt_version = _shared_library_version(lower) or qt_version
+                core_entries.append(entry)
+                core_majors.add(major)
                 evidence.append(str(entry))
             elif lower.startswith(("msvcp", "vcruntime")):
                 toolchain = "msvc"
@@ -330,17 +335,37 @@ def _scan_runtime_dirs(directories: list[Path]) -> dict[str, Any]:
             elif lower.startswith(("libstdc++", "libgcc", "libwinpthread")):
                 toolchain = toolchain or "mingw"
                 evidence.append(str(entry))
-        if qt_major is not None:
-            return {
-                "qt_major": qt_major,
-                "qt_version": qt_version,
-                "debug": qt_debug,
-                "toolchain": toolchain,
-                "evidence": evidence[:8],
-            }
-        if fallback_toolchain is None and toolchain is not None:
-            fallback_toolchain = toolchain
-            fallback_evidence = evidence[:8]
+        if not core_entries:
+            if fallback_toolchain is None and toolchain is not None:
+                fallback_toolchain = toolchain
+                fallback_evidence = evidence[:8]
+            continue
+        major = min(core_majors)
+        flavors: set[bool] = set()
+        versions: list[str] = []
+        for entry in core_entries:
+            lower = entry.name.lower()
+            if _qt_core_major(lower) != major:
+                continue
+            if lower.endswith(".dll"):
+                flavors.add(lower.endswith("d.dll"))
+                version = _file_version(entry)
+            else:
+                flavors.add(False)
+                version = _shared_library_version(lower)
+            if version and version not in versions:
+                versions.append(version)
+        ambiguous = len(flavors) > 1
+        result: dict[str, Any] = {
+            "qt_major": major,
+            "qt_version": versions[0] if versions else None,
+            "debug": next(iter(flavors)) if len(flavors) == 1 else None,
+            "toolchain": toolchain,
+            "evidence": evidence[:8],
+        }
+        if ambiguous:
+            result["flavor_ambiguous"] = True
+        return result
     return {
         "qt_major": None,
         "qt_version": None,
@@ -456,6 +481,149 @@ def _module_runtime(process: psutil.Process) -> dict[str, Any]:
             _MODULE_CACHE.clear()
         _MODULE_CACHE[cache_key] = result
     return result
+
+
+_INJECT_LIBRARY_MARKERS = (
+    "qt_commander_inject.dll",
+    "libqt_commander_inject.so",
+)
+
+
+def _is_inject_library(path: str) -> bool:
+    name = _module_basename(path)
+    return any(name == marker or name.startswith(marker)
+               for marker in _INJECT_LIBRARY_MARKERS)
+
+
+def _module_paths(process: psutil.Process) -> list[str]:
+    """Return the distinct module paths mapped into a live process."""
+    try:
+        entries = process.memory_maps()
+    except (psutil.Error, OSError, NotImplementedError):
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    try:
+        for entry in entries:
+            path = getattr(entry, "path", None)
+            if not isinstance(path, str) or not path:
+                continue
+            key = path.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+    except (psutil.Error, OSError):
+        return paths
+    return paths
+
+
+def _artifact_dir_of_module(path: str) -> Path:
+    directory = Path(path).parent
+    if directory.name.lower() in {"lib", "bin"}:
+        directory = directory.parent
+    return directory
+
+
+def loaded_injector(
+    pid: int,
+    expected_artifact: str | Path | None = None,
+) -> dict[str, Any]:
+    """Report the ``qt_commander_inject`` library already loaded in a target.
+
+    A library that is already mapped cannot be replaced by injecting again:
+    ``LoadLibraryW`` on the same path only increments its reference count, so
+    ``DllMain`` never runs and no new descriptor appears. Knowing this before
+    injecting turns a silent no-op into an actionable "restart the target".
+    """
+    result: dict[str, Any] = {
+        "loaded": False,
+        "path": None,
+        "paths": [],
+        "artifact_dir": None,
+        "artifact_dirs": [],
+        "artifact": None,
+        "build_id": None,
+        "library_mtime": None,
+        "stale": None,
+        "matches_expected": None,
+        "serving": None,
+    }
+    try:
+        process = psutil.Process(pid)
+        create_time = process.create_time()
+    except (psutil.Error, OSError) as exc:
+        result["error"] = str(exc)
+        return result
+    loaded = [path for path in _module_paths(process)
+              if _is_inject_library(path)]
+    if not loaded:
+        return result
+    path = loaded[0]
+    directories = sorted({str(_artifact_dir_of_module(item))
+                          for item in loaded})
+    result.update({
+        "loaded": True,
+        "path": path,
+        "paths": loaded,
+        "artifact_dir": directories[0] if len(directories) == 1 else None,
+        "artifact_dirs": directories,
+    })
+    manifest = artifacts.read_manifest(_artifact_dir_of_module(path))
+    if manifest:
+        qt = manifest.get("qt") or {}
+        compiler = manifest.get("compiler") or {}
+        result["artifact"] = {
+            "qt_version": qt.get("version"),
+            "qt_debug": qt.get("debug"),
+            "toolchain": compiler.get("family"),
+            "compiler_version": compiler.get("version"),
+            "build_type": manifest.get("build_type"),
+        }
+        result["build_id"] = artifacts.manifest_build_id(manifest)
+    try:
+        mtime = Path(path).stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime is not None:
+        result["library_mtime"] = mtime
+        # A library rebuilt after the process started is still the old image
+        # in memory: the file changed underneath it.
+        result["stale"] = mtime > create_time + 1.0
+    if expected_artifact:
+        try:
+            expected = Path(expected_artifact).resolve()
+        except OSError:
+            expected = None
+        if expected is not None:
+            result["matches_expected"] = any(
+                Path(directory).resolve() == expected
+                for directory in directories
+            )
+    return result
+
+
+def injection_state(
+    loaded: dict[str, Any],
+    *,
+    has_descriptor: bool = False,
+) -> tuple[str, bool]:
+    """Return ``(state, restart_required)`` for a target's injector.
+
+    ``state`` is ``none`` (nothing loaded), ``stale`` (loaded image predates
+    the artifact on disk), ``mismatch`` (loaded artifact is not the one
+    ``qt_attach`` would pick) or ``loaded``.  ``restart_required`` is true
+    whenever the loaded library cannot be replaced by injecting again.
+    """
+    if not loaded.get("loaded"):
+        return "none", False
+    if loaded.get("stale"):
+        return "stale", True
+    if loaded.get("matches_expected") is False:
+        return "mismatch", True
+    if not has_descriptor:
+        return "loaded", True
+    return "loaded", False
 
 
 def list_processes(
@@ -631,15 +799,37 @@ def target_info(pid: int | None = None,
     result = inspect_executable(executable)
     result["pid"] = pid
     result["pid_alive"] = psutil.pid_exists(pid)
-    runtime = _adjacent_runtime(executable)
-    if runtime.get("qt_major") is None:
-        path_runtime = _path_runtime(process)
-        if path_runtime.get("qt_major") is not None:
-            runtime = path_runtime
+
+    # Evidence order: the Qt runtime actually mapped into the process is
+    # authoritative. A loader-PATH directory is not: a full Qt kit ``bin``
+    # ships both the release and the debug runtime, so scanning it can only
+    # produce a guess (and guessing wrong injects the other flavour).
+    module_runtime: dict[str, Any] = {}
+    if _module_scan_enabled():
+        module_runtime = _module_runtime(process)
+    detected_from: str | None = None
+    if module_runtime.get("qt_major") is not None:
+        runtime = dict(module_runtime)
+        detected_from = "module"
+    else:
+        adjacent = _adjacent_runtime(executable)
+        loader_runtime = _path_runtime(process)
+        if adjacent.get("qt_major") is not None:
+            runtime = adjacent
+            detected_from = "adjacent"
+        elif loader_runtime.get("qt_major") is not None:
+            runtime = loader_runtime
+            detected_from = "loader_path"
+        elif adjacent.get("toolchain") or adjacent.get("evidence"):
+            runtime = adjacent
+        else:
+            runtime = loader_runtime
     descriptor_runtime = _runtime_from_build_id(
         data.get("library_build_id") if data else None
     )
     descriptor_qt = _descriptor_qt(data)
+    if detected_from is None and data:
+        detected_from = "descriptor"
     import_paths = [
         Path(path) for path in runtime.get("evidence", []) if path
     ]
@@ -664,6 +854,7 @@ def target_info(pid: int | None = None,
     if descriptor_runtime and not runtime.get("evidence"):
         runtime["evidence"] = [f"descriptor:{data.get('library_build_id')}"]
     result.update(runtime)
+    result["detected_from"] = detected_from
     system = platform.system().lower()
     result["os"] = (
         "windows" if system == "windows"
@@ -685,6 +876,36 @@ def target_info(pid: int | None = None,
     if isinstance(data.get("arch"), str):
         result["arch"] = data["arch"]
     result["qt_debug"] = result.get("debug")
+
+    # Which artifact qt_attach would inject, plus what is already loaded: this
+    # is what makes a failed inject self-explanatory.
+    expected = artifacts.find(result)
+    expected_dir: str | None = None
+    if expected.get("ok"):
+        expected_dir = str(expected["directory"])
+        manifest = expected["manifest"]
+        result["expected_artifact"] = {
+            "directory": expected_dir,
+            "build_id": artifacts.manifest_build_id(manifest),
+            "build_type": manifest.get("build_type"),
+            "qt_debug": (manifest.get("qt") or {}).get("debug"),
+        }
+    else:
+        result["expected_artifact"] = None
+        result["expected_artifact_error"] = {
+            key: expected.get(key)
+            for key in ("error", "message", "hint", "candidates")
+            if expected.get(key) is not None
+        }
+    loaded = loaded_injector(pid, expected_artifact=expected_dir)
+    loaded["serving"] = bool(data)
+    state, restart_required = injection_state(
+        loaded, has_descriptor=bool(data)
+    )
+    result["loaded_injector"] = loaded
+    result["injection_state"] = state
+    result["restart_required"] = restart_required
+
     if data:
         result["descriptor"] = {
             "session_id": data.get("session_id"),

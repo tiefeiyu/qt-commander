@@ -4,7 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import time
+import types
+from pathlib import Path
 
 import pytest
 
@@ -255,3 +258,245 @@ async def test_query_does_not_probe_on_hit():
 
     await ops.query(_Session(), where={"object_name": "visibleBtn"})
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_status_reports_session_build_id(tmp_path, monkeypatch):
+    """The library build id must be visible, not a permanently empty field."""
+    class _Client:
+        closed = False
+
+        async def close(self):
+            return None
+
+    monkeypatch.setenv("QT_COMMANDER_RENDEZVOUS", str(tmp_path))
+    hello = types.SimpleNamespace(library_version="2.0.0", capabilities=())
+    session = server.Session("s-build", os.getpid(), client=_Client(),
+                             hello=hello, build_id="qt5/MSVC-AMD64/Release")
+    server.sessions.add(session)
+    try:
+        result = await server.qt_status()
+        entry = next(item for item in result["sessions"]
+                     if item["session_id"] == "s-build")
+        assert entry["build_id"] == "qt5/MSVC-AMD64/Release"
+    finally:
+        server.sessions.remove("s-build")
+
+
+def _no_live_descriptors(pid=None):
+    return []
+
+
+@pytest.mark.asyncio
+async def test_attach_reports_already_loaded_injector(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_COMMANDER_RENDEZVOUS", str(tmp_path))
+    monkeypatch.setattr(server, "_live_descriptors", _no_live_descriptors)
+    monkeypatch.setattr(
+        server.target, "target_info",
+        lambda pid=None, descriptor=None: {
+            "pid": pid,
+            "os": "windows",
+            "arch": "x64",
+            "qt_major": 5,
+            "qt_version": "5.15.2",
+            "debug": False,
+            "toolchain": "msvc",
+            "loaded_injector": {
+                "loaded": True,
+                "path": "C:/artifacts/lib/qt_commander_inject.dll",
+                "artifact_dir": "C:/artifacts",
+                "build_id": "qt5.15.2/msvc-x64/Release",
+                "matches_expected": True,
+                "serving": False,
+            },
+            "expected_artifact": {"directory": "C:/artifacts"},
+        },
+    )
+    result = await server.qt_attach(pid=1234, mode="injection")
+    assert result["ok"] is False
+    assert result["error"]["reason"] == "injector_already_loaded"
+    assert result["error"]["restart_required"] is True
+    assert "restart the target" in result["error"]["hint"]
+    details = result["error"]["details"]
+    assert details["loaded_injector"]["build_id"] == "qt5.15.2/msvc-x64/Release"
+    assert details["target"]["qt_version"] == "5.15.2"
+
+
+@pytest.mark.asyncio
+async def test_attach_explains_runtime_flavor_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_COMMANDER_RENDEZVOUS", str(tmp_path))
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    server.artifacts.write_manifest(
+        artifact_dir,
+        os_name="windows",
+        arch="x64",
+        compiler="msvc",
+        compiler_version="19.44.35207",
+        qt_version="5.15.2",
+        qt_debug=True,
+        build_type="Debug",
+        injector="bin/qtc-inject.exe",
+        library="lib/qt_commander_inject.dll",
+    )
+    library = artifact_dir / "lib" / "qt_commander_inject.dll"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"")
+    status = Path(tempfile.gettempdir()) / "qtc-inject-status-1234.txt"
+    status.unlink(missing_ok=True)
+    monkeypatch.setattr(server, "_live_descriptors", _no_live_descriptors)
+    monkeypatch.setattr(
+        server.inject, "default_dll_path", lambda pid, artifact_dir=None: library
+    )
+    monkeypatch.setattr(
+        server.inject, "default_injector_path", lambda pid, artifact_dir=None: None
+    )
+    monkeypatch.setattr(
+        server.target, "target_info",
+        lambda pid=None, descriptor=None: {
+            "pid": pid,
+            "os": "windows",
+            "arch": "x64",
+            "qt_major": 5,
+            "qt_version": "5.15.2",
+            "debug": False,
+            "toolchain": "msvc",
+            "loaded_injector": {"loaded": False},
+            "expected_artifact": {"directory": str(tmp_path / "release")},
+        },
+    )
+
+    def fake_inject(pid, path, **kwargs):
+        status.write_text("timeout waiting for QCoreApplication",
+                          encoding="utf-8")
+
+    monkeypatch.setattr(server.inject, "inject_library", fake_inject)
+    try:
+        result = await server.qt_attach(pid=1234, mode="injection")
+    finally:
+        status.unlink(missing_ok=True)
+    assert result["error"]["reason"] == "qt_runtime_flavor_mismatch"
+    assert result["error"]["restart_required"] is True
+    assert "Debug" in result["error"]["hint"]
+    assert result["error"]["details"]["artifact"]["qt_debug"] is True
+    assert str(tmp_path / "release") in result["error"]["hint"]
+
+
+@pytest.mark.asyncio
+async def test_attach_reports_missing_artifact(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_COMMANDER_RENDEZVOUS", str(tmp_path))
+    monkeypatch.setattr(server, "_live_descriptors", _no_live_descriptors)
+    monkeypatch.setattr(
+        server.target, "target_info",
+        lambda pid=None, descriptor=None: {
+            "pid": pid,
+            "os": "windows",
+            "arch": "x64",
+            "qt_version": "5.15.2",
+            "debug": False,
+            "toolchain": "msvc",
+            "loaded_injector": {"loaded": False},
+            "expected_artifact": None,
+        },
+    )
+    monkeypatch.setattr(
+        server.inject, "default_dll_path", lambda pid, artifact_dir=None: None
+    )
+    monkeypatch.setattr(
+        server.inject, "artifact_detail",
+        lambda pid, artifact_dir=None: {
+            "ok": False,
+            "error": "E_ARTIFACT_NOT_FOUND",
+            "message": "no artifact matches the target",
+        },
+    )
+    result = await server.qt_attach(pid=1234, mode="injection")
+    assert result["error"]["reason"] == "artifact_missing"
+    assert "qt_build(for_pid=" in result["error"]["hint"]
+    assert result["error"]["details"]["artifact_lookup"]["error"] == (
+        "E_ARTIFACT_NOT_FOUND"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_requires_build_id_validation_not_implemented():
+    result = await server.qt_attach(pid=1, mode="injection", build_id="x")
+    assert result["error"]["code"] == "E_NOT_IMPLEMENTED"
+    assert "loaded_injector" in result["error"]["hint"]
+
+
+@pytest.mark.asyncio
+async def test_build_defaults_source_dir_to_the_checkout(monkeypatch):
+    """Omitting source_dir must resolve the shipped project, not error out."""
+    monkeypatch.setattr(server, "detect_qt_environments", lambda: [])
+    result = await server.qt_build(qt_major=5, toolchain="mingw")
+    assert result["error"]["code"] == "E_BUILD_REQUIRED"
+    assert "CMakeLists" not in result["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_build_for_pid_derives_toolset_and_flavour(tmp_path, monkeypatch):
+    old_vcvars = tmp_path / "vs2022" / "vcvars64.bat"
+    new_vcvars = tmp_path / "vs2026" / "vcvars64.bat"
+    for path in (old_vcvars, new_vcvars):
+        path.parent.mkdir()
+        path.write_text("")
+    monkeypatch.setattr(server, "detect_qt_environments", lambda: [{
+        "version": "5.15.2",
+        "major": 5,
+        "kits": [{"name": "msvc2019_64",
+                  "path": "C:/Qt/5.15.2/msvc2019_64",
+                  "compiler": "msvc"}],
+    }])
+    monkeypatch.setattr(server, "detect_toolchains", lambda: [
+        {"name": "msvc", "version": "14.51.36231", "vcvars": str(new_vcvars)},
+        {"name": "msvc", "version": "14.44.35207", "vcvars": str(old_vcvars)},
+    ])
+    monkeypatch.setattr(
+        server.target, "target_info",
+        lambda pid=None, descriptor=None: {
+            "pid": pid,
+            "os": "windows",
+            "arch": "x64",
+            "qt_major": 5,
+            "qt_version": "5.15.2",
+            "debug": False,
+            "toolchain": "msvc",
+            "compiler_version": "19.44.35207",
+            "loaded_injector": {"loaded": False},
+            "expected_artifact": {"directory": "C:/artifacts"},
+        },
+    )
+
+    async def fake_run(args, timeout):
+        return 0, "ok"
+
+    monkeypatch.setattr(server, "_run_build_command", fake_run)
+    result = await server.qt_build(for_pid=1234, build_dir=str(tmp_path / "b"))
+    assert result["ok"] is True
+    assert "msvc-19.44" in result["artifact_dir"]
+    assert result["artifact_dir"].endswith("qt-5.15.2-release")
+    assert result["build_type"] == "Release"
+    assert result["compiler_version"] == "14.44.35207"
+    assert result["restart_required"] is False
+    assert "qt_attach" in result["next_step"]
+
+
+@pytest.mark.asyncio
+async def test_build_for_pid_refuses_unknown_flavour(monkeypatch):
+    monkeypatch.setattr(
+        server.target, "target_info",
+        lambda pid=None, descriptor=None: {
+            "pid": pid,
+            "os": "windows",
+            "arch": "x64",
+            "qt_major": 5,
+            "toolchain": "msvc",
+            "debug": None,
+            "loaded_injector": {"loaded": False},
+            "expected_artifact": None,
+        },
+    )
+    result = await server.qt_build(for_pid=1234)
+    assert result["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert "build_type" in result["error"]["message"]

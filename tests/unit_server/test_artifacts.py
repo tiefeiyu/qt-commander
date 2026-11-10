@@ -160,3 +160,45 @@ def test_find_stays_ambiguous_when_both_versioned(tmp_path):
     assert found["error"] == "E_ARTIFACT_AMBIGUOUS"
     assert found["candidates"]
     assert "artifact_dir" in found["hint"]
+
+
+def test_find_treats_unknown_flavour_as_ambiguous(tmp_path):
+    """An unknown Debug/Release must never be silently resolved to release."""
+    release = _make_artifact(tmp_path, "19.44.35207", qt_debug=False)
+    debug = _make_artifact(tmp_path, "19.44.35207", qt_debug=True)
+    found = artifacts.find(
+        {
+            "os": "windows",
+            "arch": "x64",
+            "qt_version": "5.15.2",
+            "debug": None,
+            "toolchain": "mingw",
+            "compiler_version": "19.44.35207",
+        },
+        root=tmp_path,
+    )
+    assert found["ok"] is False
+    assert found["error"] == "E_ARTIFACT_AMBIGUOUS"
+    directories = {candidate["directory"] for candidate in found["candidates"]}
+    assert directories == {str(release), str(debug)}
+    assert "explicitly" in found["hint"]
+
+
+def test_manifest_records_canonical_build_id(tmp_path):
+    directory = _make_artifact(tmp_path, "19.44.35207")
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["schema"] == 2
+    assert manifest["build_id"] == "qt5.15.2/mingw-x64/Debug"
+    assert artifacts.manifest_build_id(manifest) == manifest["build_id"]
+
+
+def test_manifest_build_id_is_derived_for_legacy_schema(tmp_path):
+    legacy = {
+        "schema": 1,
+        "target": {"os": "windows", "arch": "x64"},
+        "compiler": {"family": "msvc", "version": "19.44"},
+        "qt": {"version": "5.15.2", "debug": False},
+        "build_type": "Release",
+    }
+    assert artifacts.manifest_build_id(legacy) == "qt5.15.2/msvc-x64/Release"
+    assert artifacts.manifest_build_id(None) is None

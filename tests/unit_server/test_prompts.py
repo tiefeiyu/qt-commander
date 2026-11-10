@@ -57,6 +57,19 @@ async def test_mcp_instructions_cover_the_operating_loop():
 
 
 @pytest.mark.asyncio
+async def test_injection_recovery_contract_is_documented():
+    """The failure paths an agent must recover from are stated up front."""
+    instructions = " ".join((server.mcp.instructions or "").split())
+    assert "restart_required" in instructions
+    assert "loaded_injector" in instructions
+    assert "for_pid" in instructions
+    assert "error.reason" in instructions
+    # The old text promised a build-id guard that does not exist.
+    assert "rejects a build/architecture mismatch" not in instructions
+    assert "no build-id validation" in instructions.lower()
+
+
+@pytest.mark.asyncio
 async def test_tool_descriptions_match_current_features():
     tools = {tool.name: tool for tool in await server.mcp.list_tools()}
     assert set(tools) == EXPECTED_TOOLS
@@ -75,6 +88,20 @@ async def test_tool_descriptions_match_current_features():
     assert "source_dir" in tools["qt_source"].description
     assert "E_NO_DEBUGINFO" in tools["qt_source"].description
     assert "pending" not in tools["qt_source"].description.lower()
+
+    # Injection/build descriptions must carry the recovery contract.
+    assert "restart_required" in tools["qt_attach"].description
+    assert "injector_already_loaded" in tools["qt_attach"].description
+    assert "guards against" not in tools["qt_attach"].description
+    assert "for_pid" in tools["qt_build"].parameters["properties"]
+    assert "for_pid" in tools["qt_build"].description
+    assert "source_dir" in tools["qt_build"].parameters["properties"]
+    assert "defaults to the qt-commander checkout" in (
+        tools["qt_build"].description
+    )
+    assert "loaded_injector" in tools["qt_target_info"].description
+    assert "restart_required" in tools["qt_target_info"].description
+    assert "qt_commander" in tools["qt_environments"].description
 
     items_params = tools["qt_items"].parameters
     assert "nth" in items_params["properties"]
