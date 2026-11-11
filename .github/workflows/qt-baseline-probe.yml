@@ -1,0 +1,77 @@
+name: Qt baseline probe
+
+# One-off evidence run for the "compile against the oldest supported Qt"
+# proposal: build the injector against Qt 5.12.12 and load it into an
+# application linked against Qt 5.15.2. Qt promises binary compatibility
+# forward within a major version, so this must succeed; if it does, a single
+# 5.12-built artifact can serve 5.12-5.15 targets.
+#
+# Manual only: this is a measurement, not a gate (yet). Linux is used because
+# aqtinstall ships gcc_64 builds for 5.12, while the Windows kit is msvc2017
+# and would need a matching toolset.
+on:
+  workflow_dispatch:
+
+jobs:
+  older-library-in-newer-app:
+    name: qt 5.12 injector / qt 5.15 target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-x11-0
+      - name: Install Qt 5.12.12 (baseline) and Qt 5.15.2 (target)
+        run: |
+          python -m pip install --quiet aqtinstall
+          python -m aqt install-qt linux desktop 5.12.12 gcc_64 -O "$PWD/Qt-old"
+          python -m aqt install-qt linux desktop 5.15.2 gcc_64 -O "$PWD/Qt-new"
+          ls "$PWD/Qt-old/5.12.12/gcc_64/lib/libQt5Core.so.5"
+          ls "$PWD/Qt-new/5.15.2/gcc_64/lib/libQt5Core.so.5"
+      - name: Build the injector against Qt 5.12
+        run: |
+          cmake -S . -B build/old -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DQT_MAJOR_VERSION=5 \
+            -DQt5_DIR="$PWD/Qt-old/5.12.12/gcc_64/lib/cmake/Qt5"
+          cmake --build build/old --target qt_commander_inject
+          find build/old -name 'libqt_commander_inject.so' -print
+      - name: Build the target application against Qt 5.15
+        run: |
+          cmake -S tests/test-apps/injected -B build/app -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=5 \
+            -DQt5_DIR="$PWD/Qt-new/5.15.2/gcc_64/lib/cmake/Qt5"
+          cmake --build build/app
+      - name: Launch the 5.15 app with the 5.12 injector
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          library=$(find build/old -name 'libqt_commander_inject.so' | head -1)
+          echo "library: $library"
+          echo "injector links against:"
+          ldd "$library" | grep -i qt || true
+          uv sync --quiet
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous-compat"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          export LD_LIBRARY_PATH="$PWD/Qt-new/5.15.2/gcc_64/lib:${LD_LIBRARY_PATH:-}"
+          uv run python scripts/launch_e2e.py \
+            --program build/app/qt-injected-test \
+            --library "$library"
+      - name: Show which Qt the target really loaded
+        if: always()
+        run: |
+          set -euo pipefail
+          library=$(find build/old -name 'libqt_commander_inject.so' | head -1)
+          echo "=== injector build-time Qt ==="
+          grep -o 'Qt5Core\.so\.[0-9.]*' <(ldd "$library" || true) | head -3 || true
+          echo "=== target app link ==="
+          ldd build/app/qt-injected-test | grep -i qt || true
