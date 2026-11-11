@@ -39,11 +39,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            qt: "5.15.2"
-            qt_major: "5"
-            arch: linux_gcc_64
-            toolchain: gcc
+          # Linux Qt 5.15.2 is deliberately absent: aqtinstall cannot resolve
+          # the 5.15.2 packages for linux ("packages ['qt_base'] were not
+          # found"). Build a Qt 5 linux runtime locally with
+          # scripts/package_artifacts.py.
           - os: ubuntu-latest
             qt: "6.8.3"
             qt_major: "6"

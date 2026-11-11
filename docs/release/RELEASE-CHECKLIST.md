@@ -48,12 +48,20 @@ Publishing uses Trusted Publishing; no API token is stored in the repository.
 
 The workflows have never executed. Expect to fix:
 
-- Qt availability on the runners (`jurplel/install-qt-action` versions must be
-  pinned to the exact kits: 5.15.2 and 6.8.3);
-- MSVC environment (`ilammy/msvc-dev-cmd`) on `windows-latest`;
+- Qt availability on the runners. Current state after the first run:
+  - **Windows Qt 5.15.2 and 6.8.3: working** (MSVC via `ilammy/msvc-dev-cmd`);
+  - **Linux Qt 6.8.3: works**; **Linux Qt 5.15.2 removed** — aqtinstall cannot
+    resolve the 5.15.2 linux packages ("packages ['qt_base'] were not found").
+    A Qt 5 linux runtime can still be built locally with
+    `scripts/package_artifacts.py`; say so in the release notes instead of
+    attaching a Linux Qt 5 archive.
 - the artifact archive names produced by `scripts/package_artifacts.py`
   (`qt-commander-artifacts-<os>-<arch>-*.zip`) versus what
   `qt-commander install-artifacts` filters for.
+
+Also worth fixing when convenient: `actions/checkout@v4` and
+`astral-sh/setup-uv@v5` run on a deprecated Node.js 20 and are currently forced
+onto Node.js 24 by GitHub; bump them before GitHub removes the fallback.
 
 The packaging path itself was validated locally on Windows with Qt 5.15.2 and
 MSVC 19.44: CMake build → `scripts/package_artifacts.py` → zip →
