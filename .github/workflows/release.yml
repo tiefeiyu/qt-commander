@@ -4,6 +4,10 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish artifacts for"
+        required: false
 
 permissions:
   contents: read
@@ -137,10 +141,16 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job does not check the repository out, so `gh` needs to be told
+          # which repository it is publishing to.
+          GH_REPO: ${{ github.repository }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
           if [ -z "$tag" ] || [ "$tag" = "master" ]; then
-            echo "workflow_dispatch without a tag ref; nothing to publish"
+            echo "no tag to publish (pass the tag input for a manual run)"
             exit 0
           fi
           gh release view "$tag" >/dev/null 2>&1 || \
