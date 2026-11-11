@@ -12,7 +12,7 @@ a heading here always matches a tag after the release.
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
-## [Unreleased]
+## [0.9.1] — 2026-11-11
 
 ### Added
 
@@ -23,6 +23,12 @@ below are pre-PyPI milestones and are kept for history.
 
 ### Fixed
 
+- The MCP server refused to start on any machine that routes traffic through a
+  SOCKS proxy. FastMCP's startup banner asks PyPI for a newer version, and httpx
+  raises `ImportError: Using SOCKS proxy, but the 'socksio' package is not
+  installed` while constructing the client, which killed the server before it
+  served anything. The update check is now off by default — startup touches no
+  network — and `FASTMCP_CHECK_FOR_UPDATES=stable` turns it back on.
 - The MSVC compiler probe always reported "unknown", so Windows artifacts were
   named `msvc-unknown` and their manifests carried no compiler version. `cl`
   prints its usage on stdout and the (localized) version banner on stderr, and
@@ -38,6 +44,8 @@ below are pre-PyPI milestones and are kept for history.
   optional `tag` input, `SETUPTOOLS_SCM_PRETEND_VERSION` and a quoted
   `-DQTC_VERSION` fix both; the `pypi` job is restricted to tag refs so a manual
   run can never publish a dev build.
+- Release candidates are now marked as pre-releases, so the GitHub "Latest"
+  badge stays on the stable version.
 
 ## [0.9.0] — 2026-11-11
 
