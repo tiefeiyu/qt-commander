@@ -20,13 +20,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
+import os
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qt_commander import artifacts  # noqa: E402
+
+
+def write_archive(root: Path, top: str, archive_path: Path) -> Path:
+    """Zip one ``<os>-<arch>/`` subtree, preserving that directory at the top.
+
+    ``qt-commander install-artifacts`` rejects archives whose top level is not
+    an ``<os>-<arch>/`` directory, so the layout is part of the contract.
+    """
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted((root / top).rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(root).as_posix())
+    return archive_path
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,7 +68,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="target OS slug (default: this host)")
     parser.add_argument("--root", default=None, type=Path,
                         help="artifact root (default: artifacts/)")
+    parser.add_argument("--archive-dir", default=None, type=Path,
+                        help="also write <artifact>.zip here (CI release assets)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--github-output", action="store_true",
+                        help="append results to $GITHUB_OUTPUT (CI usage)")
     parser.set_defaults(qt_debug=None)
     return parser.parse_args(argv)
 
@@ -103,6 +122,23 @@ def main(argv: list[str] | None = None) -> int:
         "library": str(installed["library"]),
         "compiler_version": compiler_version,
     }
+    root = args.root or artifacts.default_root()
+    relative = installed["artifact_dir"].relative_to(root)
+    payload["relative_dir"] = relative.as_posix()
+    payload["archive_name"] = (
+        f"qt-commander-artifacts-{relative.parts[0]}-{relative.parts[-1]}.zip"
+    )
+    if args.github_output:
+        output = os.environ.get("GITHUB_OUTPUT")
+        if output:
+            with open(output, "a", encoding="utf-8") as stream:
+                stream.write(f"artifact_dir={payload['artifact_dir']}\n")
+                stream.write(f"relative_dir={payload['relative_dir']}\n")
+                stream.write(f"archive_name={payload['archive_name']}\n")
+                stream.write(f"build_id={payload['build_id']}\n")
+    if args.archive_dir:
+        archive_path = args.archive_dir / payload["archive_name"]
+        payload["archive"] = str(write_archive(root, relative.parts[0], archive_path))
     if args.json:
         print(json.dumps(payload, indent=2))
     else:

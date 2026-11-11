@@ -423,18 +423,23 @@ def compiler_version(family: str, executable: str | None = None) -> str | None:
     ``qt_build`` resolves the compiler it is about to use (which may live
     outside PATH, e.g. a Qt kit toolchain); passing that executable here keeps
     the artifact directory name and the actual build in sync.
+
+    MSVC's ``cl`` has no ``--version`` flag: it always prints its banner, so it
+    is invoked with no arguments and the banner is parsed instead.
     """
     if not executable:
         executable = {
             "mingw": shutil.which("g++") or shutil.which("gcc"),
             "gcc": shutil.which("gcc"),
             "clang": shutil.which("clang++"),
+            "msvc": shutil.which("cl"),
         }.get(family)
     if not executable:
         return None
+    command = [executable] if family == "msvc" else [executable, "--version"]
     try:
         completed = subprocess.run(
-            [executable, "--version"],
+            command,
             capture_output=True,
             text=True,
             timeout=3,
@@ -442,11 +447,10 @@ def compiler_version(family: str, executable: str | None = None) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    first = (completed.stdout or completed.stderr).splitlines()
-    if not first:
-        return None
-    tokens = first[0].replace("(", " ").replace(")", " ").split()
-    for token in tokens:
-        if token and token[0].isdigit() and "." in token:
-            return token
+    lines = (completed.stdout or completed.stderr).splitlines()
+    for line in lines:
+        tokens = line.replace("(", " ").replace(")", " ").split()
+        for token in tokens:
+            if token and token[0].isdigit() and "." in token:
+                return token.rstrip(",")
     return None
