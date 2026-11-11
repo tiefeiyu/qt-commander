@@ -478,12 +478,15 @@ def _target_checks(pid: int) -> list[dict[str, Any]]:
         checks.append(_check("target", "fail", f"pid {pid}: {exc}",
                              "check the pid with qt_processes"))
         return checks
-    checks.append(_check(
-        "target", "ok",
+    runtime_version = (info.get("descriptor") or {}).get("library_version")
+    detail = (
         f"pid {pid} qt{info.get('qt_major')} {info.get('qt_version')} "
         f"{'debug' if info.get('debug') else 'release'} "
-        f"{info.get('toolchain')} ({info.get('detected_from')})",
-    ))
+        f"{info.get('toolchain')} ({info.get('detected_from')})"
+    )
+    if runtime_version:
+        detail += f", runtime {runtime_version}"
+    checks.append(_check("target", "ok", detail))
     expected = info.get("expected_artifact")
     if expected:
         checks.append(_check(

@@ -191,6 +191,7 @@ def test_doctor_pid_reports_restart_required(monkeypatch, capsys):
             "debug": False,
             "toolchain": "msvc",
             "detected_from": "module",
+            "descriptor": {"library_version": "2.1.0"},
             "expected_artifact": {
                 "directory": "C:/artifacts/release",
                 "build_id": "qt5.15.2/msvc-x64/Release",
@@ -205,6 +206,7 @@ def test_doctor_pid_reports_restart_required(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     checks = {check["name"]: check for check in payload["checks"]}
     assert checks["target"]["status"] == "ok"
+    assert "runtime 2.1.0" in checks["target"]["detail"]
     assert checks["target-artifact"]["status"] == "ok"
     assert checks["target-injector"]["status"] == "warn"
     assert "restart" in checks["target-injector"]["hint"]
