@@ -1,3 +1,18 @@
+# A note on working hours
+
+This document is **not** part of the licence. qt-commander is released under the
+MIT licence (see `LICENSE`); nothing here adds conditions to it.
+
+It records the project's stance, because the maintainers believe it is worth
+saying out loud: we are glad if this tool saves people overtime, and we would
+rather it were used by teams that treat working hours as a real constraint
+rather than a resource to consume. The text below is kept for that reason. If
+it reads like a licence, that is because it was one until 2026-11-11, when it
+was replaced by MIT to keep the project unambiguously open source and usable in
+companies whose legal review cannot accept custom terms.
+
+---
+
 Copyright (c) 2026 TieFeiyu
 
 "Anti 996" License Version 1.0 (Draft)

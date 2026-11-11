@@ -4,13 +4,15 @@ Notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-One version number describes both halves: the Python package version equals the
-`library_version` the C++ runtime reports in its rendezvous descriptor.
+Two numbers exist and mean different things — see
+[docs/versioning.md](docs/versioning.md). The release version in this file is
+the package/tag version; the C++ runtime additionally reports its own
+`library_version` in the rendezvous descriptor, and it moves independently.
 
-Before 2.1.0 the project was installed from source only; the `v0.x` git tags
+Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
-## [Unreleased]
+## [Unreleased] — planned as 0.9.0
 
 ### Added
 
@@ -25,10 +27,13 @@ below are pre-PyPI milestones and are kept for history.
 ### Changed
 
 - `qt_build` default build directory now follows the resolved source tree.
-- Version is read from `qt_commander.__version__` (2.1.0); the wheel, runtime
-  and release tag share one number.
-- Package metadata carries readme, keywords, classifiers and project URLs, and
-  declares the actual `LICENSE` file instead of a mismatched "MIT" string.
+- The package version is read from `qt_commander.__version__` (0.9.0) and the
+  tag is `v0.9.0`. It no longer pretends to equal the runtime's
+  `library_version` (2.1.0, unchanged by this release).
+- The licence is now **MIT**. It was `MIT AND Anti-996` up to v0.8.0, which PyPI
+  reports as "Other" and many legal reviews cannot accept; previous releases
+  keep their original terms. The anti-996 text is kept as a non-binding note.
+- Package metadata carries readme, keywords, classifiers and project URLs.
 
 ### Fixed
 

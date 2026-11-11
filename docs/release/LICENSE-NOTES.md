@@ -1,15 +1,39 @@
-# Licence decision (input for the first PyPI release)
+# Licence decision
 
-Status: **open question, needs the copyright holder's decision.** Nothing in
-this branch changes the licence; it only makes the metadata match the files.
+**Decided: MIT (option B), 2026-11-11.** The project is now MIT-only. The
+anti-996 text moved to `docs/community/anti-996.md` as a non-binding statement,
+`LICENSE.MIT`/`LICENSE.996ICU` were removed so licence scanners see one clear
+licence, `pyproject.toml` declares `license = "MIT"` with the MIT classifier,
+and `LICENSE` carries the MIT text. Releases up to `v0.8.0` keep the terms they
+were published under.
 
-## Where we are
+This note is kept as the record of why; the options below are the analysis that
+led to the decision, not open questions.
 
-- `LICENSE` says: `MIT License AND "Anti 996" License Version 1.0 (Draft)`.
-- `LICENSE.MIT` and `LICENSE.996ICU` hold the two texts.
+## Why MIT rather than the alternatives
+
+- Not OSI-approved: the combined licence was reported as `Other` by GitHub and
+  PyPI, cannot be called open source in the OSI sense, and is refused by some
+  distributions.
+- Corporate review: most OSPOs run a scanner; "Other / custom AND custom" needs
+  a legal review before a developer may even try a self-service dev tool.
+- Enforcement: whether an employer "forced" overtime is a labour-law question,
+  not a software-licence one; the clause was effectively unenforceable while
+  deterring exactly the users the tool needs.
+- The stance is still stated, just not as a condition — see
+  `docs/community/anti-996.md`.
+
+## Original analysis (kept for the record)
+
+**Status at the time: open question.** Nothing in this branch changed the
+licence; it only made the metadata match the files.
+
+## Where we were
+
+- `LICENSE` said: `MIT License AND "Anti 996" License Version 1.0 (Draft)`.
+- `LICENSE.MIT` and `LICENSE.996ICU` held the two texts.
 - `pyproject.toml` used to declare `license = {text = "MIT"}`, which contradicted
-  the files above; it now declares `LICENSE` itself so the wheel metadata is at
-  least truthful.
+  the files above.
 - GitHub reports the repository licence as **Other**; PyPI will show
   "MIT AND Anti 996…" rather than a recognised SPDX identifier.
 

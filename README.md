@@ -399,8 +399,11 @@ CODE_STANDARDS.md    coding and review rules
 
 ## License
 
-MIT AND Anti 996. See `LICENSE`, `LICENSE.MIT`, `LICENSE.996ICU`.
+MIT. See [LICENSE](LICENSE).
 
-The combination is deliberate but not OSI-approved, and PyPI reports it as
-"Other"; whether to keep it for the first PyPI release is an open question,
-documented with options in [docs/release/LICENSE-NOTES.md](docs/release/LICENSE-NOTES.md).
+Earlier releases (`v0.8.0` and before) were published under
+`MIT AND Anti-996`; they keep the terms they were published with. The reasoning
+behind the change is recorded in
+[docs/release/LICENSE-NOTES.md](docs/release/LICENSE-NOTES.md), and the old
+anti-996 text is kept as a non-binding note in
+[docs/community/anti-996.md](docs/community/anti-996.md).

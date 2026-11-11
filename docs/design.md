@@ -357,7 +357,7 @@ qt_source(target, handler=None, snippet_lines=3, max_lines=20)
 ```json
 {"id":1,"result":{
   "protocol": 2,
-  "library_version": "2.0.0",
+  "library_version": "2.1.0",
   "capabilities": ["qml", "expect_js", "virtual_items", "binary_frames"],
   "session_tag": "7f3a",
   "limits": {"max_frame": 67108864, "max_inflight": 8}
@@ -483,7 +483,7 @@ int main(int argc, char** argv) {
   "nonce": "...",
   "port": 45678,
   "token": "...",
-  "library_version": "2.0.0",
+  "library_version": "2.1.0",
   "library_build_id": "qt5.15.2/msvc2019-x64/release",
   "qt": {"major": 5, "version": "5.15.2"},
   "capabilities": ["qml", "expect_js", "virtual_items"],

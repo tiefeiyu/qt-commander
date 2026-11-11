@@ -1,7 +1,7 @@
 # qt-commander
 
-> 本中文文档滞后于 2.1.0 的打包改动（`qt-commander` CLI、`install-artifacts`、
-> 单一版本号）。当前准确内容以英文 [README.md](README.md) 为准，中文版会在发布前同步。
+> 本中文文档滞后于 0.9.0 的打包改动（`qt-commander` CLI、`install-artifacts`、
+> 版本口径调整）。当前准确内容以英文 [README.md](README.md) 为准，中文版会在发布前同步。
 
 面向 AI Agent 的 Qt UI 实时观察与操作工具。
 
@@ -310,4 +310,8 @@ CODE_STANDARDS.md    代码与评审规范
 
 ## License
 
-MIT AND Anti 996。见 `LICENSE`、`LICENSE.MIT`、`LICENSE.996ICU`。
+MIT。见 [LICENSE](LICENSE)。
+
+`v0.8.0` 及更早的版本按 `MIT AND Anti-996` 发布，各自保留当时的条款。变更理由见
+[docs/release/LICENSE-NOTES.md](docs/release/LICENSE-NOTES.md)；反 996 文本作为非约束性声明保留在
+[docs/community/anti-996.md](docs/community/anti-996.md)。

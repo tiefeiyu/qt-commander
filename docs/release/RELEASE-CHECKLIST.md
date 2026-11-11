@@ -1,13 +1,13 @@
 # Release checklist
 
-Everything a maintainer has to do by hand. Work through it top to bottom; the
-first two items block every later one.
+Everything a maintainer has to do by hand. Work through it top to bottom.
 
-## 1. Licence decision (blocking)
+## 1. Licence — done (MIT, 2026-11-11)
 
-`LICENSE` is currently "MIT AND Anti-996", which PyPI reports as `Other` and
-which some companies refuse by policy. Read `LICENSE-NOTES.md`, pick an option,
-and update `LICENSE`, `pyproject.toml` and the README together.
+`LICENSE` is MIT, `pyproject.toml` declares `license = "MIT"` with the MIT
+classifier, and the anti-996 text lives on as a non-binding note in
+`docs/community/anti-996.md`. `LICENSE-NOTES.md` keeps the reasoning and the
+options that were rejected; no action needed before the release.
 
 ## 2. Repository settings
 
@@ -69,9 +69,9 @@ uvx --from qt-commander-mcp qt-commander install-artifacts --list
 ```bash
 git switch master
 git merge --no-ff feature/p0-distribution
-git tag -a v2.1.0 -F tag-message.txt
-git push origin master v2.1.0
-gh release create v2.1.0 --generate-notes
+git tag -a v0.9.0 -F tag-message.txt
+git push origin master v0.9.0
+gh release create v0.9.0 --generate-notes
 ```
 
 The release workflow attaches the wheel, the sdist, one

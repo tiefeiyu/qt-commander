@@ -79,9 +79,18 @@ Guidelines that reviewers enforce:
 
 ## Versioning and artifacts
 
-- The version lives in exactly one place: `qt_commander.__version__`. The
-  release tag is `v<that version>`, and the C++ runtime must report the same
-  number in its descriptor (`kLibraryVersion` in `src/library/server.cpp`).
+Two numbers, deliberately (details in [docs/versioning.md](docs/versioning.md)):
+
+- **Release version** — one source: `qt_commander.__version__`. The tag is
+  `v<that version>`, and the wheel/PyPI/release title must agree with it.
+- **Runtime library version** — `kLibraryVersion` in
+  `src/library/server.cpp`, reported by `hello` and the descriptor as
+  `library_version`. Bump it only when the wire contract, the advertised
+  capabilities, or target-side behaviour changes.
+
+Never compare or derive one from the other: a package release does not require a
+runtime bump, and a process may still be running an older runtime.
+
 - Never commit binaries: `artifacts/` and `build/` are generated. Release
   archives are produced by `.github/workflows/release.yml`.
 - A new artifact layout or manifest field is a compatibility change: update
