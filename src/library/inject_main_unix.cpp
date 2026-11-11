@@ -61,10 +61,15 @@ void pollBootstrap()
 
 } // namespace
 
+// Q_COREAPP_STARTUP_FUNCTION expands to a function definition plus a static
+// registrar, so it must sit at namespace scope — not inside a function.
+// The registrar runs when this library is loaded (before main for a preloaded
+// library), and the callback fires when QCoreApplication is constructed.
+Q_COREAPP_STARTUP_FUNCTION(startupFunction)
+
 // The constructor runs on the loader thread; do not touch QApplication here.
-// Register the startup hook and the late-injection fallback, then return.
+// Only arm the late-injection fallback.
 __attribute__((constructor)) static void qtc_unix_bootstrap()
 {
-    Q_COREAPP_STARTUP_FUNCTION(startupFunction);
     pollBootstrap();
 }
