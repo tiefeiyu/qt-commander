@@ -173,8 +173,20 @@ jobs:
             echo "no tag to publish (pass the tag input for a manual run)"
             exit 0
           fi
-          gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --generate-notes --title "qt-commander $tag"
+          # A release candidate must not be shown as the project's Latest
+          # release; GitHub excludes pre-releases from that badge.
+          prerelease=""
+          if [[ "$tag" =~ (a|b|rc)[0-9]+$ ]]; then
+            prerelease="--prerelease"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [ -n "$prerelease" ]; then
+              gh release edit "$tag" --prerelease
+            fi
+          else
+            gh release create "$tag" --generate-notes \
+              --title "qt-commander $tag" $prerelease
+          fi
           gh release upload "$tag" assets/* --clobber
 
   # Trusted Publishing; no API token is stored in the repository. Set the
