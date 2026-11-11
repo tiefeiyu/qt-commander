@@ -4,10 +4,10 @@ Notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-Two numbers exist and mean different things — see
-[docs/versioning.md](docs/versioning.md). The release version in this file is
-the package/tag version; the C++ runtime additionally reports its own
-`library_version` in the rendezvous descriptor, and it moves independently.
+The version is the git tag: `setuptools-scm` derives the package version from it
+at build time, and CMake compiles the same tag into the C++ runtime (see
+[docs/versioning.md](docs/versioning.md)). Nothing in the tree hardcodes it, so
+a heading here always matches a tag after the release.
 
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
@@ -27,9 +27,11 @@ below are pre-PyPI milestones and are kept for history.
 ### Changed
 
 - `qt_build` default build directory now follows the resolved source tree.
-- The package version is read from `qt_commander.__version__` (0.9.0) and the
-  tag is `v0.9.0`. It no longer pretends to equal the runtime's
-  `library_version` (2.1.0, unchanged by this release).
+- One version everywhere: the git tag is the only source. `setuptools-scm`
+  derives the package version from it, and CMake compiles it into the runtime,
+  so `library_version` is no longer a second, drifting number (it was `2.1.0`
+  in `hello` and `2.0.0` in the descriptor, while the package said `2.0.0` and
+  the tags said `v0.8.0`).
 - The licence is now **MIT**. It was `MIT AND Anti-996` up to v0.8.0, which PyPI
   reports as "Other" and many legal reviews cannot accept; previous releases
   keep their original terms. The anti-996 text is kept as a non-binding note.

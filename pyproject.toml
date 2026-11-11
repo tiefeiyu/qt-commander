@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77.0"]
+requires = ["setuptools>=77.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -61,8 +61,17 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
-[tool.setuptools.dynamic]
-version = {attr = "qt_commander.__version__"}
+# The release version is the git tag (vX.Y.Z). setuptools-scm derives it at
+# build time; nothing in the source tree hardcodes it. CMake resolves the same
+# tag for the C++ runtime (see docs/versioning.md).
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+tag_regex = "^v(?P<version>.+)$"
+# The same command CMake runs, so the abbreviated commit hash in a dev version
+# is identical on both sides.
+git_describe_command = "git describe --dirty --tags --long --abbrev=7 --match v*"
+fallback_version = "0.0.0+unknown"
 
 [tool.setuptools.packages.find]
 include = ["qt_commander*"]

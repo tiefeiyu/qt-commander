@@ -1,43 +1,77 @@
 # Versioning
 
-Two numbers exist on purpose. Do not merge them.
+**The git tag is the version.** `v0.9.0` means version `0.9.0`. No file in this
+repository contains the release version, and releasing is `git tag` — there is
+nothing to bump.
 
-| Number | Where it lives | What it means | When it moves |
-|---|---|---|---|
-| **Release version** — `0.9.0` | `qt_commander.__version__`, wheel/sdist metadata, `qt-commander --version`, git tag `v0.9.0`, GitHub release title, PyPI | The product's public history | Every user-visible release, following SemVer |
-| **Runtime library version** — `2.1.0` | `kLibraryVersion` in `src/library/server.cpp`; sent in the `hello` reply and written to the rendezvous descriptor as `library_version` | The capability level of the code that runs *inside the target* | The wire contract, the advertised `capabilities`, or target-side behaviour changes |
+## How each consumer gets it
 
-They are separate because they describe different things:
+| Consumer | When | How |
+|---|---|---|
+| Python package (wheel/sdist metadata, `qt-commander --version`, `doctor`) | build/install | `setuptools-scm` derives it from `git describe`; at runtime `qt_commander.__version__` reads the installed metadata via `importlib.metadata` |
+| C++ runtime (`library_version` in `hello` and in the descriptor) | CMake configure | the top-level `CMakeLists.txt` runs `git describe` and passes `-DQT_COMMANDER_VERSION=...`; `src/include/qt_commander/version.h` is only a fallback |
+| GitHub release title, PyPI version, CHANGELOG heading | release time | the tag |
 
-- The package is what you install and upgrade.
-- The runtime is what lives inside a target process. It can be **older than the
-  package** (a process that was injected days ago and has not been restarted)
-  or newer (a linked build from `master`). `qt_status` and
-  `qt_target_info` expose `library_version` so a client can feature-detect
-  instead of assuming.
+So there is one place to change the version — the tag — and each build stage
+reads it. They must agree, and CI inside a tag build guarantees it, because
+both the wheel and the runtime are built from that same checkout.
 
-A package release does **not** imply a runtime bump. `0.9.0` ships runtime
-`2.1.0`, unchanged: this release is packaging, CLI and diagnostics work only —
-no C++ changed, so nothing about the in-target contract changed.
+## What the numbers look like
 
-## Rules
+| Situation | Version |
+|---|---|
+| tagged | `0.9.0` |
+| 11 commits after `v0.8.0` | `0.8.1.dev11+g03c552a.d20261111` |
 
-1. The release version has exactly one source: `qt_commander.__version__`.
-   `pyproject.toml` reads it dynamically, and the tag must be `v<version>`.
-   `qt-commander --version`, the wheel metadata and the release title must all
-   agree.
-2. The runtime version is bumped by hand in `src/library/server.cpp`:
-   patch for fixes, minor for new capabilities (also add them to the
-   `capabilities` array in `src/library/agent.cpp`), major only for a breaking
-   protocol change — and in that case the protocol major in the descriptor and
-   `client.py` must move together.
-3. Never derive one number from the other, in code or in docs. A comparison
-   between `library_version` and the package version is always a bug.
-4. `qt_commander/cli.py` reports both: `doctor` shows the package version, and
-   `doctor --pid` shows the runtime version of the target it inspects.
+Both sides produce that dev string **identically**, because they run the same
+command: `git describe --dirty --tags --long --abbrev=7 --match v*`
+(`git_describe_command` in `pyproject.toml`, and the same invocation in
+`CMakeLists.txt`). Neither marks a dirty tree — a release is built from a tag,
+and setuptools-scm's `node-and-date` scheme does not encode dirtiness either —
+so a modified checkout still reports the version of the tagged commit it is
+based on. `qt-commander doctor --pid` shows the runtime version next to the
+package version and they are directly comparable.
 
-## History note
+## Releasing
 
-Before `0.9.0` the numbering had drifted: the Python package said `2.0.0`, the
-git tags said `v0.x` (up to `v0.8.0`), and the runtime said `2.1.0`. `0.9.0`
-puts the package back on the tag line and leaves the runtime version alone.
+```bash
+git switch master
+git merge --no-ff feature/...
+git tag -a v0.9.0 -m "v0.9.0: ..."
+git push origin master v0.9.0
+```
+
+CI then builds the wheel and the artifact archives from that checkout, and
+publishes both with version `0.9.0`. No file is edited for a release, which also
+means a release cannot forget to bump something.
+
+## Fallbacks (no `.git`)
+
+- **Python from an sdist**: the sdist records the version in its metadata, so a
+  wheel built from it keeps the released version. A source tree with no VCS and
+  no metadata reports `0.0.0+unknown`.
+- **CMake from a tarball**: pass `-DQTC_VERSION=0.9.0` explicitly (that is what
+  a CI tarball build would do); otherwise the runtime reports `0.0.0+unknown`.
+- CI checkouts must use `fetch-depth: 0`, or `git describe` sees no tags and the
+  build silently falls back. The workflows in this repository already do.
+
+## The runtime version is a snapshot, not a live value
+
+The runtime is compiled into the target process; it cannot run `git describe`
+later. Its `library_version` therefore says which release the *injected code*
+came from, which is exactly what you want when a process has been alive for days
+or was injected before an upgrade. It is normal for a running target to report
+an older version than the installed package — the difference means "restart the
+target to pick up the new runtime".
+
+Wire compatibility is not tracked by this version: the descriptor's
+`protocol.major` (`2`) is the compatibility discriminator, and `capabilities`
+advertises optional features. A client should check those, not compare versions.
+
+## History
+
+- Until `v0.8.0`: three numbers drifted apart — the package said `2.0.0`, the
+  tags said `v0.x`, and the runtime reported `2.1.0` (with the descriptor
+  disagreeing with `hello`, `2.0.0` vs `2.1.0`, because both were hardcoded).
+- `v0.9.0` onwards: the tag is the only source, the package and the runtime both
+  derive from it, and CI builds from the tag.

@@ -79,17 +79,17 @@ Guidelines that reviewers enforce:
 
 ## Versioning and artifacts
 
-Two numbers, deliberately (details in [docs/versioning.md](docs/versioning.md)):
+The release version is the git tag (`vX.Y.Z`); no file carries it (details in
+[docs/versioning.md](docs/versioning.md)):
 
-- **Release version** — one source: `qt_commander.__version__`. The tag is
-  `v<that version>`, and the wheel/PyPI/release title must agree with it.
-- **Runtime library version** — `kLibraryVersion` in
-  `src/library/server.cpp`, reported by `hello` and the descriptor as
-  `library_version`. Bump it only when the wire contract, the advertised
-  capabilities, or target-side behaviour changes.
+- the Python package version is derived by `setuptools-scm` at build time and
+  read back from the installed metadata at runtime;
+- the C++ runtime gets it from CMake, which runs `git describe` and defines
+  `QT_COMMANDER_VERSION` — never hardcode a version in `src/`;
+- CI checkouts use `fetch-depth: 0`, otherwise `git describe` sees no tags.
 
-Never compare or derive one from the other: a package release does not require a
-runtime bump, and a process may still be running an older runtime.
+Between tags the version is a dev version (`0.8.1.dev10+g7aed0db`); that is
+expected. Tagging is the release action, so there is nothing to bump in a PR.
 
 - Never commit binaries: `artifacts/` and `build/` are generated. Release
   archives are produced by `.github/workflows/release.yml`.

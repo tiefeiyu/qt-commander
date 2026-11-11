@@ -1,4 +1,5 @@
 #include "server.h"
+#include "qt_commander/version.h"
 
 #include <QAbstractButton>
 #include <QAbstractEventDispatcher>
@@ -86,7 +87,7 @@ QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner);
 QString qmlTextContent(QQuickItem* item);
 bool qmlActionable(QQuickItem* item);
 
-constexpr const char* kLibraryVersion = "2.1.0";
+constexpr const char* kLibraryVersion = QT_COMMANDER_VERSION;
 
 bool validMatcher(const QJsonValue& spec)
 {

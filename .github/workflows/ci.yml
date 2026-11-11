@@ -21,6 +21,8 @@ jobs:
         python: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -38,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -88,6 +92,8 @@ jobs:
             toolchain: msvc
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
       - name: MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1

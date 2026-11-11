@@ -1,4 +1,5 @@
 #include "qt_commander/agent.h"
+#include "qt_commander/version.h"
 
 #include "server.h"
 
@@ -197,7 +198,7 @@ StartResult start(const StartOptions& options)
     descriptor.insert(QStringLiteral("port"), int(port));
     descriptor.insert(QStringLiteral("token"), token);
     descriptor.insert(QStringLiteral("library_version"),
-                      QStringLiteral("2.0.0"));
+                      QStringLiteral(QT_COMMANDER_VERSION));
     descriptor.insert(QStringLiteral("library_build_id"),
                       QStringLiteral(QT_COMMANDER_BUILD_ID));
     descriptor.insert(QStringLiteral("qt"), qt);

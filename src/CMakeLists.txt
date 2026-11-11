@@ -23,6 +23,7 @@ set(QTC_BUILD_ID
 )
 target_compile_definitions(qt_commander PRIVATE
     QT_COMMANDER_BUILD_ID="${QTC_BUILD_ID}"
+    QT_COMMANDER_VERSION="${QTC_VERSION}"
 )
 if(MSVC)
     target_compile_options(qt_commander PRIVATE /utf-8)

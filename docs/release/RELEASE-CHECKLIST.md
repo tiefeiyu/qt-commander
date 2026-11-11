@@ -30,10 +30,14 @@ Publishing uses Trusted Publishing; no API token is stored in the repository.
    repository variable `PYPI_PUBLISH=true`. Without that variable the release
    workflow builds the wheel and skips publishing (so a tag never fails on a
    missing publisher).
-4. Dry run locally first:
+4. Dry run locally first. Without the release tag the build reports a dev
+   version (`0.8.1.devN+gHASH.dYYYYMMDD`); to preview the exact release numbers,
+   tag the candidate commit locally, build, then delete the tag:
 
    ```bash
-   uv build
+   git tag -a v0.9.0 -m "preview"
+   uv build                       # wheel is 0.9.0
+   git tag -d v0.9.0
    uv venv .release-check
    uv pip install --python .release-check/Scripts/python.exe dist/*.whl
    .release-check/Scripts/qt-commander.exe doctor --json
@@ -66,13 +70,20 @@ uvx --from qt-commander-mcp qt-commander install-artifacts --list
 
 ## 5. Tag and release
 
+The tag *is* the version: nothing in the tree needs editing for a release, and
+CI derives both the wheel version and the compiled-in runtime version from it.
+
 ```bash
 git switch master
-git merge --no-ff feature/p0-distribution
-git tag -a v0.9.0 -F tag-message.txt
+git merge --no-ff feature/...
+git tag -a v0.9.0 -m "v0.9.0: ..."   # see the annotated style of earlier tags
 git push origin master v0.9.0
 gh release create v0.9.0 --generate-notes
 ```
+
+Sanity-check the tag before pushing: `git describe --tags --dirty` must print
+`v0.9.0` (not `v0.9.0-1-g...`), and `uv build` must produce
+`qt_commander_mcp-0.9.0-*`.
 
 The release workflow attaches the wheel, the sdist, one
 `qt-commander-artifacts-*.zip` per platform/Qt combination, and `SHA256SUMS`.
