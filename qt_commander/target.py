@@ -486,6 +486,7 @@ def _module_runtime(process: psutil.Process) -> dict[str, Any]:
 _INJECT_LIBRARY_MARKERS = (
     "qt_commander_inject.dll",
     "libqt_commander_inject.so",
+    "libqt_commander_inject.dylib",
 )
 
 

@@ -154,17 +154,33 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --python 3.13
-      - name: Locate the AGL reference (diagnostic)
+      - name: Work around Qt 6.8.3 linking a framework macOS removed
         run: |
-          echo "QT_ROOT_DIR=$QT_ROOT_DIR"
-          grep -rn "framework AGL" "$QT_ROOT_DIR/lib/cmake" 2>/dev/null | head -20 || true
-          grep -rn "framework AGL" /usr/local/lib/cmake /opt/homebrew/lib/cmake 2>/dev/null | head -20 || true
-      - name: Build runtime and linked test app
+          # Qt 6.8.3's FindWrapOpenGL.cmake emits "-framework AGL" even when AGL
+          # is absent, and the macOS 26 SDK no longer ships AGL. Upstream fixed
+          # this in 6.8.4 / 6.9, so this step becomes a no-op once the kit moves.
+          python3 - "$QT_ROOT_DIR/lib/cmake/Qt6/FindWrapOpenGL.cmake" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          needle = (
+              "        target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE "
+              "${__opengl_agl_fw_path})\n"
+          )
+          if needle in text:
+              path.write_text(text.replace(needle, ""))
+              print("patched AGL link out of", path)
+          else:
+              print("no AGL link line in", path, "- nothing to do")
+          PY
+      - name: Build runtime, injection library and linked test app
         run: |
           cmake -S tests/test-apps/linked -B build/linked \
-            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
-          cmake --build build/linked --verbose
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6
+          cmake --build build/linked
+          ls -l build/linked/qt-commander/*.dylib
       - name: Drive the linked app
         env:
           QT_QPA_PLATFORM: offscreen
