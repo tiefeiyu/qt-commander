@@ -31,8 +31,9 @@ Publishing uses Trusted Publishing; no API token is stored in the repository.
    workflow builds the wheel and skips publishing (so a tag never fails on a
    missing publisher).
 4. Dry run locally first. Without the release tag the build reports a dev
-   version (`0.8.1.devN+gHASH.dYYYYMMDD`); to preview the exact release numbers,
-   tag the candidate commit locally, build, then delete the tag:
+   version (`0.8.1.devN`, meaning N commits after the last tag); to preview the
+   exact release numbers, tag the candidate commit locally, build, then delete
+   the tag:
 
    ```bash
    git tag -a v0.9.0 -m "preview"

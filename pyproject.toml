@@ -66,11 +66,12 @@ dev = [
 # tag for the C++ runtime (see docs/versioning.md).
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"
-local_scheme = "node-and-date"
+# No node/date segment: the two build systems must produce the same string, and
+# setuptools-scm's local part varies with how it was invoked. Commit identity
+# belongs to the tag (releases) and to git describe (development), not to a
+# version string that has to be reproducible.
+local_scheme = "no-local-version"
 tag_regex = "^v(?P<version>.+)$"
-# The same command CMake runs, so the abbreviated commit hash in a dev version
-# is identical on both sides.
-git_describe_command = "git describe --dirty --tags --long --abbrev=7 --match v*"
 fallback_version = "0.0.0+unknown"
 
 [tool.setuptools.packages.find]

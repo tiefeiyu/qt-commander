@@ -20,17 +20,25 @@ both the wheel and the runtime are built from that same checkout.
 
 | Situation | Version |
 |---|---|
-| tagged | `0.9.0` |
-| 11 commits after `v0.8.0` | `0.8.1.dev11+g03c552a.d20261111` |
+| tagged, clean tree | `0.9.0` |
+| tagged, modified tree | `0.9.1.dev0` |
+| 13 commits after `v0.8.0` | `0.8.1.dev13` |
 
-Both sides produce that dev string **identically**, because they run the same
-command: `git describe --dirty --tags --long --abbrev=7 --match v*`
-(`git_describe_command` in `pyproject.toml`, and the same invocation in
-`CMakeLists.txt`). Neither marks a dirty tree — a release is built from a tag,
-and setuptools-scm's `node-and-date` scheme does not encode dirtiness either —
-so a modified checkout still reports the version of the tagged commit it is
-based on. `qt-commander doctor --pid` shows the runtime version next to the
-package version and they are directly comparable.
+Both sides produce those strings **identically**: `guess-next-dev` with no
+local segment. The version deliberately carries no commit hash and no date —
+those make the string depend on *how* the build was invoked (setuptools-scm
+changes its local part between `pip install .` and `python -m build`), which
+would defeat the point of having one number. Commit identity belongs to the tag
+for releases and to `git describe` while developing; when you need to know
+whether a *running* target is stale, `qt_target_info.loaded_injector.stale`
+compares the library's mtime with the process start time, which is more reliable
+than comparing version strings.
+
+A modified tree is never treated as the release: tagging a dirty checkout yields
+`X.Y.(Z+1).dev0`, on both sides, so a release can only come from a clean tag.
+
+`qt-commander doctor --pid` shows the runtime version next to the package
+version and they are directly comparable.
 
 ## Releasing
 
