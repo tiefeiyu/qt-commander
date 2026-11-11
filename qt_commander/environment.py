@@ -117,12 +117,22 @@ def _toolchain(path: str, name: str) -> dict:
         completed = subprocess.run(
             [path, "--version"],
             capture_output=True,
-            text=True,
             timeout=2,
             check=False,
         )
-        first = (completed.stdout or completed.stderr).splitlines()
-        version = first[0].strip() if first else None
+        # Both streams, decoded leniently: localized banners can contain bytes
+        # that are not valid UTF-8, and some compilers split usage/version
+        # across stdout and stderr.
+        raw = (completed.stdout or b"") + b"\n" + (completed.stderr or b"")
+        lines = [line.strip() for line
+                 in raw.decode("utf-8", errors="replace").splitlines()
+                 if line.strip()]
+        for line in lines:
+            if any(ch.isdigit() for ch in line) and "." in line:
+                version = line
+                break
+        else:
+            version = lines[0] if lines else None
     except (OSError, subprocess.SubprocessError):
         pass
     return {"name": name, "path": path, "version": version}

@@ -47,6 +47,13 @@ below are pre-PyPI milestones and are kept for history.
 
 ### Fixed
 
+- The MSVC compiler probe always reported "unknown", so Windows artifacts were
+  named `msvc-unknown` and their manifests carried no compiler version. `cl`
+  prints its usage on stdout and the version banner on stderr, and the banner is
+  localized (bytes that are not valid UTF-8 on a Chinese console), so the old
+  `stdout or stderr` with `text=True` lost it. Both streams are now read and
+  decoded leniently. Artifacts published in `v0.9.0` still use `msvc-unknown`;
+  they match targets normally.
 - `src/library/agent.cpp` used `QFile::readLink()`, which exists in neither Qt 5
   nor Qt 6, so the POSIX scope probe never compiled on Linux or macOS. It now
   uses `QFile::symLinkTarget()`. CI caught this on its first real Linux build.

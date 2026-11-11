@@ -89,10 +89,11 @@ def test_msvc_banner_is_parsed_without_a_version_flag(monkeypatch):
 
     class _Completed:
         stdout = (
-            "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35228 for x64\n"
-            "Copyright (C) Microsoft Corporation.  All rights reserved.\n"
+            b"Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35228 "
+            b"for x64\n"
+            b"Copyright (C) Microsoft Corporation.  All rights reserved.\n"
         )
-        stderr = ""
+        stderr = b""
         returncode = 0
 
     def fake_run(command, **kwargs):
@@ -103,6 +104,24 @@ def test_msvc_banner_is_parsed_without_a_version_flag(monkeypatch):
     assert artifacts.compiler_version("msvc", "cl") == "19.44.35228"
     assert calls[0] == ["cl"]
     assert artifacts.compiler_slug("msvc", "19.44.35228") == "msvc-19.44"
+
+
+def test_msvc_banner_survives_a_localized_non_utf8_output(monkeypatch):
+    """A Chinese-locale cl banner is GBK and can contain invalid UTF-8 bytes.
+
+    Capturing it as text used to abort subprocess' reader thread, which made
+    the probe return None and artifacts land in ``msvc-unknown``.
+    """
+    banner = "用于 x64 的 Microsoft (R) C/C++ 优化编译器 19.44.35228 版\n"
+
+    class _Completed:
+        stdout = banner.encode("gbk") + b"\x8d\x8a"
+        stderr = b""
+        returncode = 0
+
+    monkeypatch.setattr(artifacts.subprocess, "run",
+                        lambda *args, **kwargs: _Completed())
+    assert artifacts.compiler_version("msvc", "cl") == "19.44.35228"
 
 
 def test_unknown_compiler_reports_nothing(monkeypatch):

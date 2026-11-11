@@ -485,14 +485,18 @@ def compiler_version(family: str, executable: str | None = None) -> str | None:
         completed = subprocess.run(
             command,
             capture_output=True,
-            text=True,
             timeout=3,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    lines = (completed.stdout or completed.stderr).splitlines()
-    for line in lines:
+    # Look at both streams: MSVC writes its usage to stdout and the version
+    # banner to stderr, and the banner is localized (the console code page can
+    # contain bytes that are invalid UTF-8, which used to abort text-mode
+    # capture and silently lose the version).
+    raw = (completed.stdout or b"") + b"\n" + (completed.stderr or b"")
+    text = raw.decode("utf-8", errors="replace")
+    for line in text.splitlines():
         tokens = line.replace("(", " ").replace(")", " ").split()
         for token in tokens:
             if token and token[0].isdigit() and "." in token:

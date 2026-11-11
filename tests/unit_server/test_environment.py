@@ -37,6 +37,7 @@ def test_kit_compiler_classification():
 
 
 def test_detect_toolchains_reports_versions(monkeypatch):
+    monkeypatch.setattr(environment, "_visual_studio_toolchains", lambda: [])
     monkeypatch.setattr(
         environment.shutil, "which",
         lambda name: r"C:\tools\g++.exe" if name == "g++" else None,
@@ -44,7 +45,7 @@ def test_detect_toolchains_reports_versions(monkeypatch):
     monkeypatch.setattr(
         environment.subprocess, "run",
         lambda *args, **kwargs: SimpleNamespace(
-            stdout="g++ (GCC) 13.1.0\n", stderr=""
+            stdout=b"g++ (GCC) 13.1.0\n", stderr=b""
         ),
     )
     tools = environment.detect_toolchains()
@@ -55,3 +56,24 @@ def test_detect_toolchains_reports_versions(monkeypatch):
             "version": "g++ (GCC) 13.1.0",
         }
     ]
+
+
+def test_toolchain_version_prefers_the_line_with_a_version(monkeypatch):
+    """cl prints usage to stdout and the version banner to stderr."""
+    monkeypatch.setattr(environment, "_visual_studio_toolchains", lambda: [])
+    monkeypatch.setattr(
+        environment.shutil, "which",
+        lambda name: r"C:\tools\cl.exe" if name == "cl" else None,
+    )
+    monkeypatch.setattr(
+        environment.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="用法: cl [ 选项... ] 文件名...\n".encode("gbk"),
+            stderr=(
+                "用于 x64 的 Microsoft (R) C/C++ 优化编译器 19.44.35228 版\n"
+            ).encode("utf-8") + b"\x8d",
+        ),
+    )
+    tools = environment.detect_toolchains()
+    assert tools[0]["name"] == "cl"
+    assert "19.44.35228" in tools[0]["version"]
