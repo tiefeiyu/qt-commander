@@ -44,6 +44,18 @@ def os_slug() -> str:
     return system or "unknown"
 
 
+def host_arch() -> str:
+    """Map ``platform.machine()`` onto the artifact arch slug (x64/x86/arm64)."""
+    machine = (platform.machine() or "").lower()
+    if machine in {"amd64", "x86_64", "x64", "em64t"}:
+        return "x64"
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    if machine in {"x86", "i386", "i486", "i586", "i686"}:
+        return "x86"
+    return machine or "unknown"
+
+
 def short_version(version: str | None, parts: int = 2) -> str:
     if not version:
         return "unknown"

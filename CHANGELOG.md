@@ -16,6 +16,10 @@ below are pre-PyPI milestones and are kept for history.
 
 ### Added
 
+- `qt_launch(program, library=...)`: start an application with the runtime
+  preloaded (`LD_PRELOAD` on Linux, `DYLD_INSERT_LIBRARIES` on macOS), wait for
+  its descriptor and attach. Accepts a macOS `.app` bundle. Not registered on
+  Windows, which has no preload hook.
 - `qt-commander` command line: `serve`, `doctor`, `install-artifacts`.
 - Prebuilt injector archives per release, installed and checksum-verified by
   `qt-commander install-artifacts` instead of compiling the C++ runtime by hand.
@@ -43,6 +47,15 @@ below are pre-PyPI milestones and are kept for history.
 
 ### Fixed
 
+- `src/library/agent.cpp` used `QFile::readLink()`, which exists in neither Qt 5
+  nor Qt 6, so the POSIX scope probe never compiled on Linux or macOS. It now
+  uses `QFile::symLinkTarget()`. CI caught this on its first real Linux build.
+- Version/commit resolution moved from the top-level `CMakeLists.txt` into
+  `src/CMakeLists.txt`: the linked test apps add `src/` to their own project,
+  so they were compiling an empty version and the runtime reported `""`.
+- The inject library's startup no longer polls for 10 s before giving up: it is
+  started from a `Q_COREAPP_STARTUP_FUNCTION` when the loader preloads it, with
+  the polling path kept for runtime injection into an already-running process.
 - A Release target could be reported as `debug: true` when the loader `PATH`
   contained a full Qt kit `bin`, so a Debug injector was loaded and timed out
   waiting for `QCoreApplication`. The injected runtime's flavour now comes from

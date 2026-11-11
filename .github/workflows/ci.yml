@@ -130,6 +130,31 @@ jobs:
           name: artifacts-${{ matrix.os }}-qt${{ matrix.qt }}
           path: dist/artifacts/*.zip
           if-no-files-found: error
+      # Launch-time injection (LD_PRELOAD) is a Linux-only path here: Windows
+      # has no preload hook and does not register the qt_launch tool.
+      - uses: astral-sh/setup-uv@v5
+        if: runner.os == 'Linux'
+        with:
+          enable-cache: true
+      - name: Build the injection test app
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S tests/test-apps/injected -B build/injected \
+            -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
+          cmake --build build/injected
+      - name: Launch-time injection e2e
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          uv sync --quiet
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous-launch"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          library=$(ls artifacts/*/*/*/lib/libqt_commander_inject.so | head -1)
+          echo "library: $library"
+          uv run python scripts/launch_e2e.py \
+            --program build/injected/qt-injected-test \
+            --library "$library"
 
   # macOS has no injector (linked mode only — see docs/design.md §8), so there
   # is no artifact to package here. This job builds the static runtime plus the
@@ -202,3 +227,17 @@ jobs:
             exit 1
           fi
           uv run python scripts/linked_smoke.py --descriptor "$descriptor"
+      - name: Build the injection test app
+        run: |
+          cmake -S tests/test-apps/injected -B build/injected \
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6
+          cmake --build build/injected
+      - name: Launch-time injection e2e (DYLD_INSERT_LIBRARIES)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous-launch"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          uv run python scripts/launch_e2e.py \
+            --program build/injected/qt-injected-test \
+            --library build/linked/qt-commander/libqt_commander_inject.dylib

@@ -46,7 +46,11 @@ compiler.
 - [ ] Tool profiles to cut context cost (`QT_COMMANDER_TOOLSET=core|full`)
 - [ ] Record/replay of an accepted interaction, plus a `pytest` plugin that
       emits JUnit XML — the bridge into QA budgets
-- [ ] macOS: linked mode in CI; document why injection is unavailable
+- [x] macOS: linked mode in CI, plus launch-time injection (`qt_launch`,
+      `DYLD_INSERT_LIBRARIES`). Attach-to-a-running-process is not possible
+      there by OS design and is not planned.
+- [ ] Screen-level screenshots on macOS: preflight the Screen Recording
+      permission and return a structured error instead of a blank/crashing grab
 - [ ] Parallel sessions: several targets per server, one rendezvous per worker
 
 Acceptance: a published comparison table and a reproducible benchmark script.

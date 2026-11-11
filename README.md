@@ -105,6 +105,12 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
+- Launch-time injection (Linux and macOS): `qt_launch(program, library=...)`
+  starts the application with the runtime preloaded (`LD_PRELOAD` /
+  `DYLD_INSERT_LIBRARIES`), waits for its descriptor and attaches. No ptrace,
+  no Yama configuration, and on macOS it is the only way in — the system
+  refuses injection into an already-running hardened or notarized process.
+  Windows has no preload hook, so `qt_launch` is not registered there.
 - 21 MCP tools are registered. Working today:
   `status`, `target_info`, `processes`, `environments`, `build`, `build_status`,
   `attach`, `detach`, `windows`, `query`, `items`, `act`, `batch`, `wait`,

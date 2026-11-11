@@ -214,16 +214,8 @@ def asset_matches(name: str, pattern: str | None) -> bool:
     return name.startswith(ASSET_PREFIX) and name.endswith(".zip")
 
 
-def host_arch() -> str:
-    """Map ``platform.machine()`` onto the artifact arch slug (x64/x86/arm64)."""
-    machine = (platform.machine() or "").lower()
-    if machine in {"amd64", "x86_64", "x64", "em64t"}:
-        return "x64"
-    if machine in {"arm64", "aarch64"}:
-        return "arm64"
-    if machine in {"x86", "i386", "i486", "i586", "i686", "x86-64"}:
-        return "x86"
-    return machine or "unknown"
+#: Re-exported so callers (and the tests) can use ``cli.host_arch``.
+host_arch = artifacts.host_arch
 
 
 def platform_asset_pattern() -> str:
@@ -442,6 +434,20 @@ def doctor_checks(pid: int | None = None) -> list[dict[str, Any]]:
         ))
     except Exception as exc:  # noqa: BLE001 - discovery is best effort
         checks.append(_check("qt-kits", "warn", f"discovery failed: {exc}"))
+
+    try:
+        from . import launch
+
+        variable = launch.preload_variable()
+        checks.append(_check(
+            "launch",
+            "ok" if variable else "warn",
+            f"{variable} (qt_launch available)" if variable else
+            f"not supported on {launch.platform_key()}; use "
+            "qt_attach(mode=\"injection\")",
+        ))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(_check("launch", "warn", f"unavailable: {exc}"))
 
     try:
         from . import server

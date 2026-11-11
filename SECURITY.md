@@ -35,6 +35,25 @@ changes (`qt_act` can click "delete", "upload", "exit"). Get consent before
 attaching to a system that matters, keep a human in the loop for destructive
 actions, and prefer a test instance.
 
+## Launch-time injection (Linux and macOS)
+
+`qt_launch` does not inject into a running process; it starts the application
+with the runtime in the loader's preload list:
+
+- **Linux** uses `LD_PRELOAD`. The variable is inherited by the child, ignored
+  for setuid binaries, and needs no ptrace permission.
+- **macOS** uses `DYLD_INSERT_LIBRARIES`. System Integrity Protection strips it
+  for binaries under `/usr`, `/System`, `/bin` and `/sbin`; an app built with
+  the hardened runtime ignores it unless the dylib is signed by the same Team
+  and library validation is disabled
+  (`com.apple.security.cs.disable-library-validation`). A downloaded dylib also
+  carries the quarantine attribute — clear it (`xattr -dr com.apple.quarantine`)
+  or sign and notarize your own build.
+- **Windows** has no equivalent hook, so the tool is not registered there.
+
+Screen-level screenshots on macOS need the Screen Recording permission
+(`QScreen::grabWindow`); widget-level captures (`QWidget::grab`) do not.
+
 ## Hardening checklist
 
 - Install artifacts from releases published in this repository; every archive
