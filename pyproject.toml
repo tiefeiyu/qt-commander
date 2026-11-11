@@ -4,17 +4,54 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qt-commander-mcp"
-version = "2.0.0"
+dynamic = ["version"]
 description = "MCP server for live Qt UI introspection and automation"
+readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 authors = [{name = "TieFeiyu"}]
+keywords = [
+    "qt",
+    "qml",
+    "qwidget",
+    "mcp",
+    "mcp-server",
+    "llm",
+    "ai-agent",
+    "ui-automation",
+    "gui-testing",
+    "dll-injection",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: User Interfaces",
+]
 dependencies = [
     "fastmcp>=4.1.4",
     "psutil>=7.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/tiefeiyu/qt-commander"
+Repository = "https://github.com/tiefeiyu/qt-commander"
+Issues = "https://github.com/tiefeiyu/qt-commander/issues"
+Changelog = "https://github.com/tiefeiyu/qt-commander/blob/master/CHANGELOG.md"
+Security = "https://github.com/tiefeiyu/qt-commander/blob/master/SECURITY.md"
+
 [project.scripts]
+qt-commander = "qt_commander.cli:main"
 qt-commander-mcp = "qt_commander.server:main"
 
 [dependency-groups]
@@ -23,5 +60,11 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+[tool.setuptools.dynamic]
+version = {attr = "qt_commander.__version__"}
+
 [tool.setuptools.packages.find]
 include = ["qt_commander*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit_server"]
