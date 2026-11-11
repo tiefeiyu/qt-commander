@@ -2,8 +2,10 @@ __pycache__/
 *.pyc
 *.egg-info/
 build/
+dist/
 artifacts/
 .venv/
+.test-venv/
 .pytest_cache/
 .test-workspace/
 .codegraph/

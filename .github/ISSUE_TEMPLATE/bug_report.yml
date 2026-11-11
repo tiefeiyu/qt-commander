@@ -1,0 +1,57 @@
+name: Bug report
+description: Attach failed, a tool returned something wrong, or the build broke
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, run `qt-commander doctor --json` and paste the output
+        below. Most "cannot attach" reports are answered by it already.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, and the full error/tool output (JSON preferred).
+      placeholder: |
+        qt_attach(pid=1234, mode="injection") returned
+        {"error": {"code": "E_INJECTION_FAILED", "reason": "...", ...}}
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Attach mode
+      options:
+        - injection (closed-source target)
+        - linked (qt_commander::start() in the app)
+        - not attached yet (build/install problem)
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`qt-commander doctor --json`"
+      description: Paste the whole JSON. Redact paths if you must.
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: qt-commander, Qt version, target architecture, OS, MCP client
+      placeholder: "qt-commander 2.1.0, Qt 5.15.2, x64, Windows 11, Claude Code"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Logs, screenshots, whether an injector was already loaded, recent rebuilds.

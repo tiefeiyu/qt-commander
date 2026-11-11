@@ -1,0 +1,43 @@
+name: Feature request
+description: A tool, argument or behaviour you need for your Qt application
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the task an agent was trying to do, not the API you have in
+        mind — the driver is what an agent needs to accomplish.
+  - type: textarea
+    id: task
+    attributes:
+      label: The task
+      description: What should an agent be able to do that it cannot do today?
+      placeholder: |
+        "Open the Settings dialog, switch the theme, and confirm it survived a restart."
+    validations:
+      required: true
+  - type: textarea
+    id: blocked
+    attributes:
+      label: What blocks it today
+      description: Which tool, error or missing information gets in the way?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - attach / inject / artifacts
+        - query / items / get / set
+        - act / call / batch / wait / expect
+        - screenshot / annotate
+        - source mapping
+        - MCP surface (tools, resources, prompts)
+        - docs / packaging
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Target application
+      description: Framework (QWidget / QML / mixed), Qt version, closed or open source, platform.
