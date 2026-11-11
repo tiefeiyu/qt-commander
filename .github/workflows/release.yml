@@ -21,6 +21,7 @@ jobs:
         with:
           fetch-depth: 0   # git describe needs the tags for the version
       - name: Resolve the version
+        shell: bash
         run: |
           tag="${{ inputs.tag }}"
           if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
@@ -78,6 +79,7 @@ jobs:
         with:
           fetch-depth: 0   # git describe needs the tags for the version
       - name: Resolve the version
+        shell: bash
         run: |
           tag="${{ inputs.tag }}"
           if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
