@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --python ${{ matrix.python }}
+      - name: Tests
+        run: uv run pytest -q
+      - name: CLI smoke
+        run: |
+          uv run qt-commander --version
+          uv run qt-commander doctor --json
+
+  package:
+    name: wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Build
+        run: uv build
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv .venv-check
+          uv pip install --python .venv-check/bin/python dist/*.whl
+          .venv-check/bin/qt-commander --version
+          .venv-check/bin/qt-commander doctor --json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-packages
+          path: dist/*
+          if-no-files-found: error
+
+  # Builds the injector/runtime for the platforms we can install Qt for on CI
+  # runners. First run will need tuning: pin the kits, and check that
+  # `scripts/package_artifacts.py` names the archive exactly as
+  # `qt-commander install-artifacts` expects.
+  cpp:
+    name: cpp / qt ${{ matrix.qt }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            qt: "5.15.2"
+            qt_major: "5"
+            arch: linux_gcc_64
+            toolchain: gcc
+          - os: ubuntu-latest
+            qt: "6.8.3"
+            qt_major: "6"
+            arch: linux_gcc_64
+            toolchain: gcc
+          - os: windows-latest
+            qt: "5.15.2"
+            qt_major: "5"
+            arch: win64_msvc2019_64
+            toolchain: msvc
+          - os: windows-latest
+            qt: "6.8.3"
+            qt_major: "6"
+            arch: win64_msvc2022_64
+            toolchain: msvc
+    steps:
+      - uses: actions/checkout@v4
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          host: ${{ runner.os == 'Windows' && 'windows' || 'linux' }}
+          target: desktop
+          arch: ${{ matrix.arch }}
+          cache: true
+      - name: Build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-x11-0
+      - name: Configure
+        run: >
+          cmake -S . -B build/ci -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
+      - name: Build
+        run: cmake --build build/ci
+      - name: Package artifact layout
+        run: >
+          python scripts/package_artifacts.py
+          --build-dir build/ci
+          --qt-version ${{ matrix.qt }}
+          --toolchain ${{ matrix.toolchain }}
+          --build-type Release
+          --qt-release
+          --archive-dir dist/artifacts
+          --github-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.os }}-qt${{ matrix.qt }}
+          path: dist/artifacts/*.zip
+          if-no-files-found: error

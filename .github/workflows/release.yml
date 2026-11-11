@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-python:
+    name: python packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv build
+      - name: Verify the wheel installs and runs
+        run: |
+          uv venv .venv-check
+          uv pip install --python .venv-check/bin/python dist/*.whl
+          .venv-check/bin/qt-commander --version
+          .venv-check/bin/qt-commander doctor --json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-packages
+          path: dist/*
+          if-no-files-found: error
+
+  artifacts:
+    name: artifact / qt ${{ matrix.qt }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            qt: "5.15.2"
+            qt_major: "5"
+            arch: linux_gcc_64
+            toolchain: gcc
+          - os: ubuntu-latest
+            qt: "6.8.3"
+            qt_major: "6"
+            arch: linux_gcc_64
+            toolchain: gcc
+          - os: windows-latest
+            qt: "5.15.2"
+            qt_major: "5"
+            arch: win64_msvc2019_64
+            toolchain: msvc
+          - os: windows-latest
+            qt: "6.8.3"
+            qt_major: "6"
+            arch: win64_msvc2022_64
+            toolchain: msvc
+    steps:
+      - uses: actions/checkout@v4
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          host: ${{ runner.os == 'Windows' && 'windows' || 'linux' }}
+          target: desktop
+          arch: ${{ matrix.arch }}
+          cache: true
+      - name: Build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-x11-0
+      - name: Configure
+        run: >
+          cmake -S . -B build/rel -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
+      - name: Build
+        run: cmake --build build/rel
+      - name: Package artifact archive
+        id: package
+        run: >
+          python scripts/package_artifacts.py
+          --build-dir build/rel
+          --qt-version ${{ matrix.qt }}
+          --toolchain ${{ matrix.toolchain }}
+          --build-type Release
+          --qt-release
+          --archive-dir dist/assets
+          --github-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.os }}-qt${{ matrix.qt }}
+          path: dist/assets/*.zip
+          if-no-files-found: error
+
+  checksums:
+    name: SHA256SUMS
+    needs: artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: artifact-*
+          path: assets
+          merge-multiple: true
+      - name: Generate sums
+        working-directory: assets
+        run: |
+          python -c "import hashlib,pathlib; [print(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name) for p in sorted(pathlib.Path('.').glob('*.zip'))]" > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-sums
+          path: assets/SHA256SUMS
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub release
+    needs: [build-python, artifacts, checksums]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          path: assets
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [ -z "$tag" ] || [ "$tag" = "master" ]; then
+            echo "workflow_dispatch without a tag ref; nothing to publish"
+            exit 0
+          fi
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --generate-notes --title "qt-commander $tag"
+          gh release upload "$tag" assets/* --clobber
+
+  # Trusted Publishing; no API token is stored in the repository. Set the
+  # repository variable PYPI_PUBLISH=true once the publisher is configured on
+  # PyPI, otherwise this job is a no-op (see docs/release/RELEASE-CHECKLIST.md).
+  pypi:
+    name: PyPI
+    needs: build-python
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/qt-commander-mcp
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-packages
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
