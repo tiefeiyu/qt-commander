@@ -50,6 +50,12 @@ The workflows have never executed. Expect to fix:
   (`qt-commander-artifacts-<os>-<arch>-*.zip`) versus what
   `qt-commander install-artifacts` filters for.
 
+The packaging path itself was validated locally on Windows with Qt 5.15.2 and
+MSVC 19.44: CMake build → `scripts/package_artifacts.py` → zip →
+`install-artifacts --from-dir` (checksum verified) → `doctor` listed the
+artifact → `artifacts.find()` matched a target for it. What remains unverified
+is the CI environment, not the code path.
+
 Validate by running the release workflow on a throwaway tag, then installing on
 a clean machine:
 
