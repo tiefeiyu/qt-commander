@@ -35,22 +35,28 @@ if(NOT QTC_VERSION)
             string(REGEX REPLACE "-dirty$" "" _qtc_version "${_qtc_version}")
             if(_qtc_version MATCHES
                "^([0-9]+\\.[0-9]+)\\.([0-9]+)-([0-9]+)-g([0-9a-f]+)$")
-                # v0.8.0-11-g03c552a7b -> 0.8.1.dev11+g03c552a7b.d20261111
-                math(EXPR _qtc_patch "${CMAKE_MATCH_2} + 1")
-                set(QTC_VERSION
-                    "${CMAKE_MATCH_1}.${_qtc_patch}.dev${CMAKE_MATCH_3}+g${CMAKE_MATCH_4}")
-                execute_process(
-                    COMMAND "${GIT_EXECUTABLE}" log -1 --format=%cd
-                            --date=format:%Y%m%d
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                    OUTPUT_VARIABLE _qtc_commit_date
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    ERROR_QUIET
-                )
-                # CMake's regex engine has no {n} intervals, so spell out 8.
-                if(_qtc_commit_date MATCHES
-                   "^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$")
-                    string(APPEND QTC_VERSION ".d${_qtc_commit_date}")
+                math(EXPR _qtc_distance "${CMAKE_MATCH_3}")
+                if(_qtc_distance GREATER 0)
+                    # v0.8.0-11-g03c552a -> 0.8.1.dev11+g03c552a.d20261111
+                    math(EXPR _qtc_patch "${CMAKE_MATCH_2} + 1")
+                    set(QTC_VERSION
+                        "${CMAKE_MATCH_1}.${_qtc_patch}.dev${_qtc_distance}+g${CMAKE_MATCH_4}")
+                    execute_process(
+                        COMMAND "${GIT_EXECUTABLE}" log -1 --format=%cd
+                                --date=format:%Y%m%d
+                        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                        OUTPUT_VARIABLE _qtc_commit_date
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_QUIET
+                    )
+                    # CMake's regex engine has no {n} intervals, so spell out 8.
+                    if(_qtc_commit_date MATCHES
+                       "^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$")
+                        string(APPEND QTC_VERSION ".d${_qtc_commit_date}")
+                    endif()
+                else()
+                    # HEAD is the tag: --long still appends -0-g<hash>.
+                    set(QTC_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
                 endif()
             else()
                 set(QTC_VERSION "${_qtc_version}")
