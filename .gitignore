@@ -10,6 +10,9 @@ artifacts/
 .test-workspace/
 .codegraph/
 .portal/
+# Local triage notes and feedback: useful while working, not part of the
+# published documentation (that lives in docs/).
+dev-docs/
 *.o
 *.obj
 *.exe
