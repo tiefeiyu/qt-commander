@@ -66,6 +66,25 @@ Acceptance: a published comparison table and a reproducible benchmark script.
       skill and a Cursor rule shipped in-repo
 - [ ] Talk + long-form write-up: "why injection beats screenshot agents for Qt"
 
+## Investigated and deferred
+
+- **One artifact per Qt major, built against the oldest supported version.**
+  Qt promises binary compatibility forward within a major version, so a Qt
+  5.12-built injector should serve 5.12-5.15 targets, and a 6.2-built one
+  6.2-6.8. Measured in CI (Qt 5.12.12 injector into a Qt 5.15.2 app): the
+  runtime does not compile against 5.12 without changes — it uses
+  `QWidget::screen()` (5.14), `QTabBar::isTabVisible()` (5.15) and
+  `Qt::SkipEmptyParts` (5.14) — and Qt 5.12 headers need `-include limits` with
+  GCC 13+. Old Qt 6 kits are also awkward to provision: aqtinstall cannot
+  resolve the default archives for 6.2.4 or 6.5.3 (`qt_base` naming), so a
+  baseline pipeline would need explicit `--archives` or pinned images.
+  Deferred until a user actually runs a target older than the shipped
+  artifacts; until then `artifact_missing` points at `qt_build(for_pid=...)`.
+- **Attaching to an already-running process on macOS.** Not possible: there is
+  no `CreateRemoteThread` equivalent, and `task_for_pid` is refused for hardened
+  or notarized builds. `qt_launch` (launch-time insertion) and linked mode cover
+  the platform instead.
+
 ## Non-goals
 
 - Becoming a GUI test framework with its own assertions, reporting and device
