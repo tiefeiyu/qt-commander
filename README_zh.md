@@ -1,7 +1,7 @@
 # qt-commander
 
-> 本中文文档滞后于 0.9.0 的打包改动（`qt-commander` CLI、`install-artifacts`、
-> 版本口径调整）。当前准确内容以英文 [README.md](README.md) 为准，中文版会在发布前同步。
+> 中文文档覆盖安装/连接/产物/状态/限制等主要章节，细节以英文 [README.md](README.md)
+> 为准（例如 MCP 工具参数、错误码）。
 
 面向 AI Agent 的 Qt UI 实时观察与操作工具。
 
@@ -11,22 +11,35 @@ qt-commander 把一个很小的运行时链接进 Qt 应用，在本机 JSON-RPC
 
 ## 安装
 
-qt-commander 目前从源码安装，尚未发布到 PyPI 或 npm。
+> 第一个 PyPI 版本还在准备中。发布前请用下面的"源码安装"；`qt-commander`
+> 命令行已经可在仓库内使用。
 
 ### 前置要求
 
 - Python 3.10+ 和 [uv](https://docs.astral.sh/uv/)
 - Qt 5 或 Qt 6 的目标程序。当前实测 Qt 5.15.2 与 Qt 6.8.3；理论上兼容
   其它 Qt 5.x/6.x，但尚未逐个验证。
-- Windows 或 Linux
+- Windows、Linux 或 macOS（macOS 仅 linked 与启动时注入，见下）
 - Python 只用于 MCP server；目标进程不需要 Python 或 gdb
 
-### 1. 获取 server
+### 方式 1：包 + 预编译运行时（发布后可用）
+
+```bash
+pip install qt-commander-mcp
+qt-commander doctor            # 体检：Qt kit、工具链、产物、descriptor
+qt-commander install-artifacts # 下载本机 OS/架构对应的注入库
+```
+
+`install-artifacts` 会校验 `SHA256SUMS`，并拒绝越界的归档成员；不需要 C++
+编译器。产物根目录可用 `QT_COMMANDER_ARTIFACTS` 指定。
+
+### 方式 2：源码安装
 
 ```bash
 git clone https://github.com/tiefeiyu/qt-commander.git
 cd qt-commander
 uv sync
+uv run qt-commander doctor
 ```
 
 ### 2. 注册到 MCP 客户端
@@ -65,6 +78,10 @@ Claude Desktop / Cursor / 其它 JSON 客户端：
 - **已运行目标**：调用 `qt_attach(pid=<pid>, mode="injection")`；不知道 PID
   时先用 `qt_processes`，Qt 版本/工具链未知时用 `qt_target_info`，必要时构建
   匹配的 injector 和 runtime。
+- **还没启动（Linux / macOS）**：`qt_launch(program, library=...)` 用
+  `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` 把运行时预载进去再启动，等 descriptor
+  出现后直接 attach；接受 macOS `.app`。这是 macOS 唯一的注入方式——系统不允许
+  往已运行的硬化/公证进程里注入。Windows 没有对应机制，因此**不注册**该工具。
 
 通常的第一次 agent 交互：
 
@@ -86,10 +103,16 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   Yama 权限（让注入器成为目标的父进程，或设置
   `kernel.yama.ptrace_scope=0`）。可用 `QT_COMMANDER_INJECTOR` 覆盖原生
   可执行路径。
-- 已注册 21 个 MCP 工具。当前可用：
+- macOS：linked 与启动时注入（`qt_launch` + `DYLD_INSERT_LIBRARIES`）已在 CI
+  验证（arm64 + Qt 6.8.3）；不支持往已运行的硬化/公证进程注入。
+- 版本号只有一个来源：git tag。`setuptools-scm` 从 tag 推导包版本，CMake 把同一个
+  tag 编进运行时（`library_version`），两边不会漂移；artifact 的 `manifest.json`
+  另记 `source{version, commit, describe}` 便于追溯。详见 `docs/versioning.md`。
+- 已注册 22 个 MCP 工具（Windows 上 21 个，没有 `qt_launch`）。当前可用：
   `status`、`target_info`、`processes`、`environments`、`build`、`build_status`、
-  `attach`、`detach`、`windows`、`query`、`items`、`act`、`batch`、`wait`、
-  `screenshot`、`get`、`set`、`call`、`methods`、`source`、`task`。`source` 只做有界扫描
+  `attach`、`detach`、`launch`（Linux/macOS）、`windows`、`query`、`items`、`act`、
+  `batch`、`wait`、`screenshot`、`get`、`set`、`call`、`methods`、`source`、
+  `task`。`source` 只做有界扫描
   （默认 120 ms / 2 万条目预算，结果带 `search{roots,visited,truncated}`），
   未命中返回 `E_NO_DEBUGINFO`，预算耗尽返回 `E_SOURCE_TIMEOUT`；命中时可按
   `snippet_lines`/`max_lines` 返回代码片段。
@@ -207,6 +230,19 @@ Qt Debug/Release 匹配 `artifacts/` 下的 manifest；不扫描 `build/`，也�
 修改时间挑最新文件。只有显式覆盖时才使用
 `QT_COMMANDER_INJECTOR` / `QT_COMMANDER_INJECT_DLL`。
 
+产物的三种来源：
+
+1. `qt-commander install-artifacts`——从 GitHub Release 下载
+   `qt-commander-artifacts-<os>-<arch>-*.zip`，校验 `SHA256SUMS` 后解包；
+   `--from-dir` / `--from-url` 用于离线。
+2. `qt_build(for_pid=<pid>)`——按活目标的 Qt kit 现编。
+3. `scripts/package_artifacts.py`——手工 CMake 构建后的打包入口。
+
+装进 site-packages 的 wheel 写不了包目录，`install-artifacts` 会回落到按用户
+的目录；用 `QT_COMMANDER_ARTIFACTS` 可以固定位置。从 git checkout 构建的产物
+会在 `manifest.json` 里记 `source{version, commit, describe}`，
+`qt_target_info` 和 `qt-commander doctor --pid` 会打印它。
+
 ## 启动 MCP server
 
 ```bash
@@ -233,15 +269,25 @@ MCP server 自带 `instructions`，覆盖启动、目标选择、歧义/隐藏�
   会出现在 `qt_windows` 中，并带 `popup: true`。
 - 修改 C++ runtime 代码后，必须重建 artifact 并重启目标进程。只重启 MCP
   server 不会更新已经加载到目标进程里的旧 runtime。
+- macOS 不能注入到已在运行的进程（系统层面无等价机制）；只能 linked 或
+  `qt_launch` 启动时注入。SIP 保护的路径（`/usr`、`/System`、`/bin`、`/sbin`）
+  和硬化运行时（需同 Team 签名 + `disable-library-validation`）会拒绝插入。
+- macOS 屏幕级截图需要"屏幕录制"权限（`QScreen::grabWindow`）；widget 级截图
+  （`QWidget::grab`）不需要。无权限时返回 `E_PERMISSION` 并附操作指引。
 
 ## 故障排查
 
+- 先跑 `qt-commander doctor --json`（加 `--pid <pid>` 可检查单个目标）。它会列出
+  Python/依赖、Qt kit、工具链、已装产物、live descriptor，以及 `qt_attach` 会选
+  哪个产物、是否需要重启。
 - `qt_status` 没有 descriptor：先启动 linked 目标，或用 `qt_processes`
   找到 PID 后再 `qt_attach(pid=..., mode="injection")`。
 - 桌面客户端找不到 `uv`：把 `command` 配成 `uv` 的绝对路径。
 - `qt-commander-mcp.exe` 被占用：先停掉旧的 Claude/MCP 进程，再重启客户端。
-- 注入失败或 runtime 不匹配：先跑 `qt_target_info`，按返回的架构/Qt 主版本/
-  工具链重新构建；不要绕过 build-id 不匹配。
+- 注入失败：先看 `error.reason`。`injector_already_loaded` 和
+  `qt_runtime_flavor_mismatch` 表示必须重启目标；`artifact_missing` 表示跑
+  `qt-commander install-artifacts` 或 `qt_build(for_pid=<pid>)`。`error.details`
+  里有目标快照、选中的产物、已加载的注入库和期望产物。
 
 多窗口时先调用 `qt_windows`，把窗口 `id` 传给 `qt_screenshot`。不传 target
 且存在多个可见 top-level 窗口时，截图会明确报错，不会静默选一个；QMenu/QToolTip
