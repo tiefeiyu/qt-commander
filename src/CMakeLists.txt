@@ -14,6 +14,19 @@
 # version must be reproducible, and commit identity belongs to the tag.
 set(_qtc_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/..")
 find_package(Git QUIET)
+# Reject a truncated override instead of compiling it in: PowerShell passes
+# "-DQTC_VERSION=0.9.0" as "0" when the argument is unquoted and contains dots.
+# Compare as a string: CMake evaluates the bare value "0" as false, so
+# `if(QTC_VERSION AND ...)` would skip the guard.
+if(DEFINED QTC_VERSION
+   AND NOT "${QTC_VERSION}" STREQUAL ""
+   AND NOT "${QTC_VERSION}" MATCHES "^[0-9]+\\.[0-9]+")
+    message(WARNING
+        "ignoring malformed QTC_VERSION='${QTC_VERSION}'; "
+        "falling back to git describe")
+    unset(QTC_VERSION)
+    unset(QTC_VERSION CACHE)
+endif()
 if(NOT QTC_VERSION)
     set(QTC_VERSION "0.0.0+unknown")
     if(Git_FOUND)

@@ -105,7 +105,7 @@ jobs:
           cmake -S . -B build/rel -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
-          -DQTC_VERSION=${{ env.QTC_VERSION }}
+          '-DQTC_VERSION=${{ env.QTC_VERSION }}'
       - name: Build
         run: cmake --build build/rel
       - name: Package artifact archive
