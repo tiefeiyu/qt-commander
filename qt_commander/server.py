@@ -696,6 +696,8 @@ def _qt_commander_environment() -> dict[str, Any]:
         available.append({
             "directory": entry["directory"],
             "build_id": entry.get("build_id"),
+            "version": entry.get("version"),
+            "commit": entry.get("commit"),
             "build_type": manifest.get("build_type"),
             "qt": manifest.get("qt"),
             "compiler": manifest.get("compiler"),

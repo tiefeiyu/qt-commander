@@ -354,9 +354,12 @@ def listing(root: Path | None = None) -> list[dict[str, Any]]:
         for directory in sorted(base.glob("*/*/*")):
             manifest = read_manifest(directory)
             if manifest:
+                source = manifest.get("source") or {}
                 result.append(
                     {"directory": str(directory), "manifest": manifest,
-                     "build_id": manifest_build_id(manifest)}
+                     "build_id": manifest_build_id(manifest),
+                     "version": source.get("version"),
+                     "commit": source.get("commit")}
                 )
     return result
 

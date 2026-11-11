@@ -307,3 +307,22 @@ def test_read_build_info_ignores_empty_and_malformed_values(tmp_path):
     (tmp_path / artifacts.BUILD_INFO_FILE).write_text("{not json", encoding="utf-8")
     assert artifacts.read_build_info(tmp_path) == {}
     assert artifacts.read_build_info(tmp_path / "missing") == {}
+
+
+def test_listing_exposes_the_source_version_and_commit(tmp_path):
+    _install_release(tmp_path, build_info={
+        "version": "0.9.0",
+        "commit": "3760124f514852d19880060f35e7088c5c37c2e0",
+        "describe": "v0.9.0",
+    })
+    entries = artifacts.listing(tmp_path / "artifacts")
+    assert len(entries) == 1
+    assert entries[0]["version"] == "0.9.0"
+    assert entries[0]["commit"].startswith("3760124f")
+
+
+def test_listing_reports_absent_source_fields_as_none(tmp_path):
+    _install_release(tmp_path)
+    entries = artifacts.listing(tmp_path / "artifacts")
+    assert entries[0]["version"] is None
+    assert entries[0]["commit"] is None

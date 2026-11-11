@@ -392,10 +392,18 @@ def doctor_checks(pid: int | None = None) -> list[dict[str, Any]]:
     root = artifacts.default_root()
     entries = artifacts.listing()
     if entries:
-        ids = sorted({entry.get("build_id") or "unknown" for entry in entries})
+        labels = []
+        for entry in entries:
+            label = str(entry.get("build_id") or "unknown")
+            if entry.get("version"):
+                label += f" (v{entry['version']}"
+                if entry.get("commit"):
+                    label += f", {entry['commit'][:8]}"
+                label += ")"
+            labels.append(label)
         checks.append(_check(
             "artifacts", "ok",
-            f"{len(entries)} in {root}: {', '.join(ids[:4])}",
+            f"{len(entries)} in {root}: {', '.join(sorted(labels)[:4])}",
         ))
     else:
         checks.append(_check(
