@@ -1,4 +1,5 @@
 #include "qt_commander/agent.h"
+#include "qt_commander/version.h"
 
 #include "server.h"
 
@@ -99,9 +100,12 @@ QJsonObject processScope()
     QJsonObject scope;
 #ifdef Q_OS_UNIX
     scope.insert(QStringLiteral("uid"), int(getuid()));
-    QFile pidNs(QStringLiteral("/proc/self/ns/pid"));
-    if (pidNs.open(QIODevice::ReadOnly))
-        scope.insert(QStringLiteral("pid_ns"), pidNs.readLink());
+    // QFile has no readLink(): use the static resolver, which also works when
+    // the path is not a symlink (it then returns an empty string).
+    const QString pidNs =
+        QFile::symLinkTarget(QStringLiteral("/proc/self/ns/pid"));
+    if (!pidNs.isEmpty())
+        scope.insert(QStringLiteral("pid_ns"), pidNs);
     QFile bootId(QStringLiteral("/proc/sys/kernel/random/boot_id"));
     if (bootId.open(QIODevice::ReadOnly)) {
         scope.insert(QStringLiteral("boot_id"),
@@ -197,7 +201,7 @@ StartResult start(const StartOptions& options)
     descriptor.insert(QStringLiteral("port"), int(port));
     descriptor.insert(QStringLiteral("token"), token);
     descriptor.insert(QStringLiteral("library_version"),
-                      QStringLiteral("2.0.0"));
+                      QStringLiteral(QT_COMMANDER_VERSION));
     descriptor.insert(QStringLiteral("library_build_id"),
                       QStringLiteral(QT_COMMANDER_BUILD_ID));
     descriptor.insert(QStringLiteral("qt"), qt);

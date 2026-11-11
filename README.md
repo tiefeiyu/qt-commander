@@ -9,8 +9,8 @@ are no snapshot files and no stale index of the UI.
 
 ## Install
 
-qt-commander is source-installed; it is not currently published to PyPI or
-npm.
+> The first PyPI release is being prepared. Until it is out, install from
+> source (option 2); the command line below already exists in this repository.
 
 ### Requirements
 
@@ -21,20 +21,37 @@ npm.
 - Python is only needed for the MCP server; the target process does not need
   Python or gdb
 
-### 1. Get the server
+### Option 1 — package plus prebuilt runtime
+
+```bash
+pip install qt-commander-mcp
+qt-commander doctor            # what this machine offers
+qt-commander install-artifacts # injector + runtime for this OS/architecture
+```
+
+`install-artifacts` downloads the release archive, verifies `SHA256SUMS`, and
+unpacks it into the artifact root (`QT_COMMANDER_ARTIFACTS`, or a per-user
+directory for a wheel install). No C++ compiler is needed.
+
+### Option 2 — from source
 
 ```bash
 git clone https://github.com/tiefeiyu/qt-commander.git
 cd qt-commander
 uv sync
+uv run qt-commander doctor
 ```
 
-### 2. Register it with your MCP client
+Source-checkout artifacts built with `qt_build` or
+`scripts/package_artifacts.py` land in `artifacts/` next to the checkout.
+
+### Register it with your MCP client
 
 Claude Code:
 
 ```bash
-claude mcp add qt-commander -- uv run --project /absolute/path/to/qt-commander qt-commander-mcp
+claude mcp add qt-commander -- qt-commander-mcp          # pip install
+claude mcp add qt-commander -- uv run --project /absolute/path/to/qt-commander qt-commander-mcp   # source install
 ```
 
 Claude Desktop / Cursor / other JSON clients:
@@ -43,18 +60,14 @@ Claude Desktop / Cursor / other JSON clients:
 {
   "mcpServers": {
     "qt-commander": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--project",
-        "/absolute/path/to/qt-commander",
-        "qt-commander-mcp"
-      ]
+      "command": "qt-commander-mcp"
     }
   }
 }
 ```
 
+For a source checkout use `"command": "uv"` with
+`"args": ["run", "--project", "/absolute/path/to/qt-commander", "qt-commander-mcp"]`.
 Use a native absolute path (`D:/Develop/qt-commander` is fine on Windows).
 Restart the client after changing the config; `qt_status` should then list
 descriptors or live sessions.
@@ -92,6 +105,12 @@ qt_status -> qt_attach -> qt_windows -> qt_query -> qt_act
   or gdb. Linux ptrace still needs Yama permission (run the injector as the
   target's parent, or set `kernel.yama.ptrace_scope=0`). The native binary
   can be overridden with `QT_COMMANDER_INJECTOR`.
+- Launch-time injection (Linux and macOS): `qt_launch(program, library=...)`
+  starts the application with the runtime preloaded (`LD_PRELOAD` /
+  `DYLD_INSERT_LIBRARIES`), waits for its descriptor and attaches. No ptrace,
+  no Yama configuration, and on macOS it is the only way in — the system
+  refuses injection into an already-running hardened or notarized process.
+  Windows has no preload hook, so `qt_launch` is not registered there.
 - 21 MCP tools are registered. Working today:
   `status`, `target_info`, `processes`, `environments`, `build`, `build_status`,
   `attach`, `detach`, `windows`, `query`, `items`, `act`, `batch`, `wait`,
@@ -216,11 +235,30 @@ descriptor carries the compiled-in id instead (`qt5/MSVC-AMD64/Release`), so do
 not compare the two as plain strings; use
 `qt_target_info.loaded_injector.build_id` against `expected_artifact.build_id`.
 
+When the artifact was built from a git checkout, the manifest also carries a
+`source` block with the release `version` and the `commit` it came from;
+`qt_target_info` and `qt-commander doctor --pid` print it.
+
 `qt_attach(mode="injection")` matches the target's OS/architecture,
 compiler family and version, Qt version, and Qt debug/release against a
 manifest under `artifacts/`; it does not scan `build/` or pick the newest file.
 Set `QT_COMMANDER_INJECTOR` / `QT_COMMANDER_INJECT_DLL` only for an explicit
 override.
+
+Artifacts come from one of three places, in order of convenience:
+
+1. `qt-commander install-artifacts` — downloads
+   `qt-commander-artifacts-<os>-<arch>-*.zip` from the latest GitHub release,
+   verifies `SHA256SUMS`, and unpacks it. `--from-dir`/`--from-url` cover
+   offline machines, `--list` shows what a release carries.
+2. `qt_build(for_pid=<pid>)` from an agent or MCP client — compiles against the
+   Qt kit of a live target.
+3. `scripts/package_artifacts.py` for a build you made yourself with CMake.
+
+The artifact root is `artifacts/` in a source checkout. For an installed wheel
+it is read-only, so `install-artifacts` falls back to a per-user directory; set
+`QT_COMMANDER_ARTIFACTS` to pin one location explicitly (the MCP server and the
+CLI both honour it).
 
 The Qt debug/release flavour comes from evidence, never from a guess: the Qt
 runtime actually mapped into the process wins, then the executable's own
@@ -272,6 +310,10 @@ tool also has a schema-aware description.
 
 ## Troubleshooting
 
+- Start with `qt-commander doctor --json` (add `--pid <pid>` to inspect one
+  target). It reports Python and dependencies, Qt kits, toolchains, installed
+  artifacts and live descriptors, plus the artifact `qt_attach` would pick for
+  that target and whether it needs a restart.
 - `qt_status` has no descriptors: start a linked target, or use
   `qt_processes` and then `qt_attach(pid=..., mode="injection")`.
 - A desktop client cannot find `uv`: use the absolute path to `uv` as
@@ -281,7 +323,8 @@ tool also has a schema-aware description.
 - Injection fails or attaches to an incompatible runtime: read
   `error.reason` first. `injector_already_loaded` and
   `qt_runtime_flavor_mismatch` mean the target must be restarted;
-  `artifact_missing` means run `qt_build(for_pid=<pid>)`. `error.details`
+  `artifact_missing` means run `qt-commander install-artifacts` or
+  `qt_build(for_pid=<pid>)`. `error.details`
   carries the target snapshot, the artifact that was picked, the injector
   already loaded, and the artifact `qt_attach` expected. Do not bypass a
   flavour mismatch by forcing `artifact_dir` — the library will not start.
@@ -299,10 +342,8 @@ part of the QWidget query tree.
 ## Test
 
 ```bash
-uv run pytest tests/unit_server -q
+uv run pytest -q          # 152 tests, no Qt installation required
 ```
-
-Current suite: **99 passed** (Qt5 MinGW/ MSVC test apps are built separately).
 
 The pure-QML regression app is built with the same options as the linked app:
 
@@ -341,17 +382,38 @@ uv run python scripts/p0_matrix.py --exe build/matrix-mingw5/qt-matrix-test.exe
 
 ```
 qt_commander/        Python MCP server, protocol, client, session, ops, injector adapter
+qt_commander/cli.py  qt-commander serve / doctor / install-artifacts
 src/                 C++ runtime (linked library + injection DLL)
 src/injector/        native C++ qtc-inject (Windows remote thread / Linux ptrace)
 tests/unit_server/   Python unit tests
 tests/test-apps/     linked / large / injected / matrix / qmlwindow test applications
-scripts/             smoke, injection and P0 benchmark scripts
+scripts/             smoke, injection, benchmark and release packaging scripts
 docs/design.md       current design notes
 docs/agent-eval.md   agent acceptance tasks and metrics
+docs/release/        release checklist and licence decision notes
 docs/benchmarks/     large-7000.json and matrix.json P0 results
+ROADMAP.md           what comes next, and what is explicitly out of scope
+CHANGELOG.md         release history
+SECURITY.md          injection threat model, hardening, disclosure
+CONTRIBUTING.md      setup, repository map, how to add a tool
 CODE_STANDARDS.md    coding and review rules
 ```
 
+## Project
+
+- [ROADMAP.md](ROADMAP.md) — priorities and non-goals
+- [CHANGELOG.md](CHANGELOG.md) — what changed, per release
+- [CONTRIBUTING.md](CONTRIBUTING.md) — build, test, and how a tool is wired
+- [SECURITY.md](SECURITY.md) — read this before injecting into anything you
+  care about
+
 ## License
 
-MIT AND Anti 996. See `LICENSE`, `LICENSE.MIT`, `LICENSE.996ICU`.
+MIT. See [LICENSE](LICENSE).
+
+Earlier releases (`v0.8.0` and before) were published under
+`MIT AND Anti-996`; they keep the terms they were published with. The reasoning
+behind the change is recorded in
+[docs/release/LICENSE-NOTES.md](docs/release/LICENSE-NOTES.md), and the old
+anti-996 text is kept as a non-binding note in
+[docs/community/anti-996.md](docs/community/anti-996.md).

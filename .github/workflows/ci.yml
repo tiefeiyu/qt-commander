@@ -1,0 +1,243 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --python ${{ matrix.python }}
+      - name: Tests
+        run: uv run pytest -q
+      - name: CLI smoke
+        run: |
+          uv run qt-commander --version
+          uv run qt-commander doctor --json
+
+  package:
+    name: wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Build
+        run: uv build
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv .venv-check
+          uv pip install --python .venv-check/bin/python dist/*.whl
+          .venv-check/bin/qt-commander --version
+          .venv-check/bin/qt-commander doctor --json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-packages
+          path: dist/*
+          if-no-files-found: error
+
+  # Builds the injector/runtime for the platforms we can install Qt for on CI
+  # runners. First run will need tuning: pin the kits, and check that
+  # `scripts/package_artifacts.py` names the archive exactly as
+  # `qt-commander install-artifacts` expects.
+  cpp:
+    name: cpp / qt ${{ matrix.qt }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux Qt 5.15.2 is deliberately absent: aqtinstall cannot resolve
+          # the 5.15.2 packages for linux ("packages ['qt_base'] were not
+          # found"). A Qt 5 linux runtime can be built locally with
+          # scripts/package_artifacts.py.
+          - os: ubuntu-latest
+            qt: "6.8.3"
+            qt_major: "6"
+            arch: linux_gcc_64
+            toolchain: gcc
+          - os: windows-latest
+            qt: "5.15.2"
+            qt_major: "5"
+            arch: win64_msvc2019_64
+            toolchain: msvc
+          - os: windows-latest
+            qt: "6.8.3"
+            qt_major: "6"
+            arch: win64_msvc2022_64
+            toolchain: msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          host: ${{ runner.os == 'Windows' && 'windows' || 'linux' }}
+          target: desktop
+          arch: ${{ matrix.arch }}
+          cache: true
+      - name: Build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-x11-0
+      - name: Configure
+        run: >
+          cmake -S . -B build/ci -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
+      - name: Build
+        run: cmake --build build/ci
+      - name: Package artifact layout
+        run: >
+          python scripts/package_artifacts.py
+          --build-dir build/ci
+          --qt-version ${{ matrix.qt }}
+          --toolchain ${{ matrix.toolchain }}
+          --build-type Release
+          --qt-release
+          --archive-dir dist/artifacts
+          --github-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.os }}-qt${{ matrix.qt }}
+          path: dist/artifacts/*.zip
+          if-no-files-found: error
+      # Launch-time injection (LD_PRELOAD) is a Linux-only path here: Windows
+      # has no preload hook and does not register the qt_launch tool.
+      - uses: astral-sh/setup-uv@v5
+        if: runner.os == 'Linux'
+        with:
+          enable-cache: true
+      - name: Build the injection test app
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S tests/test-apps/injected -B build/injected \
+            -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
+          cmake --build build/injected
+      - name: Launch-time injection e2e
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          uv sync --quiet
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous-launch"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          library=$(ls artifacts/*/*/*/lib/libqt_commander_inject.so | head -1)
+          echo "library: $library"
+          uv run python scripts/launch_e2e.py \
+            --program build/injected/qt-injected-test \
+            --library "$library"
+
+  # macOS has no injector (linked mode only — see docs/design.md §8), so there
+  # is no artifact to package here. This job builds the static runtime plus the
+  # linked test app and drives it through the real session path, which is the
+  # only macOS code path the project claims to support.
+  macos-linked:
+    name: macos / linked e2e
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --python 3.13
+      - name: Work around Qt 6.8.3 linking a framework macOS removed
+        run: |
+          # Qt 6.8.3's FindWrapOpenGL.cmake emits "-framework AGL" even when AGL
+          # is absent, and the macOS 26 SDK no longer ships AGL. Upstream fixed
+          # this in 6.8.4 / 6.9, so this step becomes a no-op once the kit moves.
+          python3 - "$QT_ROOT_DIR/lib/cmake/Qt6/FindWrapOpenGL.cmake" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          needle = (
+              "        target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE "
+              "${__opengl_agl_fw_path})\n"
+          )
+          if needle in text:
+              path.write_text(text.replace(needle, ""))
+              print("patched AGL link out of", path)
+          else:
+              print("no AGL link line in", path, "- nothing to do")
+          PY
+      - name: Build runtime, injection library and linked test app
+        run: |
+          cmake -S tests/test-apps/linked -B build/linked \
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6
+          cmake --build build/linked
+          ls -l build/linked/qt-commander/*.dylib
+      - name: Drive the linked app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          ./build/linked/qt-linked-test &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          descriptor=""
+          for _ in $(seq 1 100); do
+            descriptor=$(ls "$QT_COMMANDER_RENDEZVOUS"/descriptor-*.json 2>/dev/null | head -1 || true)
+            [ -n "$descriptor" ] && break
+            sleep 0.2
+          done
+          if [ -z "$descriptor" ]; then
+            echo "no descriptor appeared; is the app running?" >&2
+            exit 1
+          fi
+          uv run python scripts/linked_smoke.py --descriptor "$descriptor"
+      - name: Build the injection test app
+        run: |
+          cmake -S tests/test-apps/injected -B build/injected \
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6
+          cmake --build build/injected
+      - name: Launch-time injection e2e (DYLD_INSERT_LIBRARIES)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous-launch"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          uv run python scripts/launch_e2e.py \
+            --program build/injected/qt-injected-test \
+            --library build/linked/qt-commander/libqt_commander_inject.dylib

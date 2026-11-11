@@ -357,7 +357,7 @@ qt_source(target, handler=None, snippet_lines=3, max_lines=20)
 ```json
 {"id":1,"result":{
   "protocol": 2,
-  "library_version": "2.0.0",
+  "library_version": "2.1.0",
   "capabilities": ["qml", "expect_js", "virtual_items", "binary_frames"],
   "session_tag": "7f3a",
   "limits": {"max_frame": 67108864, "max_inflight": 8}
@@ -483,7 +483,7 @@ int main(int argc, char** argv) {
   "nonce": "...",
   "port": 45678,
   "token": "...",
-  "library_version": "2.0.0",
+  "library_version": "2.1.0",
   "library_build_id": "qt5.15.2/msvc2019-x64/release",
   "qt": {"major": 5, "version": "5.15.2"},
   "capabilities": ["qml", "expect_js", "virtual_items"],
@@ -539,10 +539,16 @@ inject：
 
 | 平台 | 闭源（仅注入） | 白盒 linked | 条件 |
 |---|---|---|---|
-| Windows x64 | 可用 | 可用 | CIG/PPL/EDR 拦截则不可行；同架构/CRT；建议 delay-load |
-| Linux X11 | 可用（native ptrace） | 可用 | 需要 Yama 允许：父进程注入或 `ptrace_scope=0` |
-| Linux Wayland | 可用（native ptrace） | 可用 | linked 不依赖 ptrace；XCB 输入/截图受 Wayland 限制 |
-| macOS arm64/x64 | 不可行（无注入器） | 可用 | Hardened Runtime 需 disable-library-validation 或同 Team 签名 |
+| Windows x64 | 可用（DLL 注入，已运行进程） | 可用 | CIG/PPL/EDR 拦截则不可行；同架构/CRT；建议 delay-load |
+| Linux X11 | 可用（native ptrace，或启动时 `LD_PRELOAD`） | 可用 | ptrace 需要 Yama 允许：父进程注入或 `ptrace_scope=0`；`LD_PRELOAD` 不需要 |
+| Linux Wayland | 可用（同上） | 可用 | linked 不依赖 ptrace；XCB 输入/截图受 Wayland 限制 |
+| macOS arm64/x64 | 仅启动时注入（`DYLD_INSERT_LIBRARIES`） | 可用 | 目标不能在 SIP 保护路径（`/usr`、`/System`、`/bin`、`/sbin`）；Hardened Runtime 需同 Team 签名或 `com.apple.security.cs.disable-library-validation` |
+
+- 官方支持：linked 三平台；注入在 Windows（DLL）、Linux（ptrace / `LD_PRELOAD`）、macOS（仅启动时插入）。
+- macOS **没有** attach 到已运行进程的等价机制（无 `CreateRemoteThread(LoadLibraryW)`；`task_for_pid` 对硬化/公证应用被拒），所以 `qt_launch` 是 macOS 唯一的注入入口，错误提示应引导到它或 linked。
+- Windows 没有 `LD_PRELOAD` 等价物，因此 `qt_launch` **不在 Windows 注册**，也不出现在 Windows 的 instructions 里。
+- 启动注入由库内的 `Q_COREAPP_STARTUP_FUNCTION` 完成（`main()` 前被 load，`QCoreApplication` 构造时在主线程启动）；运行时注入（ptrace/远程线程）仍走轮询兜底。
+- macOS 屏幕级截图需要"屏幕录制"权限（`QScreen::grabWindow`），widget 级（`QWidget::grab`）不需要；无权限时应返回结构化错误而不是崩溃。
 
 - 官方支持：白盒 linked 三平台；闭源注入 Windows（MinGW/MSVC）与 Linux（native ptrace）。
 - macOS 闭源明确不支持；错误 hint 说明用 linked。

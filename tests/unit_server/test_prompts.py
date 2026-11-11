@@ -32,6 +32,10 @@ EXPECTED_TOOLS = {
     "qt_task",
 }
 
+if server.LAUNCH_SUPPORTED:
+    # Launch-time injection exists only where the loader can preload a library.
+    EXPECTED_TOOLS.add("qt_launch")
+
 
 @pytest.mark.asyncio
 async def test_mcp_instructions_cover_the_operating_loop():
@@ -102,6 +106,21 @@ async def test_tool_descriptions_match_current_features():
     assert "loaded_injector" in tools["qt_target_info"].description
     assert "restart_required" in tools["qt_target_info"].description
     assert "qt_commander" in tools["qt_environments"].description
+
+    if server.LAUNCH_SUPPORTED:
+        launch = tools["qt_launch"]
+        assert "LD_PRELOAD" in launch.description
+        assert "DYLD_INSERT_LIBRARIES" in launch.description
+        assert "library" in launch.parameters["properties"]
+        assert "program" in launch.parameters["required"]
+        assert "qt_launch" in " ".join(
+            (server.mcp.instructions or "").split()
+        )
+    else:
+        # Windows has no preload hook: neither the tool nor the instructions
+        # may advertise it.
+        assert "qt_launch" not in tools
+        assert "qt_launch" not in (server.mcp.instructions or "")
 
     items_params = tools["qt_items"].parameters
     assert "nth" in items_params["properties"]

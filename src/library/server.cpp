@@ -1,4 +1,5 @@
 #include "server.h"
+#include "qt_commander/version.h"
 
 #include <QAbstractButton>
 #include <QAbstractEventDispatcher>
@@ -76,6 +77,12 @@
 #include <algorithm>
 #include <functional>
 
+#ifdef Q_OS_MACOS
+// CGPreflightScreenCaptureAccess: screen-level grabs need the Screen Recording
+// permission, and grabbing without it can fault rather than return blank.
+#include <CoreGraphics/CoreGraphics.h>
+#endif
+
 namespace qt_commander {
 
 namespace {
@@ -86,7 +93,19 @@ QRect qmlItemRect(const QQuickItem* item, const QQuickWidget* owner);
 QString qmlTextContent(QQuickItem* item);
 bool qmlActionable(QQuickItem* item);
 
-constexpr const char* kLibraryVersion = "2.1.0";
+constexpr const char* kLibraryVersion = QT_COMMANDER_VERSION;
+
+#ifdef Q_OS_MACOS
+// Screen-level captures are gated behind the Screen Recording permission, and
+// grabbing without it can fault instead of returning a blank pixmap.
+bool screenCapturePermitted()
+{
+    // Available since macOS 10.15; older systems had no such gate.
+    if (__builtin_available(macOS 10.15, *))
+        return CGPreflightScreenCaptureAccess();
+    return true;
+}
+#endif
 
 bool validMatcher(const QJsonValue& spec)
 {
@@ -3121,8 +3140,31 @@ QJsonObject Server::quickScreenshot(QQuickWindow* window,
         return result;
     }
     QImage image = window->grabWindow();
-    if (image.isNull() && window->screen())
+    if (image.isNull() && window->screen()) {
+#ifdef Q_OS_MACOS
+        // The fallback grabs the screen, which macOS gates behind the Screen
+        // Recording permission. Without it the grab can fault, so refuse with
+        // an actionable error instead.
+        if (!screenCapturePermitted()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"),
+                          QStringLiteral("E_PERMISSION"));
+            result.insert(
+                QStringLiteral("message"),
+                QStringLiteral("macOS Screen Recording permission is required "
+                               "for a screen-level capture"));
+            result.insert(
+                QStringLiteral("hint"),
+                QStringLiteral(
+                    "System Settings > Privacy & Security > Screen Recording: "
+                    "enable the terminal (or whatever launched the target), "
+                    "then restart it. Widget-level captures (QWidget::grab) do "
+                    "not need this permission."));
+            return result;
+        }
+#endif
         image = window->screen()->grabWindow(window->winId()).toImage();
+    }
     if (image.isNull()) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_FOUND"));

@@ -2,12 +2,17 @@ __pycache__/
 *.pyc
 *.egg-info/
 build/
+dist/
 artifacts/
 .venv/
+.test-venv/
 .pytest_cache/
 .test-workspace/
 .codegraph/
 .portal/
+# Local triage notes and feedback: useful while working, not part of the
+# published documentation (that lives in docs/).
+dev-docs/
 *.o
 *.obj
 *.exe

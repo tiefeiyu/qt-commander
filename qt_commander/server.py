@@ -9,6 +9,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -21,13 +22,17 @@ from fastmcp.server.middleware import Middleware
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.types import Image
 
-from . import artifacts, inject, ops, target
+from . import artifacts, inject, launch as launcher, ops, target
 from .client import ClientClosed, ClientTimeout, RpcClient, RpcError
 from .environment import detect_qt_environments, detect_toolchains
 from .errors import ErrorCode
 from .session import Session, SessionExists, SessionManager, SessionNotFound
 
-INSTRUCTIONS = """\
+#: Resolved once at import: the tool set and the instructions must describe the
+#: same platform capabilities.
+LAUNCH_SUPPORTED = launcher.supported()
+
+_BASE_INSTRUCTIONS = """\
 qt-commander is for autonomous operation of a running Qt/QML application.
 
 When to use:
@@ -90,6 +95,22 @@ Critical rules:
 - Confirm before irreversible actions (delete/upload/exit/restart or
   persistent setting changes). Do not bypass hidden/safety checks.
 """
+
+_LAUNCH_INSTRUCTIONS = """
+Starting a target (Linux and macOS only):
+- When the application is not running yet, qt_launch(program, args=[...]) starts
+  it with the runtime preloaded (LD_PRELOAD / DYLD_INSERT_LIBRARIES), waits for
+  it to register, and attaches. It accepts a macOS .app bundle.
+- On macOS this is the only way in: the system refuses injection into an
+  already-running hardened or notarized process. On Linux it avoids ptrace and
+  needs no Yama configuration.
+- qt_launch is absent on Windows, which has no preload mechanism; start the app
+  yourself and use qt_attach(pid=..., mode="injection").
+"""
+
+INSTRUCTIONS = _BASE_INSTRUCTIONS + (
+    _LAUNCH_INSTRUCTIONS if LAUNCH_SUPPORTED else ""
+)
 
 mcp = FastMCP("qt-commander", instructions=INSTRUCTIONS)
 sessions = SessionManager()
@@ -666,8 +687,8 @@ async def qt_windows(
 
 def _qt_commander_environment() -> dict[str, Any]:
     """Describe this install so a caller can build without reading the repo."""
-    root = artifacts.ROOT
-    source = root.parent
+    root = artifacts.default_root()
+    source = Path(__file__).resolve().parents[1]
     source_dir = str(source) if (source / "CMakeLists.txt").is_file() else None
     available = []
     for entry in artifacts.listing():
@@ -675,6 +696,8 @@ def _qt_commander_environment() -> dict[str, Any]:
         available.append({
             "directory": entry["directory"],
             "build_id": entry.get("build_id"),
+            "version": entry.get("version"),
+            "commit": entry.get("commit"),
             "build_type": manifest.get("build_type"),
             "qt": manifest.get("qt"),
             "compiler": manifest.get("compiler"),
@@ -780,18 +803,6 @@ async def _run_build_command(
             pass
         raise
     return process.returncode or 0, output.decode("utf-8", "replace")
-
-
-def _built_file(build: Path, names: tuple[str, ...]) -> Path | None:
-    for name in names:
-        matches = sorted(
-            path for path in build.rglob(name)
-            if (build / "bin") not in path.parents
-            and (build / "lib") not in path.parents
-        )
-        if matches:
-            return matches[0]
-    return None
 
 
 def _cmake_cache_home(cache: Path) -> str | None:
@@ -949,42 +960,29 @@ async def _run_build_job(job: _BuildJob) -> None:
 
 
 def _collect_artifacts(plan: _BuildPlan, output: str) -> dict[str, Any]:
-    build = plan.build
-    artifact_dir = plan.artifact_dir
-    injector = _built_file(build, ("qtc-inject.exe", "qtc-inject"))
-    library = _built_file(
-        build, ("qt_commander_inject.dll", "libqt_commander_inject.so")
+    installed = artifacts.install_from_build(
+        plan.build,
+        os_name=plan.os_name,
+        arch=plan.arch,
+        compiler=plan.toolchain,
+        compiler_version=plan.compiler_version,
+        qt_version=plan.qt_version,
+        qt_debug=plan.qt_debug,
+        build_type=plan.build_type,
     )
-    artifact_manifest = None
-    bin_dir = artifact_dir / "bin"
-    lib_dir = artifact_dir / "lib"
-    if injector and library:
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        lib_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(injector, bin_dir / injector.name)
-        shutil.copy2(library, lib_dir / library.name)
-        artifact_manifest = artifacts.write_manifest(
-            artifact_dir,
-            os_name=plan.os_name,
-            arch=plan.arch,
-            compiler=plan.toolchain,
-            compiler_version=plan.compiler_version,
-            qt_version=plan.qt_version,
-            qt_debug=plan.qt_debug,
-            build_type=plan.build_type,
-            injector=f"bin/{injector.name}",
-            library=f"lib/{library.name}",
-        )
+    injector = installed["injector"]
+    library = installed["library"]
+    manifest = installed["manifest"]
     return {
         "ok": True,
         "status": "ok",
         "build_id": plan.build_id,
-        "build_dir": str(build),
-        "artifact_dir": str(artifact_dir),
-        "injector": str(bin_dir / injector.name) if injector else None,
-        "library": str(lib_dir / library.name) if library else None,
-        "manifest": str(artifact_manifest) if artifact_manifest else None,
-        "warning": None if artifact_manifest else "build has no injector/library",
+        "build_dir": str(plan.build),
+        "artifact_dir": str(installed["artifact_dir"]),
+        "injector": str(injector) if injector else None,
+        "library": str(library) if library else None,
+        "manifest": str(manifest) if manifest else None,
+        "warning": None if manifest else "build has no injector/library",
         "qt_version": plan.qt_version,
         "toolchain": plan.toolchain,
         "compiler_version": plan.compiler_version,
@@ -995,7 +993,7 @@ def _collect_artifacts(plan: _BuildPlan, output: str) -> dict[str, Any]:
 
 def _qt_commander_source_dir() -> Path | None:
     """Return the qt-commander CMake project shipped next to this package."""
-    candidate = artifacts.ROOT.parent
+    candidate = Path(__file__).resolve().parents[1]
     return candidate if (candidate / "CMakeLists.txt").is_file() else None
 
 
@@ -1281,7 +1279,7 @@ async def qt_build(
     build = (
         Path(build_dir)
         if build_dir
-        else artifacts.ROOT.parent / "build" / (
+        else source.parent / "build" / (
             f"{os_name}-{arch}_"
             f"{artifacts.compiler_slug(toolchain, compiler_version)}_"
             f"{artifacts.qt_slug(version['version'], qt_debug)}"
@@ -1604,6 +1602,187 @@ async def qt_attach(
         "capabilities": list(session.hello.capabilities),
         "descriptor": str(path),
     }
+
+
+def _launch_library(explicit: str | None) -> tuple[Path | None, dict[str, Any] | None]:
+    """Pick the library to preload: explicit path, env override, or one artifact."""
+    if explicit:
+        path = Path(explicit).expanduser()
+        if path.is_file():
+            return path, None
+        return None, _error(ErrorCode.INVALID_ARGUMENT.value,
+                            f"library not found: {path}")
+    override = os.environ.get("QT_COMMANDER_INJECT_DLL")
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return path, None
+        return None, _error(
+            ErrorCode.INVALID_ARGUMENT.value,
+            f"QT_COMMANDER_INJECT_DLL is not a file: {path}",
+        )
+    wanted_os = artifacts.os_slug()
+    wanted_arch = artifacts.host_arch()
+    matches: list[tuple[Path, str | None]] = []
+    for entry in artifacts.listing():
+        manifest = entry.get("manifest") or {}
+        scope = manifest.get("target") or {}
+        if scope.get("os") != wanted_os or scope.get("arch") != wanted_arch:
+            continue
+        relative = manifest.get("library")
+        if not isinstance(relative, str):
+            continue
+        path = Path(entry["directory"]) / relative
+        if path.is_file():
+            matches.append((path, entry.get("build_id")))
+    if len(matches) == 1:
+        return matches[0][0], None
+    if not matches:
+        return None, _error(
+            ErrorCode.BUILD_REQUIRED.value,
+            f"no injection library for {wanted_os}/{wanted_arch}",
+            hint="pass library=<path>, set QT_COMMANDER_INJECT_DLL, or build one "
+                 "with qt_build for a running target",
+        )
+    result = _error(
+        ErrorCode.AMBIGUOUS.value,
+        "several injection libraries match this host",
+        hint="pass library=<one of details.candidates>",
+    )
+    result["error"]["details"] = {
+        "candidates": [
+            {"library": str(path), "build_id": build_id}
+            for path, build_id in matches
+        ]
+    }
+    return None, result
+
+
+def _launch_timeout_hint(pid: int, library: Path) -> str:
+    parts = [
+        f"pid {pid} started with {library.name} preloaded but no runtime "
+        "appeared",
+        "the library must match the app's Qt version, debug/release flavour "
+        "and architecture",
+    ]
+    if launcher.platform_key() == "darwin":
+        parts.append(
+            "on macOS a hardened app ignores DYLD_INSERT_LIBRARIES unless the "
+            "dylib is signed by the same Team and library validation is "
+            "disabled"
+        )
+    return "; ".join(parts)
+
+
+async def qt_launch(
+    program: str,
+    args: list[str] | None = None,
+    library: str | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout_ms: int = 20000,
+    detach: bool = True,
+) -> dict[str, Any]:
+    """Start an application with the runtime preloaded, then attach to it.
+
+    Linux and macOS only. The dynamic loader inserts the library before
+    ``main`` (``LD_PRELOAD`` on Linux, ``DYLD_INSERT_LIBRARIES`` on macOS), so
+    the runtime exists before the first window does and nothing is injected
+    into a live process. That is also the only workable approach on macOS,
+    which refuses injection into an already-running hardened or notarized
+    process.
+
+    ``program`` may be an executable or a macOS ``.app`` bundle (the inner
+    executable is resolved from ``Contents/Info.plist``). ``args`` are passed
+    through; ``env`` is merged into the child's environment after the preload
+    variable is set.
+
+    ``library`` is the injector library to preload. Omit it to use
+    ``QT_COMMANDER_INJECT_DLL``, or the single installed artifact whose OS and
+    architecture match this host.
+
+    The tool waits up to ``timeout_ms`` for the runtime's descriptor, then
+    attaches and returns the attach payload plus ``launched`` (pid, library,
+    waited_ms). A process that starts but never registers returns
+    ``E_TARGET_NOT_QT`` with the pid, so it can still be inspected. This tool
+    is not registered on Windows, which has no preload mechanism; use
+    ``qt_attach(pid=..., mode="injection")`` there.
+    """
+    if not launcher.supported():
+        return _error(
+            ErrorCode.NOT_IMPLEMENTED.value,
+            f"launch injection is not available on {launcher.platform_key()}",
+            hint="use qt_attach(pid=..., mode=\"injection\") on Windows",
+        )
+    if args is not None and not all(isinstance(arg, str) for arg in args):
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "args must be a list of strings")
+    if env is not None and not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in env.items()
+    ):
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "env must map strings to strings")
+    if not 500 <= timeout_ms <= 120000:
+        return _error(ErrorCode.INVALID_ARGUMENT.value,
+                      "timeout_ms must be between 500 and 120000")
+    resolved, failure = _launch_library(library)
+    if failure is not None:
+        return failure
+    if resolved is None:  # pragma: no cover - _launch_library always sets one
+        return _error(ErrorCode.INVALID_ARGUMENT.value, "no library resolved")
+    started = time.monotonic()
+    try:
+        process = await asyncio.to_thread(
+            launcher.launch,
+            program,
+            args or [],
+            library=resolved,
+            cwd=cwd,
+            env=env,
+            detach=detach,
+        )
+    except launcher.LaunchError as exc:
+        return _error(exc.code, str(exc), hint=exc.hint)
+    if detach:
+        # The child is ours: reap it off the event loop so a finished app does
+        # not linger as a zombie.
+        threading.Thread(target=process.wait, daemon=True).start()
+    descriptor = await _await_descriptor_for_pid(
+        process.pid, timeout_s=timeout_ms / 1000.0
+    )
+    if descriptor is None:
+        result = _error(
+            ErrorCode.TARGET_NOT_QT.value,
+            f"pid {process.pid} started but no runtime registered",
+            hint=_launch_timeout_hint(process.pid, resolved),
+            retryable=False,
+        )
+        result["error"]["details"] = {
+            "pid": process.pid,
+            "library": str(resolved),
+            "waited_ms": int((time.monotonic() - started) * 1000),
+        }
+        return result
+    attached = await qt_attach(descriptor=str(descriptor))
+    if not attached.get("ok"):
+        attached.setdefault("error", {})["details"] = {
+            "pid": process.pid,
+            "library": str(resolved),
+        }
+        return attached
+    attached["launched"] = {
+        "pid": process.pid,
+        "library": str(resolved),
+        "waited_ms": int((time.monotonic() - started) * 1000),
+    }
+    return attached
+
+
+if LAUNCH_SUPPORTED:
+    # Windows has no preload hook. Registering the tool there would advertise a
+    # capability the platform cannot deliver, so the tool simply does not exist.
+    mcp.add_tool(qt_launch)
 
 
 @mcp.tool
