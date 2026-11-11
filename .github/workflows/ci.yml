@@ -130,3 +130,53 @@ jobs:
           name: artifacts-${{ matrix.os }}-qt${{ matrix.qt }}
           path: dist/artifacts/*.zip
           if-no-files-found: error
+
+  # macOS has no injector (linked mode only — see docs/design.md §8), so there
+  # is no artifact to package here. This job builds the static runtime plus the
+  # linked test app and drives it through the real session path, which is the
+  # only macOS code path the project claims to support.
+  macos-linked:
+    name: macos / linked e2e
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags for the version
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --python 3.13
+      - name: Build runtime and linked test app
+        run: |
+          cmake -S tests/test-apps/linked -B build/linked \
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6
+          cmake --build build/linked
+      - name: Drive the linked app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous"
+          mkdir -p "$QT_COMMANDER_RENDEZVOUS"
+          ./build/linked/qt-linked-test &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          descriptor=""
+          for _ in $(seq 1 100); do
+            descriptor=$(ls "$QT_COMMANDER_RENDEZVOUS"/descriptor-*.json 2>/dev/null | head -1 || true)
+            [ -n "$descriptor" ] && break
+            sleep 0.2
+          done
+          if [ -z "$descriptor" ]; then
+            echo "no descriptor appeared; is the app running?" >&2
+            exit 1
+          fi
+          uv run python scripts/linked_smoke.py --descriptor "$descriptor"
