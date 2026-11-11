@@ -154,11 +154,17 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --python 3.13
+      - name: Locate the AGL reference (diagnostic)
+        run: |
+          echo "QT_ROOT_DIR=$QT_ROOT_DIR"
+          grep -rn "framework AGL" "$QT_ROOT_DIR/lib/cmake" 2>/dev/null | head -20 || true
+          grep -rn "framework AGL" /usr/local/lib/cmake /opt/homebrew/lib/cmake 2>/dev/null | head -20 || true
       - name: Build runtime and linked test app
         run: |
           cmake -S tests/test-apps/linked -B build/linked \
-            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6
-          cmake --build build/linked
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=6 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build/linked --verbose
       - name: Drive the linked app
         env:
           QT_QPA_PLATFORM: offscreen
