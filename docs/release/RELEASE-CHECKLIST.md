@@ -63,11 +63,27 @@ Also worth fixing when convenient: `actions/checkout@v4` and
 `astral-sh/setup-uv@v5` run on a deprecated Node.js 20 and are currently forced
 onto Node.js 24 by GitHub; bump them before GitHub removes the fallback.
 
-The packaging path itself was validated locally on Windows with Qt 5.15.2 and
-MSVC 19.44: CMake build → `scripts/package_artifacts.py` → zip →
+What the current workflow set actually covers (verified on PR #1):
+
+| Job | What it proves |
+|---|---|
+| `python` × 4 | Windows/Linux × 3.10/3.13, 175 unit tests |
+| `wheel` | sdist→wheel installs and `qt-commander doctor` runs |
+| `cpp` × 3 | Qt 5.15.2/MSVC and Qt 6.8.3/MSVC on Windows, Qt 6.8.3/gcc on Linux |
+| `cpp` linux | launch-time injection E2E (`LD_PRELOAD` → attach → click → screenshot) |
+| `macos-linked` | Qt 6.8.3 arm64: linked E2E and launch-time injection E2E (`DYLD_INSERT_LIBRARIES`) |
+
+macOS needs one workaround already in the job: Qt 6.8.3's
+`FindWrapOpenGL.cmake` links `-framework AGL`, which the macOS 26 SDK removed;
+the job patches that line out of the installed kit and becomes a no-op once the
+kit moves to 6.8.4+.
+
+The packaging path was validated locally on Windows with Qt 5.15.2 and MSVC
+19.44: CMake build → `scripts/package_artifacts.py` → zip →
 `install-artifacts --from-dir` (checksum verified) → `doctor` listed the
-artifact → `artifacts.find()` matched a target for it. What remains unverified
-is the CI environment, not the code path.
+artifact → `artifacts.find()` matched a target for it. The release *publish*
+steps (checksums job, GitHub release upload, PyPI) have still never run; use a
+throwaway tag to exercise them.
 
 Validate by running the release workflow on a throwaway tag, then installing on
 a clean machine:
