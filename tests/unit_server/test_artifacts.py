@@ -202,3 +202,56 @@ def test_manifest_build_id_is_derived_for_legacy_schema(tmp_path):
     }
     assert artifacts.manifest_build_id(legacy) == "qt5.15.2/msvc-x64/Release"
     assert artifacts.manifest_build_id(None) is None
+
+
+def _fake_build(tmp_path, *, with_binaries=True):
+    build = tmp_path / "build"
+    build.mkdir()
+    if with_binaries:
+        injector = build / "src" / "qtc-inject.exe"
+        library = build / "src" / "qt_commander_inject.dll"
+        for path in (injector, library):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"MZ")
+    return build
+
+
+def test_install_from_build_writes_artifact_layout(tmp_path):
+    build = _fake_build(tmp_path)
+    root = tmp_path / "artifacts"
+    installed = artifacts.install_from_build(
+        build,
+        os_name="windows",
+        arch="x64",
+        compiler="msvc",
+        compiler_version="19.44.35207",
+        qt_version="5.15.2",
+        qt_debug=False,
+        build_type="Release",
+        root=root,
+    )
+    assert installed["build_id"] == "qt5.15.2/msvc-x64/Release"
+    artifact_dir = installed["artifact_dir"]
+    assert artifact_dir == root / "windows-x64/msvc-19.44/qt-5.15.2-release"
+    assert (artifact_dir / "bin/qtc-inject.exe").read_bytes() == b"MZ"
+    assert (artifact_dir / "lib/qt_commander_inject.dll").is_file()
+    manifest = json.loads(installed["manifest"].read_text())
+    assert manifest["library"] == "lib/qt_commander_inject.dll"
+    assert manifest["build_id"] == "qt5.15.2/msvc-x64/Release"
+
+
+def test_install_from_build_reports_missing_binaries(tmp_path):
+    installed = artifacts.install_from_build(
+        _fake_build(tmp_path, with_binaries=False),
+        os_name="windows",
+        arch="x64",
+        compiler="msvc",
+        compiler_version=None,
+        qt_version="5.15.2",
+        qt_debug=True,
+        build_type="Debug",
+        root=tmp_path / "artifacts",
+    )
+    assert installed["manifest"] is None
+    assert installed["injector"] is None
+    assert installed["library"] is None

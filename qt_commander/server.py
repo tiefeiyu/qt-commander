@@ -666,8 +666,8 @@ async def qt_windows(
 
 def _qt_commander_environment() -> dict[str, Any]:
     """Describe this install so a caller can build without reading the repo."""
-    root = artifacts.ROOT
-    source = root.parent
+    root = artifacts.default_root()
+    source = Path(__file__).resolve().parents[1]
     source_dir = str(source) if (source / "CMakeLists.txt").is_file() else None
     available = []
     for entry in artifacts.listing():
@@ -780,18 +780,6 @@ async def _run_build_command(
             pass
         raise
     return process.returncode or 0, output.decode("utf-8", "replace")
-
-
-def _built_file(build: Path, names: tuple[str, ...]) -> Path | None:
-    for name in names:
-        matches = sorted(
-            path for path in build.rglob(name)
-            if (build / "bin") not in path.parents
-            and (build / "lib") not in path.parents
-        )
-        if matches:
-            return matches[0]
-    return None
 
 
 def _cmake_cache_home(cache: Path) -> str | None:
@@ -949,42 +937,29 @@ async def _run_build_job(job: _BuildJob) -> None:
 
 
 def _collect_artifacts(plan: _BuildPlan, output: str) -> dict[str, Any]:
-    build = plan.build
-    artifact_dir = plan.artifact_dir
-    injector = _built_file(build, ("qtc-inject.exe", "qtc-inject"))
-    library = _built_file(
-        build, ("qt_commander_inject.dll", "libqt_commander_inject.so")
+    installed = artifacts.install_from_build(
+        plan.build,
+        os_name=plan.os_name,
+        arch=plan.arch,
+        compiler=plan.toolchain,
+        compiler_version=plan.compiler_version,
+        qt_version=plan.qt_version,
+        qt_debug=plan.qt_debug,
+        build_type=plan.build_type,
     )
-    artifact_manifest = None
-    bin_dir = artifact_dir / "bin"
-    lib_dir = artifact_dir / "lib"
-    if injector and library:
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        lib_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(injector, bin_dir / injector.name)
-        shutil.copy2(library, lib_dir / library.name)
-        artifact_manifest = artifacts.write_manifest(
-            artifact_dir,
-            os_name=plan.os_name,
-            arch=plan.arch,
-            compiler=plan.toolchain,
-            compiler_version=plan.compiler_version,
-            qt_version=plan.qt_version,
-            qt_debug=plan.qt_debug,
-            build_type=plan.build_type,
-            injector=f"bin/{injector.name}",
-            library=f"lib/{library.name}",
-        )
+    injector = installed["injector"]
+    library = installed["library"]
+    manifest = installed["manifest"]
     return {
         "ok": True,
         "status": "ok",
         "build_id": plan.build_id,
-        "build_dir": str(build),
-        "artifact_dir": str(artifact_dir),
-        "injector": str(bin_dir / injector.name) if injector else None,
-        "library": str(lib_dir / library.name) if library else None,
-        "manifest": str(artifact_manifest) if artifact_manifest else None,
-        "warning": None if artifact_manifest else "build has no injector/library",
+        "build_dir": str(plan.build),
+        "artifact_dir": str(installed["artifact_dir"]),
+        "injector": str(injector) if injector else None,
+        "library": str(library) if library else None,
+        "manifest": str(manifest) if manifest else None,
+        "warning": None if manifest else "build has no injector/library",
         "qt_version": plan.qt_version,
         "toolchain": plan.toolchain,
         "compiler_version": plan.compiler_version,
@@ -995,7 +970,7 @@ def _collect_artifacts(plan: _BuildPlan, output: str) -> dict[str, Any]:
 
 def _qt_commander_source_dir() -> Path | None:
     """Return the qt-commander CMake project shipped next to this package."""
-    candidate = artifacts.ROOT.parent
+    candidate = Path(__file__).resolve().parents[1]
     return candidate if (candidate / "CMakeLists.txt").is_file() else None
 
 
@@ -1281,7 +1256,7 @@ async def qt_build(
     build = (
         Path(build_dir)
         if build_dir
-        else artifacts.ROOT.parent / "build" / (
+        else source.parent / "build" / (
             f"{os_name}-{arch}_"
             f"{artifacts.compiler_slug(toolchain, compiler_version)}_"
             f"{artifacts.qt_slug(version['version'], qt_debug)}"
