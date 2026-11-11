@@ -573,12 +573,15 @@ def loaded_injector(
     if manifest:
         qt = manifest.get("qt") or {}
         compiler = manifest.get("compiler") or {}
+        source = manifest.get("source") or {}
         result["artifact"] = {
             "qt_version": qt.get("version"),
             "qt_debug": qt.get("debug"),
             "toolchain": compiler.get("family"),
             "compiler_version": compiler.get("version"),
             "build_type": manifest.get("build_type"),
+            "version": source.get("version"),
+            "commit": source.get("commit"),
         }
         result["build_id"] = artifacts.manifest_build_id(manifest)
     try:
@@ -884,11 +887,14 @@ def target_info(pid: int | None = None,
     if expected.get("ok"):
         expected_dir = str(expected["directory"])
         manifest = expected["manifest"]
+        source = manifest.get("source") or {}
         result["expected_artifact"] = {
             "directory": expected_dir,
             "build_id": artifacts.manifest_build_id(manifest),
             "build_type": manifest.get("build_type"),
             "qt_debug": (manifest.get("qt") or {}).get("debug"),
+            "version": source.get("version"),
+            "commit": source.get("commit"),
         }
     else:
         result["expected_artifact"] = None

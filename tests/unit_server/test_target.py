@@ -199,7 +199,7 @@ def test_target_info_prefers_loaded_runtime_module(monkeypatch):
     assert info["detected_from"] == "module"
 
 
-def _make_release_artifact(tmp_path):
+def _make_release_artifact(tmp_path, source=None):
     from qt_commander import artifacts
 
     directory = artifacts.build_dir(
@@ -222,11 +222,33 @@ def _make_release_artifact(tmp_path):
         build_type="Release",
         injector="bin/qtc-inject.exe",
         library="lib/qt_commander_inject.dll",
+        source=source,
     )
     library = directory / "lib" / "qt_commander_inject.dll"
     library.parent.mkdir(parents=True, exist_ok=True)
     library.write_bytes(b"")
     return directory, library
+
+
+def test_loaded_injector_reports_source_version_and_commit(tmp_path, monkeypatch):
+    directory, library = _make_release_artifact(tmp_path, source={
+        "version": "0.9.0",
+        "commit": "3760124f514852d19880060f35e7088c5c37c2e0",
+        "describe": "v0.9.0",
+    })
+    monkeypatch.setattr(
+        psutil.Process,
+        "memory_maps",
+        lambda self: [types.SimpleNamespace(path=str(library))],
+    )
+    monkeypatch.setattr(
+        psutil.Process, "create_time",
+        lambda self: library.stat().st_mtime + 10.0,
+    )
+    info = target.loaded_injector(os.getpid(), expected_artifact=directory)
+    assert info["artifact"]["version"] == "0.9.0"
+    assert info["artifact"]["commit"].startswith("3760124f")
+    assert info["build_id"] == "qt5.15.2/msvc-x64/Release"
 
 
 def test_loaded_injector_reports_artifact(tmp_path, monkeypatch):

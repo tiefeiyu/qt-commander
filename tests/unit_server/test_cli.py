@@ -195,11 +195,16 @@ def test_doctor_pid_reports_restart_required(monkeypatch, capsys):
             "expected_artifact": {
                 "directory": "C:/artifacts/release",
                 "build_id": "qt5.15.2/msvc-x64/Release",
+                "version": "0.9.0",
+                "commit": "3760124abc",
             },
             "injection_state": "loaded",
             "restart_required": True,
-            "loaded_injector": {"loaded": True,
-                                "build_id": "qt5.15.2/msvc-x64/Release"},
+            "loaded_injector": {
+                "loaded": True,
+                "build_id": "qt5.15.2/msvc-x64/Release",
+                "artifact": {"version": "0.9.0", "commit": "3760124abc"},
+            },
         },
     )
     code = cli.main(["doctor", "--pid", "1234", "--json"])
@@ -208,6 +213,8 @@ def test_doctor_pid_reports_restart_required(monkeypatch, capsys):
     assert checks["target"]["status"] == "ok"
     assert "runtime 2.1.0" in checks["target"]["detail"]
     assert checks["target-artifact"]["status"] == "ok"
+    assert "built from 0.9.0" in checks["target-artifact"]["detail"]
+    assert "3760124a" in checks["target-artifact"]["detail"]
     assert checks["target-injector"]["status"] == "warn"
     assert "restart" in checks["target-injector"]["hint"]
     assert code == 0

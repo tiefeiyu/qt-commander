@@ -16,9 +16,9 @@ set(CMAKE_AUTOMOC ON)
 # no local segment, so the package and the runtime report the same string for
 # the same checkout. Neither side encodes a commit hash or a dirty tree: the
 # version must be reproducible, and commit identity belongs to the tag.
+find_package(Git QUIET)
 if(NOT QTC_VERSION)
     set(QTC_VERSION "0.0.0+unknown")
-    find_package(Git QUIET)
     if(Git_FOUND)
         execute_process(
             COMMAND "${GIT_EXECUTABLE}" describe --dirty --tags --long
@@ -58,7 +58,47 @@ if(NOT QTC_VERSION)
     endif()
 endif()
 set(QTC_VERSION "${QTC_VERSION}" CACHE STRING "Release version, from the git tag")
+
+# Commit identity is not part of the version (a version must be reproducible),
+# but an artifact should know exactly which checkout produced it. This is
+# written next to the build and copied into manifest.json by the packaging
+# tools, so `qt-commander doctor` can print it without a git checkout.
+set(QTC_COMMIT "" CACHE STRING "Commit the build came from")
+set(QTC_DESCRIBE "" CACHE STRING "git describe for the build")
+if(Git_FOUND)
+    if(NOT QTC_COMMIT)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _qtc_commit
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_qtc_commit)
+            set(QTC_COMMIT "${_qtc_commit}")
+        endif()
+    endif()
+    if(NOT QTC_DESCRIBE)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --long --dirty
+                    --always --match "v*"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _qtc_describe_full
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_qtc_describe_full)
+            set(QTC_DESCRIBE "${_qtc_describe_full}")
+        endif()
+    endif()
+endif()
+file(WRITE "${CMAKE_BINARY_DIR}/qtc-build-info.json"
+     "{\n  \"version\": \"${QTC_VERSION}\",\n  \"commit\": \"${QTC_COMMIT}\",\n  \"describe\": \"${QTC_DESCRIBE}\"\n}\n")
+
 message(STATUS "qt-commander version: ${QTC_VERSION}")
+if(QTC_COMMIT)
+    message(STATUS "qt-commander commit: ${QTC_DESCRIBE} (${QTC_COMMIT})")
+endif()
 
 set(QT_MAJOR_VERSION "5" CACHE STRING "Qt major version (5 or 6)")
 find_package(Qt${QT_MAJOR_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network)

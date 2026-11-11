@@ -23,6 +23,10 @@ below are pre-PyPI milestones and are kept for history.
   artifact layout (used by the release workflow).
 - `QT_COMMANDER_ARTIFACTS` selects the artifact root, so an installed wheel can
   keep artifacts in a per-user directory.
+- Artifact manifests record a `source` block (`version`, `commit`, `describe`)
+  taken from the CMake configure step, so an artifact is traceable to a commit
+  even when the version alone cannot distinguish dev builds. `qt_target_info`
+  and `doctor --pid` print it.
 
 ### Changed
 

@@ -255,3 +255,55 @@ def test_install_from_build_reports_missing_binaries(tmp_path):
     assert installed["manifest"] is None
     assert installed["injector"] is None
     assert installed["library"] is None
+
+
+def _install_release(tmp_path, *, build_info=None):
+    build = _fake_build(tmp_path)
+    if build_info is not None:
+        (build / artifacts.BUILD_INFO_FILE).write_text(
+            json.dumps(build_info), encoding="utf-8"
+        )
+    return artifacts.install_from_build(
+        build,
+        os_name="windows",
+        arch="x64",
+        compiler="msvc",
+        compiler_version="19.44.35207",
+        qt_version="5.15.2",
+        qt_debug=False,
+        build_type="Release",
+        root=tmp_path / "artifacts",
+    )
+
+
+def test_install_from_build_records_the_source_commit(tmp_path):
+    installed = _install_release(tmp_path, build_info={
+        "version": "0.8.1.dev14",
+        "commit": "3760124abc",
+        "describe": "v0.8.0-14-g3760124",
+    })
+    manifest = json.loads(installed["manifest"].read_text())
+    assert manifest["source"] == {
+        "version": "0.8.1.dev14",
+        "commit": "3760124abc",
+        "describe": "v0.8.0-14-g3760124",
+    }
+    assert installed["source"]["commit"] == "3760124abc"
+
+
+def test_install_from_build_without_build_info_has_no_source_key(tmp_path):
+    installed = _install_release(tmp_path)
+    manifest = json.loads(installed["manifest"].read_text())
+    assert "source" not in manifest
+    assert installed["source"] is None
+
+
+def test_read_build_info_ignores_empty_and_malformed_values(tmp_path):
+    (tmp_path / artifacts.BUILD_INFO_FILE).write_text(
+        json.dumps({"version": "1.0", "commit": "", "describe": None}),
+        encoding="utf-8",
+    )
+    assert artifacts.read_build_info(tmp_path) == {"version": "1.0"}
+    (tmp_path / artifacts.BUILD_INFO_FILE).write_text("{not json", encoding="utf-8")
+    assert artifacts.read_build_info(tmp_path) == {}
+    assert artifacts.read_build_info(tmp_path / "missing") == {}

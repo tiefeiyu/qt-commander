@@ -229,6 +229,10 @@ descriptor carries the compiled-in id instead (`qt5/MSVC-AMD64/Release`), so do
 not compare the two as plain strings; use
 `qt_target_info.loaded_injector.build_id` against `expected_artifact.build_id`.
 
+When the artifact was built from a git checkout, the manifest also carries a
+`source` block with the release `version` and the `commit` it came from;
+`qt_target_info` and `qt-commander doctor --pid` print it.
+
 `qt_attach(mode="injection")` matches the target's OS/architecture,
 compiler family and version, Qt version, and Qt debug/release against a
 manifest under `artifacts/`; it does not scan `build/` or pick the newest file.

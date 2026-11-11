@@ -159,6 +159,7 @@ def write_manifest(
     build_type: str,
     injector: str,
     library: str,
+    source: dict[str, Any] | None = None,
 ) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -179,6 +180,8 @@ def write_manifest(
         "injector": injector,
         "library": library,
     }
+    if source:
+        manifest["source"] = dict(source)
     path = directory / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return path
@@ -190,6 +193,29 @@ def read_manifest(directory: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+BUILD_INFO_FILE = "qtc-build-info.json"
+
+
+def read_build_info(build: Path) -> dict[str, Any]:
+    """Read the version/commit CMake recorded next to a build tree.
+
+    This is the authoritative statement of what was compiled: the same tag that
+    produced the package version produced ``QT_COMMANDER_VERSION``, and the
+    commit identifies the checkout when the version alone cannot (dev builds).
+    """
+    try:
+        data = json.loads((build / BUILD_INFO_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: data[key]
+        for key in ("version", "commit", "describe")
+        if isinstance(data.get(key), str) and data[key]
+    }
 
 
 _BUILT_INJECTORS = ("qtc-inject.exe", "qtc-inject")
@@ -238,6 +264,7 @@ def install_from_build(
     )
     injector = find_built_file(build, _BUILT_INJECTORS)
     library = find_built_file(build, _BUILT_LIBRARIES)
+    source = read_build_info(build) or None
     manifest = None
     injector_path = None
     library_path = None
@@ -261,6 +288,7 @@ def install_from_build(
             build_type=build_type,
             injector=f"bin/{injector.name}",
             library=f"lib/{library.name}",
+            source=source,
         )
     return {
         "artifact_dir": artifact_dir,
@@ -273,6 +301,7 @@ def install_from_build(
             arch=arch,
             build_type=build_type,
         ),
+        "source": source,
     }
 
 

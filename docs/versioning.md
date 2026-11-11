@@ -40,6 +40,27 @@ A modified tree is never treated as the release: tagging a dirty checkout yields
 `qt-commander doctor --pid` shows the runtime version next to the package
 version and they are directly comparable.
 
+## Commit identity lives in the artifact, not the version
+
+The version says *which release*, not *which commit* — that is deliberate, so it
+stays reproducible. An artifact records the commit separately:
+
+```json
+// <build>/qtc-build-info.json, written by CMake at configure time
+{
+  "version": "0.8.1.dev14",
+  "commit": "3760124f514852d19880060f35e7088c5c37c2e0",
+  "describe": "v0.8.0-14-g3760124"
+}
+```
+
+`qt_build` and `scripts/package_artifacts.py` copy that file into the artifact's
+`manifest.json` as the `source` block, and `qt_target_info` /
+`qt_commander doctor --pid` print it (`built from 0.8.1.dev14, 3760124f`). So a
+released artifact is traceable all the way back to a commit, and a development
+artifact is distinguishable from another one built at the same distance from the
+tag. Manifests produced before this existed simply have no `source` block.
+
 ## Releasing
 
 ```bash

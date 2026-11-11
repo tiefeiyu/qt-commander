@@ -121,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         "injector": str(installed["injector"]),
         "library": str(installed["library"]),
         "compiler_version": compiler_version,
+        "source": installed.get("source"),
     }
     root = args.root or artifacts.default_root()
     relative = installed["artifact_dir"].relative_to(root)

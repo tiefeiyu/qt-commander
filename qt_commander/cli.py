@@ -489,10 +489,13 @@ def _target_checks(pid: int) -> list[dict[str, Any]]:
     checks.append(_check("target", "ok", detail))
     expected = info.get("expected_artifact")
     if expected:
-        checks.append(_check(
-            "target-artifact", "ok",
-            f"{expected.get('build_id')} at {expected.get('directory')}",
-        ))
+        detail = f"{expected.get('build_id')} at {expected.get('directory')}"
+        if expected.get("version"):
+            detail += f" (built from {expected['version']}"
+            if expected.get("commit"):
+                detail += f", {expected['commit'][:8]}"
+            detail += ")"
+        checks.append(_check("target-artifact", "ok", detail))
     else:
         error = (info.get("expected_artifact_error") or {}).get("message", "")
         checks.append(_check(
@@ -503,10 +506,17 @@ def _target_checks(pid: int) -> list[dict[str, Any]]:
     loaded = info.get("loaded_injector") or {}
     if loaded.get("loaded"):
         status = "warn" if info.get("restart_required") else "ok"
+        detail = f"{state}: {loaded.get('build_id') or loaded.get('path')}"
+        artifact = loaded.get("artifact") or {}
+        if artifact.get("version"):
+            detail += f" (v{artifact['version']}"
+            if artifact.get("commit"):
+                detail += f", {artifact['commit'][:8]}"
+            detail += ")"
+        if info.get("restart_required"):
+            detail += ", restart required"
         checks.append(_check(
-            "target-injector", status,
-            f"{state}: {loaded.get('build_id') or loaded.get('path')}"
-            + (", restart required" if info.get("restart_required") else ""),
+            "target-injector", status, detail,
             "restart the target before injecting again"
             if info.get("restart_required") else None,
         ))
