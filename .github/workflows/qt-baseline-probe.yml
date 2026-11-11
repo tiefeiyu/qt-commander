@@ -1,20 +1,33 @@
 name: Qt baseline probe
 
-# One-off evidence run for the "compile against the oldest supported Qt"
-# proposal: build the injector against Qt 5.12.12 and load it into an
-# application linked against Qt 5.15.2. Qt promises binary compatibility
-# forward within a major version, so this must succeed; if it does, a single
-# 5.12-built artifact can serve 5.12-5.15 targets.
+# Measurement run for the "compile against the oldest supported Qt" proposal:
+# build the injector against an old Qt and load it into an application linked
+# against a newer Qt of the same major version. Qt promises binary
+# compatibility forward within a major version, so if the injector builds and
+# the ui is drivable, one artifact can serve a whole version range.
+#
+# The build step is the interesting half: it lists every API the runtime uses
+# that is newer than the candidate baseline.
 #
 # Manual only: this is a measurement, not a gate (yet). Linux is used because
 # aqtinstall ships gcc_64 builds for 5.12, while the Windows kit is msvc2017
 # and would need a matching toolset.
 on:
   workflow_dispatch:
+    inputs:
+      qt_old:
+        description: "Baseline Qt version to build the injector against"
+        default: "5.12.12"
+      qt_new:
+        description: "Newer Qt version for the target application"
+        default: "5.15.2"
+      major:
+        description: "Qt major version (5 or 6)"
+        default: "5"
 
 jobs:
   older-library-in-newer-app:
-    name: qt 5.12 injector / qt 5.15 target
+    name: qt ${{ inputs.qt_old }} injector / qt ${{ inputs.qt_new }} target
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,27 +43,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-x11-0
-      - name: Install Qt 5.12.12 (baseline) and Qt 5.15.2 (target)
+      - name: Install Qt ${{ inputs.qt_old }} (baseline) and ${{ inputs.qt_new }} (target)
         run: |
           python -m pip install --quiet aqtinstall
-          python -m aqt install-qt linux desktop 5.12.12 gcc_64 -O "$PWD/Qt-old"
-          python -m aqt install-qt linux desktop 5.15.2 gcc_64 -O "$PWD/Qt-new"
-          ls "$PWD/Qt-old/5.12.12/gcc_64/lib/libQt5Core.so.5"
-          ls "$PWD/Qt-new/5.15.2/gcc_64/lib/libQt5Core.so.5"
-      - name: Build the injector against Qt 5.12
+          python -m aqt install-qt linux desktop ${{ inputs.qt_old }} gcc_64 -O "$PWD/Qt-old"
+          python -m aqt install-qt linux desktop ${{ inputs.qt_new }} gcc_64 -O "$PWD/Qt-new"
+          ls "$PWD/Qt-old/${{ inputs.qt_old }}/gcc_64/lib"
+          ls "$PWD/Qt-new/${{ inputs.qt_new }}/gcc_64/lib"
+      - name: Build the injector against Qt ${{ inputs.qt_old }}
         run: |
           cmake -S . -B build/old -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DQT_MAJOR_VERSION=5 \
-            -DQt5_DIR="$PWD/Qt-old/5.12.12/gcc_64/lib/cmake/Qt5"
+            -DQT_MAJOR_VERSION=${{ inputs.major }} \
+            -DQt${{ inputs.major }}_DIR="$PWD/Qt-old/${{ inputs.qt_old }}/gcc_64/lib/cmake/Qt${{ inputs.major }}"
           cmake --build build/old --target qt_commander_inject
           find build/old -name 'libqt_commander_inject.so' -print
-      - name: Build the target application against Qt 5.15
+      - name: Build the target application against Qt ${{ inputs.qt_new }}
         run: |
           cmake -S tests/test-apps/injected -B build/app -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=5 \
-            -DQt5_DIR="$PWD/Qt-new/5.15.2/gcc_64/lib/cmake/Qt5"
+            -DCMAKE_BUILD_TYPE=Release -DQT_MAJOR_VERSION=${{ inputs.major }} \
+            -DQt${{ inputs.major }}_DIR="$PWD/Qt-new/${{ inputs.qt_new }}/gcc_64/lib/cmake/Qt${{ inputs.major }}"
           cmake --build build/app
-      - name: Launch the 5.15 app with the 5.12 injector
+      - name: Launch the newer app with the older injector
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
@@ -62,8 +75,8 @@ jobs:
           uv sync --quiet
           export QT_COMMANDER_RENDEZVOUS="$RUNNER_TEMP/rendezvous-compat"
           mkdir -p "$QT_COMMANDER_RENDEZVOUS"
-          export LD_LIBRARY_PATH="$PWD/Qt-new/5.15.2/gcc_64/lib:${LD_LIBRARY_PATH:-}"
-          uv run python scripts/launch_e2e.py \
+          export LD_LIBRARY_PATH="$PWD/Qt-new/${{ inputs.qt_new }}/gcc_64/lib:${LD_LIBRARY_PATH:-}"
+          uv run --no-sync python scripts/launch_e2e.py \
             --program build/app/qt-injected-test \
             --library "$library"
       - name: Show which Qt the target really loaded
@@ -72,6 +85,6 @@ jobs:
           set -euo pipefail
           library=$(find build/old -name 'libqt_commander_inject.so' | head -1)
           echo "=== injector build-time Qt ==="
-          grep -o 'Qt5Core\.so\.[0-9.]*' <(ldd "$library" || true) | head -3 || true
+          ldd "$library" | grep -i 'Qt5\|Qt6' || true
           echo "=== target app link ==="
-          ldd build/app/qt-injected-test | grep -i qt || true
+          ldd build/app/qt-injected-test | grep -i 'Qt5\|Qt6' || true
