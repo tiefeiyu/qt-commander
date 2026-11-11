@@ -61,6 +61,19 @@ if(NOT QTC_VERSION)
                     # HEAD is the tag: --long still appends -0-g<hash>.
                     set(QTC_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
                 endif()
+            elseif(_qtc_version MATCHES "^(.+)-([0-9]+)-g([0-9a-f]+)$")
+                # A tag with a pre-release segment (v0.9.1rc1) does not fit the
+                # plain X.Y.Z shape above. Split it the same way: the version is
+                # the tag itself when HEAD is tagged.
+                set(_qtc_tag "${CMAKE_MATCH_1}")
+                set(_qtc_distance "${CMAKE_MATCH_2}")
+                if(_qtc_distance EQUAL 0 AND NOT _qtc_dirty)
+                    set(QTC_VERSION "${_qtc_tag}")
+                else()
+                    # setuptools-scm would bump the candidate (rc1 -> rc2); a
+                    # dev suffix is valid PEP 440 and keeps the tag visible.
+                    set(QTC_VERSION "${_qtc_tag}.dev${_qtc_distance}")
+                endif()
             else()
                 set(QTC_VERSION "${_qtc_version}")
             endif()

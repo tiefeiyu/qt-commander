@@ -12,7 +12,34 @@ a heading here always matches a tag after the release.
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
-## [Unreleased] — planned as 0.9.0
+## [Unreleased]
+
+### Added
+
+- `scripts/release.py`: one command to cut a release (dirty/branch/tag checks,
+  unit tests, annotated tag, push, follow the workflow).
+- PyPI publishing through Trusted Publishing (OIDC): the `Release` workflow's
+  `pypi` job publishes tag pushes without any API token in the repository.
+
+### Fixed
+
+- The MSVC compiler probe always reported "unknown", so Windows artifacts were
+  named `msvc-unknown` and their manifests carried no compiler version. `cl`
+  prints its usage on stdout and the (localized) version banner on stderr, and
+  the banner can contain bytes that are invalid in the console code page; the
+  old single-stream `text=True` read lost it. Both streams are read and decoded
+  leniently.
+- Pre-release tags were compiled into the runtime as the raw `git describe`
+  string instead of the tag version. Tagged builds now report the tag itself; a
+  modified tree appends `.dev0`.
+- The release workflow could not create the GitHub release at all (the job has
+  no checkout, so `gh` could not infer the repository), and a manual
+  `workflow_dispatch` run rebuilt artifacts with a dev version. `GH_REPO`, an
+  optional `tag` input, `SETUPTOOLS_SCM_PRETEND_VERSION` and a quoted
+  `-DQTC_VERSION` fix both; the `pypi` job is restricted to tag refs so a manual
+  run can never publish a dev build.
+
+## [0.9.0] — 2026-11-11
 
 ### Added
 
@@ -47,13 +74,6 @@ below are pre-PyPI milestones and are kept for history.
 
 ### Fixed
 
-- The MSVC compiler probe always reported "unknown", so Windows artifacts were
-  named `msvc-unknown` and their manifests carried no compiler version. `cl`
-  prints its usage on stdout and the version banner on stderr, and the banner is
-  localized (bytes that are not valid UTF-8 on a Chinese console), so the old
-  `stdout or stderr` with `text=True` lost it. Both streams are now read and
-  decoded leniently. Artifacts published in `v0.9.0` still use `msvc-unknown`;
-  they match targets normally.
 - `src/library/agent.cpp` used `QFile::readLink()`, which exists in neither Qt 5
   nor Qt 6, so the POSIX scope probe never compiled on Linux or macOS. It now
   uses `QFile::symLinkTarget()`. CI caught this on its first real Linux build.
