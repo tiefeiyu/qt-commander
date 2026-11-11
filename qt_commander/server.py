@@ -15,12 +15,21 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import psutil
-from fastmcp import FastMCP
-from fastmcp.exceptions import ValidationError as ToolValidationError
-from fastmcp.server.middleware import Middleware
-from fastmcp.tools import ToolResult
-from fastmcp.utilities.types import Image
+# FastMCP asks PyPI for a newer version while printing its startup banner. That
+# request goes through httpx, which hard-fails when a SOCKS proxy is configured
+# without the socksio extra ("Using SOCKS proxy, but the 'socksio' package is
+# not installed"), taking the whole server down before it serves anything. A
+# local MCP server should not need network access to boot, so the check is off
+# by default; set FASTMCP_CHECK_FOR_UPDATES=stable to turn it back on. This has
+# to happen before fastmcp.settings is imported.
+os.environ.setdefault("FASTMCP_CHECK_FOR_UPDATES", "off")
+
+import psutil  # noqa: E402
+from fastmcp import FastMCP  # noqa: E402
+from fastmcp.exceptions import ValidationError as ToolValidationError  # noqa: E402
+from fastmcp.server.middleware import Middleware  # noqa: E402
+from fastmcp.tools import ToolResult  # noqa: E402
+from fastmcp.utilities.types import Image  # noqa: E402
 
 from . import artifacts, inject, launch as launcher, ops, target
 from .client import ClientClosed, ClientTimeout, RpcClient, RpcError
