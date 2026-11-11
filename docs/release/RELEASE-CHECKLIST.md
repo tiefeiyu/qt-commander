@@ -19,30 +19,42 @@ options that were rejected; no action needed before the release.
 - Enable Discussions; pin an issue that says "read QUICKSTART before filing"
 - Upload a social preview image (1200×630)
 
-## 3. PyPI
+## 3. PyPI (one-time setup for automatic publishing)
 
-Publishing uses Trusted Publishing; no API token is stored in the repository.
+Publishing uses **Trusted Publishing**: GitHub's OIDC identity is exchanged for
+a short-lived token, so no API token and no secret ever lives in the repository.
 
-1. Create the project on PyPI (or reserve the name) for `qt-commander-mcp`.
-2. Add a trusted publisher: owner `tiefeiyu`, repository `qt-commander`,
-   workflow `release.yml`, environment `pypi`.
-3. Create the `pypi` environment in the repository settings, then set the
-   repository variable `PYPI_PUBLISH=true`. Without that variable the release
-   workflow builds the wheel and skips publishing (so a tag never fails on a
-   missing publisher).
-4. Dry run locally first. Without the release tag the build reports a dev
-   version (`0.8.1.devN`, meaning N commits after the last tag); to preview the
-   exact release numbers, tag the candidate commit locally, build, then delete
-   the tag:
+1. Log in to PyPI as the project owner. 2FA is mandatory for uploading.
+2. Register the publisher for the existing project:
+   <https://pypi.org/manage/project/qt-commander-mcp/settings/publishing/>
+   → **Add a new publisher**, and fill in exactly:
+   - PyPI Project Name: `qt-commander-mcp`
+   - Owner: `tiefeiyu`
+   - Repository name: `qt-commander`
+   - Workflow name: `release.yml`
+   - Environment name: `pypi`
+   (For a brand-new project the same form is at
+   <https://pypi.org/manage/account/publishing/> as a *pending* publisher.)
+3. Turn the switch on: `gh variable set PYPI_PUBLISH --body true`.
+   The workflow job is also gated on `startsWith(github.ref, 'refs/tags/')`, so
+   a manual run from a branch can never publish a dev build.
+4. The `pypi` environment already exists in the repository (no protection
+   rules, so a tag publishes without an approval prompt).
+5. Verify after the next tag: <https://pypi.org/project/qt-commander-mcp/>
 
-   ```bash
-   git tag -a v0.9.0 -m "preview"
-   uv build                       # wheel is 0.9.0
-   git tag -d v0.9.0
-   uv venv .release-check
-   uv pip install --python .release-check/Scripts/python.exe dist/*.whl
-   .release-check/Scripts/qt-commander.exe doctor --json
-   ```
+To rehearse without consuming a real version, tag a release candidate
+(`v0.9.1rc1`): PyPI accepts rc versions and they sort below the final release.
+
+Local dry run before tagging (no PyPI involved):
+
+```bash
+git tag -a v0.9.0 -m "preview"
+uv build                       # wheel is 0.9.0
+git tag -d v0.9.0
+uv venv .release-check
+uv pip install --python .release-check/Scripts/python.exe dist/*.whl
+.release-check/Scripts/qt-commander.exe doctor --json
+```
 
 ## 4. First CI run
 
@@ -99,21 +111,42 @@ The tag *is* the version: nothing in the tree needs editing for a release, and
 CI derives both the wheel version and the compiled-in runtime version from it.
 
 ```bash
-git switch master
-git merge --no-ff feature/...
-git tag -a v0.9.0 -m "v0.9.0: ..."   # see the annotated style of earlier tags
-git push origin master v0.9.0
-gh release create v0.9.0 --generate-notes
+python scripts/release.py 0.9.1
 ```
 
-Sanity-check the tag before pushing: `git describe --tags --dirty` must print
-`v0.9.0` (not `v0.9.0-1-g...`), and `uv build` must produce
-`qt_commander_mcp-0.9.0-*`.
+The script refuses a dirty tree, a branch other than `master`, an existing tag
+(local or remote) and unpushed commits; it runs the unit tests, creates the
+annotated tag, pushes it, follows the `Release` workflow and prints the release
+and PyPI URLs. Add `--dry-run` to stop before tagging, `--no-wait` to skip the
+follow-up.
+
+Manual equivalent:
+
+```bash
+git switch master
+git tag -a v0.9.1 -m "v0.9.1: ..."   # see the annotated style of earlier tags
+git push origin v0.9.1
+```
+
+Sanity-check before pushing: `git describe --tags --dirty` must print the tag
+itself (not `v0.9.1-1-g...`), and `uv build` must produce
+`qt_commander_mcp-0.9.1-*`.
 
 The release workflow attaches the wheel, the sdist, one
 `qt-commander-artifacts-*.zip` per platform/Qt combination, and `SHA256SUMS`.
 Check that the archives unpack to `<os>-<arch>/...` at the top level, because
 `install-artifacts` rejects anything else.
+
+To repair the assets of an existing tag (a failed publish job, a build
+problem), run the workflow manually with the tag input:
+
+```bash
+gh workflow run release.yml --ref master -f tag=v0.9.0
+```
+
+That path pins `SETUPTOOLS_SCM_PRETEND_VERSION` and `-DQTC_VERSION` to the tag
+being republished, so it never produces dev-versioned artifacts, and the PyPI
+job is skipped because the ref is a branch.
 
 ## 6. Announce
 

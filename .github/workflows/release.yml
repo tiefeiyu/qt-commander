@@ -20,10 +20,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # git describe needs the tags for the version
+      - name: Resolve the version
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
+          echo "QTC_TAG=$tag" >> "$GITHUB_ENV"
+          echo "QTC_VERSION=${tag#v}" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv build
+      - name: Build
+        env:
+          # A manual run checks out a branch, where git describe would produce a
+          # dev version; pin it to the tag being republished instead.
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ env.QTC_VERSION }}
+        run: uv build
       - name: Verify the wheel installs and runs
         run: |
           uv venv .venv-check
@@ -66,6 +77,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # git describe needs the tags for the version
+      - name: Resolve the version
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
+          echo "QTC_TAG=$tag" >> "$GITHUB_ENV"
+          echo "QTC_VERSION=${tag#v}" >> "$GITHUB_ENV"
       - name: MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -86,6 +103,7 @@ jobs:
           cmake -S . -B build/rel -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DQT_MAJOR_VERSION=${{ matrix.qt_major }}
+          -DQTC_VERSION=${{ env.QTC_VERSION }}
       - name: Build
         run: cmake --build build/rel
       - name: Package artifact archive
@@ -160,10 +178,12 @@ jobs:
   # Trusted Publishing; no API token is stored in the repository. Set the
   # repository variable PYPI_PUBLISH=true once the publisher is configured on
   # PyPI, otherwise this job is a no-op (see docs/release/RELEASE-CHECKLIST.md).
+  # Tag pushes only: a manual dispatch from a branch builds a dev version and
+  # must never reach the index.
   pypi:
     name: PyPI
     needs: build-python
-    if: vars.PYPI_PUBLISH == 'true'
+    if: vars.PYPI_PUBLISH == 'true' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:
       name: pypi
