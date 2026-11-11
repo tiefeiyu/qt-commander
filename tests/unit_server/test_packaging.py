@@ -34,6 +34,8 @@ def test_package_script_writes_github_output(tmp_path):
             sys.executable,
             str(SCRIPT),
             "--build-dir", str(build),
+            # Pin the OS: the default is the build host, and CI runs on Linux.
+            "--os", "windows",
             "--qt-version", "5.15.2",
             "--toolchain", "msvc",
             "--compiler-version", "19.44.35207",
