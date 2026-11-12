@@ -1951,6 +1951,11 @@ async def qt_act(
     example when the click opened a modal dialog. Use qt_task with that id to
     collect the final result; the action has already been dispatched, so never
     retry it blindly.
+
+    ``observed`` describes the target after the action. If the action destroyed
+    it (a Close button that deletes its dialog), the result carries
+    ``observed={"id": <old id>, "gone": true}`` instead of a fresh state — that
+    is a successful action, not an error, and the id is stale from then on.
     """
     session = _session(session_id)
     if isinstance(session, dict):
