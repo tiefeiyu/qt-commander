@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDialog>
 #include <QLabel>
 #include <QMainWindow>
 #include <QPushButton>
@@ -33,8 +34,35 @@ int main(int argc, char** argv)
     QObject::connect(button, &QPushButton::clicked, status,
                      [status]() { status->setText(QStringLiteral("clicked")); });
 
+    // A dialog whose Close button destroys the dialog while the click is still
+    // being dispatched. This is the shape that used to crash the injected
+    // runtime: the action killed its own target, and the post-action
+    // observation then dereferenced the freed widget.
+    auto* openButton = new QPushButton(QStringLiteral("Open dialog"), central);
+    openButton->setObjectName(QStringLiteral("openDialogBtn"));
+    layout->addWidget(openButton);
+    QObject::connect(openButton, &QPushButton::clicked, &window,
+                     [&window, status]() {
+                         auto* dialog = new QDialog(&window);
+                         dialog->setObjectName(
+                             QStringLiteral("selfDestructDialog"));
+                         auto* dialogLayout = new QVBoxLayout(dialog);
+                         auto* closeButton =
+                             new QPushButton(QStringLiteral("Close"), dialog);
+                         closeButton->setObjectName(QStringLiteral("closeBtn"));
+                         dialogLayout->addWidget(closeButton);
+                         QObject::connect(
+                             closeButton, &QPushButton::clicked, dialog,
+                             [dialog, status]() {
+                                 status->setText(
+                                     QStringLiteral("dialog closed"));
+                                 dialog->deleteLater();
+                             });
+                         dialog->show();
+                     });
+
     window.setCentralWidget(central);
-    window.resize(360, 180);
+    window.resize(360, 220);
     window.show();
     return app.exec();
 }

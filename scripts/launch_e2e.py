@@ -35,6 +35,30 @@ def find_node(tree, object_name: str):
     return None
 
 
+async def _wait_for_node(session, object_name: str, timeout_s: float = 10.0):
+    """Poll the live tree until ``object_name`` appears (or time out)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        found = await ops.query(session, where={"object_name": object_name})
+        node = find_node(found.get("tree", []), object_name)
+        if node is not None:
+            return node
+        if loop.time() >= deadline:
+            return None
+        await asyncio.sleep(0.2)
+
+
+async def _click_by_name(session, object_name: str, **kwargs):
+    node = await _wait_for_node(session, object_name)
+    if node is None:
+        return None
+    result = await ops.act(session, node["id"], "click", **kwargs)
+    if result.get("ok") is False:
+        return None
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--program", required=True,
@@ -95,6 +119,46 @@ async def main() -> int:
                   file=sys.stderr)
             return 1
         print("verified: statusLabel =", status_node["props"]["text"])
+
+        # Regression: an action that destroys its own target. Clicking "Close"
+        # deletes the dialog (and the button) while the click is still being
+        # processed; the post-action observation used to dereference the freed
+        # widget and take the target process down with it.
+        opened = await _click_by_name(session, "openDialogBtn")
+        if opened is None:
+            print("openDialogBtn not found", file=sys.stderr)
+            return 1
+        close_node = await _wait_for_node(session, "closeBtn", timeout_s=10)
+        if close_node is None:
+            print("closeBtn did not appear", file=sys.stderr)
+            return 1
+        # settle_ms lets the deferred deletion run before the runtime observes
+        # the target, which is exactly the state that used to crash.
+        closed = await ops.act(session, close_node["id"], "click",
+                               settle_ms=100)
+        if closed.get("ok") is False:
+            print("close click failed:", json.dumps(closed), file=sys.stderr)
+            return 1
+        observed = closed.get("observed") or {}
+        if not observed.get("gone"):
+            print("expected observed.gone for a destroyed target:",
+                  json.dumps(observed), file=sys.stderr)
+            return 1
+
+        # The process must still be alive and serving: query again and check
+        # that the dialog is gone.
+        if await _wait_for_node(session, "closeBtn", timeout_s=5) is not None:
+            print("dialog survived its own destruction", file=sys.stderr)
+            return 1
+        status = await ops.query(
+            session, where={"object_name": "statusLabel"}, props=["text"]
+        )
+        status_node = find_node(status.get("tree", []), "statusLabel")
+        if status_node is None or status_node["props"]["text"] != "dialog closed":
+            print("target did not survive the self-destroying click:",
+                  status_node and status_node["props"], file=sys.stderr)
+            return 1
+        print("verified: self-destroying click did not crash the target")
 
         frame = await ops.screenshot(session, max_width=480)
         if not frame.binary.startswith(b"\x89PNG"):

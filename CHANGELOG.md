@@ -12,6 +12,20 @@ a heading here always matches a tag after the release.
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
+## [Unreleased]
+
+### Fixed
+
+- `qt_act` could take the target process down when the action destroyed its own
+  target, for example a Close button that deletes its dialog. The post-action
+  observation constructed a `QPointer` from the already-freed `QWidget*` (itself
+  undefined behaviour), and the click/key/drag dispatch loops reused the raw
+  pointer between events. The target's lifetime is now anchored in a `QPointer`
+  before anything is dispatched, every post-dispatch read goes through it, and a
+  destroyed target reports `observed: {id, gone: true}` instead of crashing.
+  Covered by the injected test app's self-destructing dialog and the
+  launch-time e2e.
+
 ## [0.9.1] — 2026-11-11
 
 ### Added

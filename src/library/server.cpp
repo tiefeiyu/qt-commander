@@ -95,6 +95,18 @@ bool qmlActionable(QQuickItem* item);
 
 constexpr const char* kLibraryVersion = QT_COMMANDER_VERSION;
 
+// Returned when the widget an action was aimed at no longer exists. Keeping the
+// answer in one place keeps the code from touching a freed pointer just to
+// phrase the error.
+QJsonObject staleTargetResult()
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
+    result.insert(QStringLiteral("message"),
+                  QStringLiteral("target was destroyed"));
+    return result;
+}
+
 #ifdef Q_OS_MACOS
 // Screen-level captures are gated behind the Screen Recording permission, and
 // grabbing without it can fault instead of returning a blank pixmap.
@@ -2216,6 +2228,13 @@ QJsonObject Server::act(const QJsonObject& params)
         return result;
     }
 
+    // An action can destroy its own target: a Close button that deletes its
+    // dialog, a "remove" entry that drops the row. Anchor the lifetime here,
+    // before anything is dispatched — a QPointer built from an already-freed
+    // QWidget* is itself undefined behaviour, so every read after a dispatch
+    // must go through this guard and never through the raw pointer.
+    const QPointer<QWidget> widgetGuard(widget);
+
     const QString action = params.value(QStringLiteral("action")).toString();
     const QString button =
         params.value(QStringLiteral("button")).toString(QStringLiteral("left"));
@@ -2252,10 +2271,9 @@ QJsonObject Server::act(const QJsonObject& params)
     const QJsonObject observedBefore = propertySnapshot(widget);
 
     auto sendClick = [&](QEvent::Type type) {
-        const QPointer<QWidget> guard(widget);
-        if (guard.isNull())
+        QWidget* current = widgetGuard.data();
+        if (!current)
             return;
-        QWidget* current = guard.data();
         QPoint local(current->width() / 2, current->height() / 2);
         const QJsonObject position =
             params.value(QStringLiteral("position")).toObject();
@@ -2279,7 +2297,7 @@ QJsonObject Server::act(const QJsonObject& params)
     if (action == QStringLiteral("click") ||
         action == QStringLiteral("dblclick")) {
         if (action == QStringLiteral("click")) {
-            if (auto* combo = qobject_cast<QComboBox*>(widget)) {
+            if (auto* combo = qobject_cast<QComboBox*>(widgetGuard.data())) {
                 combo->showPopup();
             } else {
                 sendClick(QEvent::MouseButtonPress);
@@ -2292,7 +2310,7 @@ QJsonObject Server::act(const QJsonObject& params)
             sendClick(QEvent::MouseButtonRelease);
         }
     } else if (action == QStringLiteral("type")) {
-        const QPointer<QWidget> guard(widget);
+        const QPointer<QWidget>& guard = widgetGuard;
         if (guard.isNull()) {
             QJsonObject result;
             result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
@@ -2354,11 +2372,13 @@ QJsonObject Server::act(const QJsonObject& params)
             resolved.insert(QStringLiteral("objectName"), current->objectName());
         }
     } else if (action == QStringLiteral("focus")) {
-        const QPointer<QWidget> guard(widget);
-        if (!guard.isNull())
-            guard->setFocus(Qt::OtherFocusReason);
+        if (QWidget* current = widgetGuard.data())
+            current->setFocus(Qt::OtherFocusReason);
     } else if (action == QStringLiteral("drag")) {
-        const QPoint start(widget->width() / 2, widget->height() / 2);
+        QWidget* current = widgetGuard.data();
+        if (!current)
+            return staleTargetResult();
+        const QPoint start(current->width() / 2, current->height() / 2);
         QPoint end = start;
         const QJsonValue to = params.value(QStringLiteral("to"));
         if (to.isObject() && to.toObject().contains(QStringLiteral("x")) &&
@@ -2374,26 +2394,32 @@ QJsonObject Server::act(const QJsonObject& params)
                 result.insert(QStringLiteral("message"), error);
                 return result;
             }
-            end = widget->mapFromGlobal(
+            end = current->mapFromGlobal(
                 destination->mapToGlobal(destination->rect().center()));
         }
-        const QPoint startGlobal = widget->mapToGlobal(start);
+        const QPoint startGlobal = current->mapToGlobal(start);
         const int steps = 5;
         QMouseEvent press(QEvent::MouseButtonPress, QPointF(start),
                           QPointF(startGlobal), Qt::LeftButton,
                           Qt::LeftButton, Qt::NoModifier);
-        QApplication::sendEvent(widget, &press);
+        QApplication::sendEvent(current, &press);
         for (int step = 1; step <= steps; ++step) {
-            const QPoint current = start + (end - start) * step / steps;
-            QMouseEvent move(QEvent::MouseMove, QPointF(current),
-                             QPointF(widget->mapToGlobal(current)),
+            current = widgetGuard.data();
+            if (!current)
+                break;
+            const QPoint point = start + (end - start) * step / steps;
+            QMouseEvent move(QEvent::MouseMove, QPointF(point),
+                             QPointF(current->mapToGlobal(point)),
                              Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-            QApplication::sendEvent(widget, &move);
+            QApplication::sendEvent(current, &move);
         }
-        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(end),
-                            QPointF(widget->mapToGlobal(end)),
-                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-        QApplication::sendEvent(widget, &release);
+        current = widgetGuard.data();
+        if (current) {
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(end),
+                                QPointF(current->mapToGlobal(end)),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(current, &release);
+        }
     } else if (action == QStringLiteral("key")) {
         const QJsonArray keys = params.value(QStringLiteral("keys")).toArray();
         if (keys.isEmpty()) {
@@ -2404,8 +2430,12 @@ QJsonObject Server::act(const QJsonObject& params)
                           QStringLiteral("key requires keys"));
             return result;
         }
-        widget->setFocus(Qt::OtherFocusReason);
+        if (QWidget* target = widgetGuard.data())
+            target->setFocus(Qt::OtherFocusReason);
         for (const QJsonValue& value : keys) {
+            QWidget* target = widgetGuard.data();
+            if (!target)
+                break;
             const QKeySequence sequence(value.toString());
             if (sequence.isEmpty())
                 continue;
@@ -2422,26 +2452,38 @@ QJsonObject Server::act(const QJsonObject& params)
                              Qt::MetaModifier))
                 text.clear();
             QKeyEvent press(QEvent::KeyPress, key, modifiers, text);
-            QApplication::sendEvent(widget, &press);
+            QApplication::sendEvent(target, &press);
+            target = widgetGuard.data();
+            if (!target)
+                break;
             QKeyEvent release(QEvent::KeyRelease, key, modifiers, text);
-            QApplication::sendEvent(widget, &release);
+            QApplication::sendEvent(target, &release);
         }
     } else if (action == QStringLiteral("scroll")) {
+        QWidget* target = widgetGuard.data();
+        if (!target)
+            return staleTargetResult();
         const QPoint angle(int(params.value(QStringLiteral("dx")).toDouble()),
                            int(params.value(QStringLiteral("dy")).toDouble()));
-        const QPoint local(widget->width() / 2, widget->height() / 2);
-        const QPoint global = widget->mapToGlobal(local);
+        const QPoint local(target->width() / 2, target->height() / 2);
+        const QPoint global = target->mapToGlobal(local);
         QWheelEvent event(QPointF(local), QPointF(global), QPoint(), angle,
                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
                           false);
-        QApplication::sendEvent(widget, &event);
+        QApplication::sendEvent(target, &event);
     } else if (action == QStringLiteral("hover")) {
-        const QPoint local(widget->width() / 2, widget->height() / 2);
+        QWidget* target = widgetGuard.data();
+        if (!target)
+            return staleTargetResult();
+        const QPoint local(target->width() / 2, target->height() / 2);
         QHoverEvent enter(QEvent::HoverEnter, QPointF(local),
                           QPointF(local));
-        QApplication::sendEvent(widget, &enter);
-        QHoverEvent move(QEvent::HoverMove, QPointF(local), QPointF(local));
-        QApplication::sendEvent(widget, &move);
+        QApplication::sendEvent(target, &enter);
+        target = widgetGuard.data();
+        if (target) {
+            QHoverEvent move(QEvent::HoverMove, QPointF(local), QPointF(local));
+            QApplication::sendEvent(target, &move);
+        }
     } else {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_IMPLEMENTED"));
@@ -2461,17 +2503,26 @@ QJsonObject Server::act(const QJsonObject& params)
     if (action == QStringLiteral("type"))
         result.insert(QStringLiteral("text_after"), typeTextAfter);
     result.insert(QStringLiteral("resolved"), resolved);
-    const QPointer<QWidget> observedGuard(widget);
-    if (params.value(QStringLiteral("observe")).toBool(true) &&
-        !observedGuard.isNull()) {
-        QWidget* observedWidget = observedGuard.data();
-        QJsonObject observed;
-        observed.insert(QStringLiteral("id"), idFor(observedWidget));
-        observed.insert(QStringLiteral("class"),
-                        QString::fromLatin1(observedWidget->metaObject()->className()));
-        observed.insert(QStringLiteral("objectName"), observedWidget->objectName());
-        addObservedChanges(&observed, observedWidget, observedBefore);
-        result.insert(QStringLiteral("observed"), observed);
+    if (params.value(QStringLiteral("observe")).toBool(true)) {
+        if (QWidget* observedWidget = widgetGuard.data()) {
+            QJsonObject observed;
+            observed.insert(QStringLiteral("id"), idFor(observedWidget));
+            observed.insert(
+                QStringLiteral("class"),
+                QString::fromLatin1(observedWidget->metaObject()->className()));
+            observed.insert(QStringLiteral("objectName"),
+                            observedWidget->objectName());
+            addObservedChanges(&observed, observedWidget, observedBefore);
+            result.insert(QStringLiteral("observed"), observed);
+        } else {
+            // The action destroyed its target (the common "Close" case). Say so
+            // instead of resolving the now-freed pointer again.
+            QJsonObject observed;
+            observed.insert(QStringLiteral("id"),
+                            resolved.value(QStringLiteral("id")));
+            observed.insert(QStringLiteral("gone"), true);
+            result.insert(QStringLiteral("observed"), observed);
+        }
     }
     return result;
 }
@@ -5231,19 +5282,32 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         const QJsonObject observedBefore = propertySnapshot(item);
         clickItem->forceActiveFocus();
         for (int i = 0; i < clicks; ++i) {
+            // A click can close the window it was sent to (a QML popup that
+            // destroys itself), so re-read the owner instead of reusing the
+            // pointer across events.
+            QQuickWindow* liveWindow =
+                qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+            if (!liveWindow)
+                break;
             QMouseEvent move(QEvent::MouseMove, point, point,
                              Qt::NoButton, Qt::NoButton, Qt::NoModifier);
-            QCoreApplication::sendEvent(window, &move);
+            QCoreApplication::sendEvent(liveWindow, &move);
             QCoreApplication::processEvents();
+            liveWindow = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+            if (!liveWindow)
+                break;
             QMouseEvent press(QEvent::MouseButtonPress, point, point,
                               Qt::LeftButton, Qt::LeftButton,
                               Qt::NoModifier);
-            QCoreApplication::sendEvent(window, &press);
+            QCoreApplication::sendEvent(liveWindow, &press);
             QCoreApplication::processEvents();
+            liveWindow = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+            if (!liveWindow)
+                break;
             QMouseEvent release(QEvent::MouseButtonRelease, point, point,
                                 Qt::LeftButton, Qt::NoButton,
                                 Qt::NoModifier);
-            QCoreApplication::sendEvent(window, &release);
+            QCoreApplication::sendEvent(liveWindow, &release);
             QCoreApplication::processEvents();
         }
         const int settledMs = settlePump(settleMs);
