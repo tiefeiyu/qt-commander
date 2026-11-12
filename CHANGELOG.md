@@ -12,7 +12,7 @@ a heading here always matches a tag after the release.
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
-## [Unreleased]
+## [0.9.2] — 2026-11-12
 
 ### Fixed
 
