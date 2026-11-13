@@ -218,11 +218,12 @@ props: { ...过滤器... }
 ```python
 qt_act(
     target,                  # locator 或 {id}
-    action,                  # click|dblclick|hover|type|key|focus|scroll|drag
+    action,                  # click|dblclick|press|release|context_menu|hover|type|key|focus|scroll|drag
     nth=0,
     position=None,           # 元素相对坐标；缺省中心
-    button="left",
-    modifiers=None,
+    button="left",           # left|right|middle|back|forward
+    modifiers=None,          # ["ctrl","shift","alt","meta"]
+    context_menu=False,      # click/dblclick 之后是否补 QContextMenuEvent
     text=None, clear=False, submit=False,   # type
     keys=None,               # key
     dx=0.0, dy=0.0,          # scroll
@@ -233,12 +234,16 @@ qt_act(
     settle_ms=0,
     wait_ms=1000,            # 超过后先回 running + task_id
     observe=True,
-    input="auto",            # auto|pointer|api（invoke，待定）
+    input="auto",            # 目前只实现 auto（合成事件）；pointer/api 未实现
     js_risk_ack=False,
 )
 ```
 
 - 单一工具；`select`/`check` 不单列，用 click 组合。
+- 鼠标事件按"真实事件"填满三元组：`button`、`buttons` 掩码、`modifiers`，并给出控件内/窗口内/屏幕三套坐标。
+- **右键不等于菜单**：`button="right"` 只发鼠标事件；要菜单请用 `context_menu=true` 或
+  `action="context_menu"`。模态菜单会让本次调用返回 `running` + `task_id`。
+- `press`/`release` 可分开执行，`press` 的结果带 `held_buttons`，`release` 清除对应位。
 - 动作在库内、GUI 线程、执行前解析 locator；strict：多个命中返回 `E_AMBIGUOUS` + 候选，不猜。
 - 默认真实 QPA 管线；`input:"api"` 只对虚拟节点的 `invoke` 生效（待定）。
 - `wait_ms` 到期时动作仍在目标里执行（典型是点击打开了模态框）：先回

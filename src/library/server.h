@@ -199,6 +199,9 @@ private:
     QSet<QString> staleIds_;
     QHash<QString, VirtualRef> virtuals_;
     QSet<QWidget*> virtualOwners_;
+    // Buttons still held down by an explicit press. Reported back to the agent
+    // and used to build the correct `buttons` mask on the matching release.
+    Qt::MouseButtons heldButtons_ = Qt::NoButton;
     QString lastResolveCode_;
     quint64 nextId_ = 1;
 };

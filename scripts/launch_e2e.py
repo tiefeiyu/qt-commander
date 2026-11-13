@@ -160,6 +160,65 @@ async def main() -> int:
             return 1
         print("verified: self-destroying click did not crash the target")
 
+        # Mouse surface: every button, modifiers, the explicit context menu and
+        # the hover transitions. MouseProbe records what it actually received,
+        # so these assertions are about the dispatched events, not our intent.
+        async def probe_text() -> str:
+            found = await ops.query(
+                session, where={"object_name": "mouseProbe"}, props=["text"]
+            )
+            node = find_node(found.get("tree", []), "mouseProbe")
+            return (node or {}).get("props", {}).get("text", "")
+
+        probe = await _wait_for_node(session, "mouseProbe")
+        if probe is None:
+            print("mouseProbe not found", file=sys.stderr)
+            return 1
+        probe_id = probe["id"]
+
+        await ops.act(session, probe_id, "click", button="right")
+        text = await probe_text()
+        if "btn=right" not in text or "menu" in text:
+            print("right click should not open a menu:", text, file=sys.stderr)
+            return 1
+
+        await ops.act(session, probe_id, "click", button="right",
+                      context_menu=True)
+        text = await probe_text()
+        if not text.startswith("menu"):
+            print("context_menu=true delivered no menu:", text, file=sys.stderr)
+            return 1
+
+        await ops.act(session, probe_id, "click", button="middle")
+        text = await probe_text()
+        if "btn=middle" not in text:
+            print("middle click not delivered:", text, file=sys.stderr)
+            return 1
+
+        await ops.act(session, probe_id, "click", modifiers=["ctrl"])
+        text = await probe_text()
+        if "mods=ctrl" not in text:
+            print("ctrl+click lost its modifier:", text, file=sys.stderr)
+            return 1
+
+        pressed = await ops.act(session, probe_id, "press", button="left")
+        if pressed.get("held_buttons") != ["left"]:
+            print("press did not report held_buttons:",
+                  pressed.get("held_buttons"), file=sys.stderr)
+            return 1
+        released = await ops.act(session, probe_id, "release", button="left")
+        if released.get("held_buttons"):
+            print("release did not clear held_buttons:",
+                  released.get("held_buttons"), file=sys.stderr)
+            return 1
+
+        await ops.act(session, probe_id, "hover")
+        text = await probe_text()
+        if "leave" not in text:
+            print("hover did not deliver enter/leave:", text, file=sys.stderr)
+            return 1
+        print("verified: buttons, modifiers, context menu, press/release, hover")
+
         frame = await ops.screenshot(session, max_width=480)
         if not frame.binary.startswith(b"\x89PNG"):
             print("screenshot is not a PNG", file=sys.stderr)

@@ -18,6 +18,9 @@ ACTIONS = frozenset(
     {
         "click",
         "dblclick",
+        "press",
+        "release",
+        "context_menu",
         "hover",
         "type",
         "key",
@@ -29,6 +32,8 @@ ACTIONS = frozenset(
         "drag",
     }
 )
+MOUSE_BUTTONS = frozenset({"left", "right", "middle", "back", "forward"})
+MODIFIERS = frozenset({"ctrl", "shift", "alt", "meta"})
 COORDS = frozenset({"parent", "screen"})
 ANNOTATE = frozenset({"none", "interactive", "matched", "all", "layers"})
 SCREENSHOT_MAX_BYTES = 6 * 1024 * 1024
@@ -268,6 +273,7 @@ async def act(
     geometry: Mapping[str, float] | None = None,
     button: str = "left",
     modifiers: list[str] | None = None,
+    context_menu: bool = False,
     text: str | None = None,
     clear: bool = False,
     submit: bool = False,
@@ -287,6 +293,9 @@ async def act(
 ) -> dict[str, Any]:
     _choice("action", action, ACTIONS)
     _choice("input", input, INPUT_MODES)
+    _choice("button", button, MOUSE_BUTTONS)
+    for modifier in modifiers or []:
+        _choice("modifier", modifier, MODIFIERS)
     expect_conditions = _expect_conditions(expect) if expect is not None else None
     if nth is not None and nth < 0:
         raise ValueError("nth must be >= 0")
@@ -305,6 +314,7 @@ async def act(
             "geometry": geometry,
             "button": button,
             "modifiers": modifiers,
+            "context_menu": context_menu,
             "text": text,
             "clear": clear,
             "submit": submit,

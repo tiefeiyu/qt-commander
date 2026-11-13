@@ -6,6 +6,8 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include "../common/mouse_probe.h"
+
 #ifdef Q_OS_LINUX
 #include <sys/prctl.h>
 #endif
@@ -33,6 +35,13 @@ int main(int argc, char** argv)
     layout->addWidget(status);
     QObject::connect(button, &QPushButton::clicked, status,
                      [status]() { status->setText(QStringLiteral("clicked")); });
+
+    // Records what the runtime dispatched: button, held mask, modifiers,
+    // hover transitions and context menus.
+    auto* probe = new MouseProbe(central);
+    probe->setObjectName(QStringLiteral("mouseProbe"));
+    probe->setText(QStringLiteral("none"));
+    layout->addWidget(probe);
 
     // A dialog whose Close button destroys the dialog while the click is still
     // being dispatched. This is the shape that used to crash the injected

@@ -33,6 +33,7 @@
 #include <QMetaMethod>
 #include <QMetaObject>
 #include <QPainter>
+#include <QContextMenuEvent>
 #include <QPen>
 #include <QMetaProperty>
 #include <QMetaType>
@@ -105,6 +106,203 @@ QJsonObject staleTargetResult()
     result.insert(QStringLiteral("message"),
                   QStringLiteral("target was destroyed"));
     return result;
+}
+
+// ---- mouse plumbing -------------------------------------------------------
+//
+// Qt's own event flow is: platform plugin -> QWindowSystemInterface -> QWindow
+// -> widget. We start one level lower (no native input), so everything the
+// platform would have filled in has to be filled in here: the button/buttons
+// triple, the modifiers, and the three coordinate systems (widget-local,
+// window/scene, screen). The helpers below keep that in one place so the four
+// dispatch paths (widget, window, QML item, virtual item) cannot drift.
+
+Qt::MouseButton mouseButtonFromName(const QString& name)
+{
+    if (name == QStringLiteral("left"))
+        return Qt::LeftButton;
+    if (name == QStringLiteral("right"))
+        return Qt::RightButton;
+    if (name == QStringLiteral("middle"))
+        return Qt::MiddleButton;
+    if (name == QStringLiteral("back"))
+        return Qt::BackButton;
+    if (name == QStringLiteral("forward"))
+        return Qt::ForwardButton;
+    return Qt::NoButton;
+}
+
+QString mouseButtonName(Qt::MouseButton button)
+{
+    switch (button) {
+    case Qt::LeftButton:
+        return QStringLiteral("left");
+    case Qt::RightButton:
+        return QStringLiteral("right");
+    case Qt::MiddleButton:
+        return QStringLiteral("middle");
+    case Qt::BackButton:
+        return QStringLiteral("back");
+    case Qt::ForwardButton:
+        return QStringLiteral("forward");
+    default:
+        return QStringLiteral("none");
+    }
+}
+
+// Returns false and sets `bad` when a name is unknown.
+bool mouseModifiersFromJson(const QJsonArray& values,
+                            Qt::KeyboardModifiers* out, QString* bad)
+{
+    Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+    for (const QJsonValue& value : values) {
+        const QString name = value.toString();
+        if (name == QStringLiteral("ctrl"))
+            modifiers |= Qt::ControlModifier;
+        else if (name == QStringLiteral("shift"))
+            modifiers |= Qt::ShiftModifier;
+        else if (name == QStringLiteral("alt"))
+            modifiers |= Qt::AltModifier;
+        else if (name == QStringLiteral("meta"))
+            modifiers |= Qt::MetaModifier;
+        else {
+            if (bad)
+                *bad = name;
+            return false;
+        }
+    }
+    *out = modifiers;
+    return true;
+}
+
+QJsonArray mouseModifiersToJson(Qt::KeyboardModifiers modifiers)
+{
+    QJsonArray values;
+    if (modifiers & Qt::ControlModifier)
+        values.append(QStringLiteral("ctrl"));
+    if (modifiers & Qt::ShiftModifier)
+        values.append(QStringLiteral("shift"));
+    if (modifiers & Qt::AltModifier)
+        values.append(QStringLiteral("alt"));
+    if (modifiers & Qt::MetaModifier)
+        values.append(QStringLiteral("meta"));
+    return values;
+}
+
+QJsonObject mouseSummary(Qt::MouseButton button, Qt::MouseButtons buttons,
+                         Qt::KeyboardModifiers modifiers)
+{
+    QJsonObject summary;
+    summary.insert(QStringLiteral("button"), mouseButtonName(button));
+    QJsonArray held;
+    const Qt::MouseButton all[] = {Qt::LeftButton, Qt::RightButton,
+                                   Qt::MiddleButton, Qt::BackButton,
+                                   Qt::ForwardButton};
+    for (Qt::MouseButton candidate : all) {
+        if (buttons & candidate)
+            held.append(mouseButtonName(candidate));
+    }
+    summary.insert(QStringLiteral("buttons"), held);
+    summary.insert(QStringLiteral("modifiers"),
+                   mouseModifiersToJson(modifiers));
+    return summary;
+}
+
+// Send one mouse event to a widget with every field a real event carries.
+void sendWidgetMouse(QWidget* widget, QEvent::Type type, const QPoint& local,
+                     Qt::MouseButton button, Qt::MouseButtons buttons,
+                     Qt::KeyboardModifiers modifiers)
+{
+    if (!widget)
+        return;
+    const QPointF localPos(local);
+    const QPointF screenPos(widget->mapToGlobal(local));
+    const QPointF windowPos(widget->mapTo(widget->window(), local));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QMouseEvent event(type, localPos, windowPos, screenPos, button, buttons,
+                      modifiers);
+#else
+    QMouseEvent event(type, localPos, windowPos, screenPos, button, buttons,
+                      modifiers, Qt::MouseEventSynthesizedByApplication);
+#endif
+    QApplication::sendEvent(widget, &event);
+}
+
+void sendWidgetContextMenu(QWidget* widget, const QPoint& local,
+                           Qt::KeyboardModifiers modifiers)
+{
+    if (!widget)
+        return;
+    QContextMenuEvent event(QContextMenuEvent::Mouse, local,
+                            widget->mapToGlobal(local), modifiers);
+    QApplication::sendEvent(widget, &event);
+}
+
+// QWindow (QML) delivery: positions are window/scene coordinates; the same
+// six-argument QMouseEvent constructor exists in Qt 5 and Qt 6.
+void sendWindowMouse(QWindow* window, QEvent::Type type, const QPointF& pos,
+                     Qt::MouseButton button, Qt::MouseButtons buttons,
+                     Qt::KeyboardModifiers modifiers)
+{
+    if (!window)
+        return;
+    const QPointF global = window->mapToGlobal(pos.toPoint());
+    QMouseEvent event(type, pos, global, button, buttons, modifiers);
+    QCoreApplication::sendEvent(window, &event);
+}
+
+// Enter/Leave and the hover family. Qt 5's enterEvent takes a plain QEvent;
+// Qt 6 introduced QEnterEvent carrying positions. Hover positions are relative
+// to the widget, so a single point is enough for both.
+void sendWidgetEnterLeave(QWidget* widget, const QPoint& local,
+                          Qt::KeyboardModifiers modifiers, bool entering)
+{
+    if (!widget)
+        return;
+    const QPointF localPos(local);
+    const QPointF screenPos(widget->mapToGlobal(local));
+    const QPointF windowPos(widget->mapTo(widget->window(), local));
+    if (entering) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        QEnterEvent enter(localPos, windowPos, screenPos);
+        QApplication::sendEvent(widget, &enter);
+        QHoverEvent hover(QEvent::HoverEnter, localPos, screenPos, localPos,
+                          modifiers);
+#else
+        QEvent enter(QEvent::Enter);
+        QApplication::sendEvent(widget, &enter);
+        QHoverEvent hover(QEvent::HoverEnter, localPos, localPos, modifiers);
+#endif
+        QApplication::sendEvent(widget, &hover);
+    } else {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        QHoverEvent hover(QEvent::HoverLeave, localPos, screenPos, localPos,
+                          modifiers);
+#else
+        QHoverEvent hover(QEvent::HoverLeave, localPos, localPos, modifiers);
+#endif
+        QApplication::sendEvent(widget, &hover);
+        QEvent leave(QEvent::Leave);
+        QApplication::sendEvent(widget, &leave);
+    }
+}
+
+void sendWidgetHoverMove(QWidget* widget, const QPoint& local,
+                         const QPoint& previous,
+                         Qt::KeyboardModifiers modifiers)
+{
+    if (!widget)
+        return;
+    const QPointF localPos(local);
+    const QPointF previousPos(previous);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPointF screenPos(widget->mapToGlobal(local));
+    QHoverEvent hover(QEvent::HoverMove, localPos, screenPos, previousPos,
+                      modifiers);
+#else
+    QHoverEvent hover(QEvent::HoverMove, localPos, previousPos, modifiers);
+#endif
+    QApplication::sendEvent(widget, &hover);
 }
 
 #ifdef Q_OS_MACOS
@@ -2062,24 +2260,48 @@ QJsonObject Server::act(const QJsonObject& params)
                                         .toDouble(),
                                     position.value(QStringLiteral("y"))
                                         .toDouble());
+                const QString windowButtonName =
+                    params.value(QStringLiteral("button"))
+                        .toString(QStringLiteral("left"));
+                const Qt::MouseButton windowButton =
+                    mouseButtonFromName(windowButtonName);
+                if (windowButton == Qt::NoButton) {
+                    QJsonObject result;
+                    result.insert(QStringLiteral("error"),
+                                  QStringLiteral("E_INVALID_ARGUMENT"));
+                    result.insert(QStringLiteral("message"),
+                                  QStringLiteral("unknown button %1; use left, "
+                                                 "right, middle, back or forward")
+                                      .arg(windowButtonName));
+                    return result;
+                }
+                Qt::KeyboardModifiers windowModifiers = Qt::NoModifier;
+                QString windowBadModifier;
+                if (!mouseModifiersFromJson(
+                        params.value(QStringLiteral("modifiers")).toArray(),
+                        &windowModifiers, &windowBadModifier)) {
+                    QJsonObject result;
+                    result.insert(QStringLiteral("error"),
+                                  QStringLiteral("E_INVALID_ARGUMENT"));
+                    result.insert(QStringLiteral("message"),
+                                  QStringLiteral("unknown modifier %1; use "
+                                                 "ctrl, shift, alt or meta")
+                                      .arg(windowBadModifier));
+                    return result;
+                }
                 window->requestActivate();
                 QCoreApplication::processEvents(
                     QEventLoop::ExcludeUserInputEvents);
                 const int clicks =
                     windowAction == QStringLiteral("dblclick") ? 2 : 1;
                 for (int i = 0; i < clicks; ++i) {
-                    QMouseEvent move(QEvent::MouseMove, point, point,
-                                     Qt::NoButton, Qt::NoButton,
-                                     Qt::NoModifier);
-                    QCoreApplication::sendEvent(window, &move);
-                    QMouseEvent press(QEvent::MouseButtonPress, point, point,
-                                      Qt::LeftButton, Qt::LeftButton,
-                                      Qt::NoModifier);
-                    QCoreApplication::sendEvent(window, &press);
-                    QMouseEvent release(QEvent::MouseButtonRelease, point,
-                                        point, Qt::LeftButton, Qt::NoButton,
-                                        Qt::NoModifier);
-                    QCoreApplication::sendEvent(window, &release);
+                    sendWindowMouse(window, QEvent::MouseMove, point,
+                                    Qt::NoButton, Qt::NoButton, windowModifiers);
+                    sendWindowMouse(window, QEvent::MouseButtonPress, point,
+                                    windowButton, windowButton,
+                                    windowModifiers);
+                    sendWindowMouse(window, QEvent::MouseButtonRelease, point,
+                                    windowButton, Qt::NoButton, windowModifiers);
                 }
                 QCoreApplication::processEvents();
                 const QRect geometry = window->geometry();
@@ -2236,22 +2458,34 @@ QJsonObject Server::act(const QJsonObject& params)
     const QPointer<QWidget> widgetGuard(widget);
 
     const QString action = params.value(QStringLiteral("action")).toString();
-    const QString button =
+    const QString requestedButton =
         params.value(QStringLiteral("button")).toString(QStringLiteral("left"));
-    if (button != QStringLiteral("left")) {
+    const Qt::MouseButton button = mouseButtonFromName(requestedButton);
+    if (button == Qt::NoButton) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
-                      QStringLiteral("only left-button actions are supported"));
+                      QStringLiteral("unknown button %1; use left, right, "
+                                     "middle, back or forward")
+                          .arg(requestedButton));
         return result;
     }
-    if (!params.value(QStringLiteral("modifiers")).toArray().isEmpty()) {
+    Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+    QString badModifier;
+    if (!mouseModifiersFromJson(params.value(QStringLiteral("modifiers")).toArray(),
+                                &modifiers, &badModifier)) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
-                      QStringLiteral("modifiers are not supported yet"));
+                      QStringLiteral("unknown modifier %1; use ctrl, shift, "
+                                     "alt or meta")
+                          .arg(badModifier));
         return result;
     }
+    // A right click is not a context menu: the menu is opt-in so a click has
+    // predictable side effects (and so a right-drag is not interrupted).
+    const bool wantContextMenu =
+        params.value(QStringLiteral("context_menu")).toBool(false);
     const QJsonValue expect = params.value(QStringLiteral("expect"));
     if (!expect.isNull() && !expect.isUndefined()) {
         QJsonObject result;
@@ -2270,10 +2504,12 @@ QJsonObject Server::act(const QJsonObject& params)
     resolved.insert(QStringLiteral("objectName"), widget->objectName());
     const QJsonObject observedBefore = propertySnapshot(widget);
 
-    auto sendClick = [&](QEvent::Type type) {
-        QWidget* current = widgetGuard.data();
-        if (!current)
-            return;
+    // Resolve the point the action targets: the widget's centre unless the
+    // caller gave a position, then the deepest child under it — that is what
+    // the platform layer would have picked, and letting Qt's own propagation
+    // take over from there keeps composite widgets behaving normally.
+    auto resolvePoint = [&](QWidget* current, QWidget** outWidget,
+                            QPoint* outLocal) {
         QPoint local(current->width() / 2, current->height() / 2);
         const QJsonObject position =
             params.value(QStringLiteral("position")).toObject();
@@ -2288,27 +2524,80 @@ QJsonObject Server::act(const QJsonObject& params)
                 local = child->mapFrom(current, local);
             }
         }
-        const QPoint global = target->mapToGlobal(local);
-        QMouseEvent event(type, QPointF(local), QPointF(global),
-                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-        QApplication::sendEvent(target, &event);
+        *outWidget = target;
+        *outLocal = local;
+    };
+
+    // Re-resolve on every event: a press can destroy the child it landed on.
+    auto dispatchMouse = [&](QEvent::Type type, Qt::MouseButton which,
+                             Qt::MouseButtons held) -> bool {
+        QWidget* current = widgetGuard.data();
+        if (!current)
+            return false;
+        QWidget* target = nullptr;
+        QPoint local;
+        resolvePoint(current, &target, &local);
+        sendWidgetMouse(target, type, local, which, held, modifiers);
+        return true;
+    };
+
+    auto dispatchContextMenu = [&]() -> bool {
+        QWidget* current = widgetGuard.data();
+        if (!current)
+            return false;
+        QWidget* target = nullptr;
+        QPoint local;
+        resolvePoint(current, &target, &local);
+        sendWidgetContextMenu(target, local, modifiers);
+        return true;
     };
 
     if (action == QStringLiteral("click") ||
         action == QStringLiteral("dblclick")) {
-        if (action == QStringLiteral("click")) {
-            if (auto* combo = qobject_cast<QComboBox*>(widgetGuard.data())) {
+        const bool doubleClick = action == QStringLiteral("dblclick");
+        QWidget* current = widgetGuard.data();
+        if (!current)
+            return staleTargetResult();
+        const Qt::MouseButtons before = heldButtons_;
+        if (!doubleClick) {
+            if (auto* combo = qobject_cast<QComboBox*>(current)) {
                 combo->showPopup();
-            } else {
-                sendClick(QEvent::MouseButtonPress);
-                sendClick(QEvent::MouseButtonRelease);
+                QJsonObject result;
+                result.insert(QStringLiteral("ok"), true);
+                result.insert(QStringLiteral("action"), action);
+                result.insert(QStringLiteral("dispatched"), true);
+                result.insert(QStringLiteral("mouse"),
+                              mouseSummary(button, before, modifiers));
+                result.insert(QStringLiteral("resolved"), resolved);
+                return result;
             }
-        } else {
-            sendClick(QEvent::MouseButtonPress);
-            sendClick(QEvent::MouseButtonRelease);
-            sendClick(QEvent::MouseButtonDblClick);
-            sendClick(QEvent::MouseButtonRelease);
         }
+        if (!dispatchMouse(QEvent::MouseButtonPress, button, before | button))
+            return staleTargetResult();
+        if (!dispatchMouse(QEvent::MouseButtonRelease, button, before))
+            return staleTargetResult();
+        if (doubleClick) {
+            if (!dispatchMouse(QEvent::MouseButtonDblClick, button,
+                               before | button))
+                return staleTargetResult();
+            if (!dispatchMouse(QEvent::MouseButtonRelease, button, before))
+                return staleTargetResult();
+        }
+        if (wantContextMenu && !dispatchContextMenu())
+            return staleTargetResult();
+    } else if (action == QStringLiteral("press")) {
+        if (!dispatchMouse(QEvent::MouseButtonPress, button,
+                           heldButtons_ | button))
+            return staleTargetResult();
+        heldButtons_ |= button;
+    } else if (action == QStringLiteral("release")) {
+        if (!dispatchMouse(QEvent::MouseButtonRelease, button,
+                           heldButtons_ & ~Qt::MouseButtons(button)))
+            return staleTargetResult();
+        heldButtons_ &= ~Qt::MouseButtons(button);
+    } else if (action == QStringLiteral("context_menu")) {
+        if (!dispatchContextMenu())
+            return staleTargetResult();
     } else if (action == QStringLiteral("type")) {
         const QPointer<QWidget>& guard = widgetGuard;
         if (guard.isNull()) {
@@ -2399,26 +2688,20 @@ QJsonObject Server::act(const QJsonObject& params)
         }
         const QPoint startGlobal = current->mapToGlobal(start);
         const int steps = 5;
-        QMouseEvent press(QEvent::MouseButtonPress, QPointF(start),
-                          QPointF(startGlobal), Qt::LeftButton,
-                          Qt::LeftButton, Qt::NoModifier);
-        QApplication::sendEvent(current, &press);
+        sendWidgetMouse(current, QEvent::MouseButtonPress, start, button,
+                        button, modifiers);
         for (int step = 1; step <= steps; ++step) {
             current = widgetGuard.data();
             if (!current)
                 break;
             const QPoint point = start + (end - start) * step / steps;
-            QMouseEvent move(QEvent::MouseMove, QPointF(point),
-                             QPointF(current->mapToGlobal(point)),
-                             Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-            QApplication::sendEvent(current, &move);
+            sendWidgetMouse(current, QEvent::MouseMove, point, Qt::NoButton,
+                            button, modifiers);
         }
         current = widgetGuard.data();
         if (current) {
-            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(end),
-                                QPointF(current->mapToGlobal(end)),
-                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-            QApplication::sendEvent(current, &release);
+            sendWidgetMouse(current, QEvent::MouseButtonRelease, end, button,
+                            Qt::NoButton, modifiers);
         }
     } else if (action == QStringLiteral("key")) {
         const QJsonArray keys = params.value(QStringLiteral("keys")).toArray();
@@ -2467,23 +2750,34 @@ QJsonObject Server::act(const QJsonObject& params)
                            int(params.value(QStringLiteral("dy")).toDouble()));
         const QPoint local(target->width() / 2, target->height() / 2);
         const QPoint global = target->mapToGlobal(local);
+        // pixelDelta stays empty: callers pass angle deltas, and widgets that
+        // prefer pixels (touchpads) fall back to angleDelta.
         QWheelEvent event(QPointF(local), QPointF(global), QPoint(), angle,
-                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
-                          false);
+                          Qt::NoButton, modifiers, Qt::NoScrollPhase, false);
         QApplication::sendEvent(target, &event);
     } else if (action == QStringLiteral("hover")) {
         QWidget* target = widgetGuard.data();
         if (!target)
             return staleTargetResult();
         const QPoint local(target->width() / 2, target->height() / 2);
-        QHoverEvent enter(QEvent::HoverEnter, QPointF(local),
-                          QPointF(local));
-        QApplication::sendEvent(target, &enter);
+        const QPoint previous =
+            params.value(QStringLiteral("position")).toObject().isEmpty()
+                ? local
+                : local;
+        // Enter/Leave are what widgets override for hover feedback; the
+        // QHoverEvent family is what styles and tooltips read. A widget with
+        // setMouseTracking(true) additionally expects a plain MouseMove, which
+        // is what a real pointer sends while it moves over the widget.
+        sendWidgetEnterLeave(target, local, modifiers, true);
         target = widgetGuard.data();
         if (target) {
-            QHoverEvent move(QEvent::HoverMove, QPointF(local), QPointF(local));
-            QApplication::sendEvent(target, &move);
+            sendWidgetHoverMove(target, local, previous, modifiers);
+            sendWidgetMouse(target, QEvent::MouseMove, local, Qt::NoButton,
+                            Qt::NoButton, modifiers);
         }
+        target = widgetGuard.data();
+        if (target)
+            sendWidgetEnterLeave(target, local, modifiers, false);
     } else {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_IMPLEMENTED"));
@@ -2503,6 +2797,26 @@ QJsonObject Server::act(const QJsonObject& params)
     if (action == QStringLiteral("type"))
         result.insert(QStringLiteral("text_after"), typeTextAfter);
     result.insert(QStringLiteral("resolved"), resolved);
+    result.insert(QStringLiteral("mouse"),
+                  mouseSummary(button, heldButtons_, modifiers));
+    QJsonArray held;
+    const Qt::MouseButton allButtons[] = {Qt::LeftButton, Qt::RightButton,
+                                          Qt::MiddleButton, Qt::BackButton,
+                                          Qt::ForwardButton};
+    for (Qt::MouseButton candidate : allButtons) {
+        if (heldButtons_ & candidate)
+            held.append(mouseButtonName(candidate));
+    }
+    result.insert(QStringLiteral("held_buttons"), held);
+    if (wantContextMenu &&
+        (action == QStringLiteral("click") ||
+         action == QStringLiteral("dblclick") ||
+         action == QStringLiteral("context_menu"))) {
+        QJsonObject contextMenu;
+        contextMenu.insert(QStringLiteral("sent"), true);
+        contextMenu.insert(QStringLiteral("reason"), QStringLiteral("mouse"));
+        result.insert(QStringLiteral("context_menu"), contextMenu);
+    }
     if (params.value(QStringLiteral("observe")).toBool(true)) {
         if (QWidget* observedWidget = widgetGuard.data()) {
             QJsonObject observed;
@@ -5119,25 +5433,43 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
                       QStringLiteral("expect is not implemented for virtual items"));
         return result;
     }
-    const QString button =
+    const QString requestedButton =
         params.value(QStringLiteral("button")).toString(QStringLiteral("left"));
-    if (button != QStringLiteral("left") ||
-        !params.value(QStringLiteral("modifiers")).toArray().isEmpty()) {
+    const Qt::MouseButton button = mouseButtonFromName(requestedButton);
+    if (button == Qt::NoButton) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
         result.insert(QStringLiteral("message"),
-                      QStringLiteral("virtual items only support plain left clicks"));
+                      QStringLiteral("unknown button %1; use left, right, "
+                                     "middle, back or forward")
+                          .arg(requestedButton));
         return result;
     }
+    Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+    QString badModifier;
+    if (!mouseModifiersFromJson(params.value(QStringLiteral("modifiers")).toArray(),
+                                &modifiers, &badModifier)) {
+        QJsonObject result;
+        result.insert(QStringLiteral("error"), QStringLiteral("E_INVALID_ARGUMENT"));
+        result.insert(QStringLiteral("message"),
+                      QStringLiteral("unknown modifier %1; use ctrl, shift, "
+                                     "alt or meta")
+                          .arg(badModifier));
+        return result;
+    }
+    const bool wantContextMenu =
+        params.value(QStringLiteral("context_menu")).toBool(false);
     const QString action = params.value(QStringLiteral("action")).toString();
     if (action != QStringLiteral("click") &&
         action != QStringLiteral("dblclick") &&
+        action != QStringLiteral("context_menu") &&
         action != QStringLiteral("key") &&
         action != QStringLiteral("type")) {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_IMPLEMENTED"));
         result.insert(QStringLiteral("message"),
-                      QStringLiteral("only click/dblclick/key/type work on virtual items"));
+                      QStringLiteral("only click/dblclick/context_menu/key/type "
+                                     "work on virtual items"));
         return result;
     }
     const int settleMs = params.value(QStringLiteral("settle_ms")).toInt(0);
@@ -5289,25 +5621,20 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
                 qobject_cast<QQuickWindow*>(ref.windowOwner.data());
             if (!liveWindow)
                 break;
-            QMouseEvent move(QEvent::MouseMove, point, point,
-                             Qt::NoButton, Qt::NoButton, Qt::NoModifier);
-            QCoreApplication::sendEvent(liveWindow, &move);
+            sendWindowMouse(liveWindow, QEvent::MouseMove, point,
+                            Qt::NoButton, Qt::NoButton, modifiers);
             QCoreApplication::processEvents();
             liveWindow = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
             if (!liveWindow)
                 break;
-            QMouseEvent press(QEvent::MouseButtonPress, point, point,
-                              Qt::LeftButton, Qt::LeftButton,
-                              Qt::NoModifier);
-            QCoreApplication::sendEvent(liveWindow, &press);
+            sendWindowMouse(liveWindow, QEvent::MouseButtonPress, point,
+                            button, button, modifiers);
             QCoreApplication::processEvents();
             liveWindow = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
             if (!liveWindow)
                 break;
-            QMouseEvent release(QEvent::MouseButtonRelease, point, point,
-                                Qt::LeftButton, Qt::NoButton,
-                                Qt::NoModifier);
-            QCoreApplication::sendEvent(liveWindow, &release);
+            sendWindowMouse(liveWindow, QEvent::MouseButtonRelease, point,
+                            button, Qt::NoButton, modifiers);
             QCoreApplication::processEvents();
         }
         const int settledMs = settlePump(settleMs);
@@ -5425,26 +5752,26 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
     const QPoint global = target->mapToGlobal(local);
     const QJsonObject observedBefore = propertySnapshot(target);
     const QPointer<QWidget> targetGuard(target);
-    QMouseEvent press(QEvent::MouseButtonPress, QPointF(local), QPointF(global),
-                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    QApplication::sendEvent(targetGuard.data(), &press);
-    if (!targetGuard.isNull()) {
-        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(local),
-                            QPointF(global), Qt::LeftButton, Qt::NoButton,
-                            Qt::NoModifier);
-        QApplication::sendEvent(targetGuard.data(), &release);
-    }
-    if (action == QStringLiteral("dblclick") && !targetGuard.isNull()) {
-        QMouseEvent dbl(QEvent::MouseButtonDblClick, QPointF(local),
-                        QPointF(global), Qt::LeftButton, Qt::LeftButton,
-                        Qt::NoModifier);
-        QApplication::sendEvent(targetGuard.data(), &dbl);
+    if (action == QStringLiteral("context_menu")) {
+        sendWidgetContextMenu(targetGuard.data(), local, modifiers);
+    } else {
+        sendWidgetMouse(targetGuard.data(), QEvent::MouseButtonPress, local,
+                        button, button, modifiers);
         if (!targetGuard.isNull()) {
-            QMouseEvent lastRelease(QEvent::MouseButtonRelease, QPointF(local),
-                                    QPointF(global), Qt::LeftButton,
-                                    Qt::NoButton, Qt::NoModifier);
-            QApplication::sendEvent(targetGuard.data(), &lastRelease);
+            sendWidgetMouse(targetGuard.data(), QEvent::MouseButtonRelease,
+                            local, button, Qt::NoButton, modifiers);
         }
+        if (action == QStringLiteral("dblclick") && !targetGuard.isNull()) {
+            sendWidgetMouse(targetGuard.data(), QEvent::MouseButtonDblClick,
+                            local, button, button, modifiers);
+            if (!targetGuard.isNull()) {
+                sendWidgetMouse(targetGuard.data(),
+                                QEvent::MouseButtonRelease, local, button,
+                                Qt::NoButton, modifiers);
+            }
+        }
+        if (wantContextMenu && !targetGuard.isNull())
+            sendWidgetContextMenu(targetGuard.data(), local, modifiers);
     }
 
     const int settledMs = settlePump(settleMs);

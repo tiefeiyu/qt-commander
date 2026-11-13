@@ -12,6 +12,28 @@ a heading here always matches a tag after the release.
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
+## [Unreleased]
+
+### Added
+
+- Full mouse surface in `qt_act`: `button=left|right|middle|back|forward` and
+  `modifiers=["ctrl","shift","alt","meta"]` on all four dispatch paths (widget,
+  window, QML item, virtual item). New actions `press`, `release` and
+  `context_menu`; `press` reports `held_buttons` and the matching `release`
+  clears it.
+- `context_menu=true` on a click sends a `QContextMenuEvent` to the widget under
+  the pointer. A plain right-click stays a click, so menus are explicit and a
+  right-drag is not interrupted.
+- Hover now also emits `Enter`/`Leave` and a plain mouse-move, so widgets with
+  `setMouseTracking(true)` and custom `enterEvent`/`leaveEvent` see what a real
+  pointer produces; wheel events carry their modifiers.
+
+### Changed
+
+- Synthetic mouse events now fill in the window/scene position as well as the
+  widget and screen positions, so widgets reading `windowPos()` /
+  `scenePosition()` get correct values instead of the widget-local point.
+
 ## [0.9.2] — 2026-11-12
 
 ### Fixed

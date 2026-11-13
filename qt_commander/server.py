@@ -90,6 +90,10 @@ Critical rules:
   A Popup in the main window Overlay is not a separate qt_windows entry.
 - qt_call only invokes slots/Q_INVOKABLE; property setters use qt_set. Use
   qt_methods and signature= for overloads.
+- A right-click does not open a context menu: qt_act(button="right") only sends
+  the mouse events. Call qt_act(action="context_menu") (or pass
+  context_menu=true) to send the QContextMenuEvent; a modal menu then returns
+  running + task_id, so query qt_windows and pick the item with qt_act.
 - Injection: qt_attach failures carry error.reason and error.details
   (target snapshot, chosen artifact, loaded injector, expected artifact).
   If error.restart_required is true the target process must be restarted;
@@ -1919,6 +1923,7 @@ async def qt_act(
     geometry: dict[str, float] | None = None,
     button: str = "left",
     modifiers: list[str] | None = None,
+    context_menu: bool = False,
     text: str | None = None,
     clear: bool = False,
     submit: bool = False,
@@ -1939,12 +1944,25 @@ async def qt_act(
     """Dispatch one real input or window action.
 
     Use for user-like input; use qt_set for property writes and qt_call for
-    slots. Actions: click/dblclick/hover/type/focus/key/scroll/drag, plus
-    minimize/restore/set_geometry for window targets (set_geometry takes
-    ``geometry={x,y,w,h}``). ``target`` can be a node id, a string QML id, or
-    an object with id/qml_id/text/class/objectName; use ``nth`` for
-    ambiguity. Hidden targets require ``include_hidden=true``. ``expect`` verifies a
-    declarative state; ``type`` accepts clear/submit.
+    slots. Actions: click/dblclick/press/release/context_menu/hover/type/
+    focus/key/scroll/drag, plus minimize/restore/set_geometry for window
+    targets (set_geometry takes ``geometry={x,y,w,h}``). ``target`` can be a
+    node id, a string QML id, or an object with
+    id/qml_id/text/class/objectName; use ``nth`` for ambiguity. Hidden targets
+    require ``include_hidden=true``. ``expect`` verifies a declarative state;
+    ``type`` accepts clear/submit.
+
+    ``button`` selects left (default), right, middle, back or forward and
+    applies to click/dblclick/press/release/drag. ``modifiers`` is a list of
+    ctrl/shift/alt/meta applied to the dispatched mouse, wheel and key events.
+
+    A right-click does *not* open a context menu by default: it dispatches the
+    mouse events only. When the application should show its menu, pass
+    ``context_menu=true`` to the click or call
+    ``qt_act(action="context_menu")``, which sends a QContextMenuEvent at the
+    position without any mouse events. A menu that runs modally makes this call
+    return ``{"state": "running", "task_id": ...}``; query ``qt_windows`` for
+    the popup and use qt_act to choose an item.
 
     ``wait_ms`` (default 1000) is how long the call may stay blocked inside the
     target before it returns ``{"state": "running", "task_id": ...}`` — for
@@ -1970,6 +1988,7 @@ async def qt_act(
             geometry=geometry,
             button=button,
             modifiers=modifiers,
+            context_menu=context_menu,
             text=text,
             clear=clear,
             submit=submit,
