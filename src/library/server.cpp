@@ -251,56 +251,49 @@ void sendWindowMouse(QWindow* window, QEvent::Type type, const QPointF& pos,
     QCoreApplication::sendEvent(window, &event);
 }
 
-// Enter/Leave and the hover family. Qt 5's enterEvent takes a plain QEvent;
-// Qt 6 introduced QEnterEvent carrying positions. Hover positions are relative
-// to the widget, so a single point is enough for both.
-void sendWidgetEnterLeave(QWidget* widget, const QPoint& local,
-                          Qt::KeyboardModifiers modifiers, bool entering)
+// Enter/Leave and the hover family, one event per call so the caller can check
+// the widget's lifetime between them: a hover handler may destroy the widget it
+// was delivered to (a popup that closes on Enter), and Qt dereferences the
+// receiver before any handler runs. Qt 5's enterEvent takes a plain QEvent; Qt 6
+// introduced QEnterEvent carrying positions. Hover positions are relative to
+// the widget, so a single point is enough for both.
+void sendWidgetEnterEvent(QWidget* widget, const QPoint& local)
 {
     if (!widget)
         return;
     const QPointF localPos(local);
-    const QPointF screenPos(widget->mapToGlobal(local));
-    const QPointF windowPos(widget->mapTo(widget->window(), local));
-    if (entering) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        QEnterEvent enter(localPos, windowPos, screenPos);
-        QApplication::sendEvent(widget, &enter);
-        QHoverEvent hover(QEvent::HoverEnter, localPos, screenPos, localPos,
-                          modifiers);
+    QEnterEvent enter(localPos, QPointF(widget->mapTo(widget->window(), local)),
+                      QPointF(widget->mapToGlobal(local)));
+    QApplication::sendEvent(widget, &enter);
 #else
-        QEvent enter(QEvent::Enter);
-        QApplication::sendEvent(widget, &enter);
-        QHoverEvent hover(QEvent::HoverEnter, localPos, localPos, modifiers);
+    QEvent enter(QEvent::Enter);
+    QApplication::sendEvent(widget, &enter);
 #endif
-        QApplication::sendEvent(widget, &hover);
-    } else {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        QHoverEvent hover(QEvent::HoverLeave, localPos, screenPos, localPos,
-                          modifiers);
-#else
-        QHoverEvent hover(QEvent::HoverLeave, localPos, localPos, modifiers);
-#endif
-        QApplication::sendEvent(widget, &hover);
-        QEvent leave(QEvent::Leave);
-        QApplication::sendEvent(widget, &leave);
-    }
 }
 
-void sendWidgetHoverMove(QWidget* widget, const QPoint& local,
-                         const QPoint& previous,
-                         Qt::KeyboardModifiers modifiers)
+void sendWidgetLeaveEvent(QWidget* widget)
+{
+    if (!widget)
+        return;
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(widget, &leave);
+}
+
+// One member of the QHoverEvent family: HoverEnter, HoverMove or HoverLeave.
+void sendWidgetHoverEvent(QWidget* widget, QEvent::Type type,
+                          const QPoint& local, const QPoint& previous,
+                          Qt::KeyboardModifiers modifiers)
 {
     if (!widget)
         return;
     const QPointF localPos(local);
     const QPointF previousPos(previous);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-    const QPointF screenPos(widget->mapToGlobal(local));
-    QHoverEvent hover(QEvent::HoverMove, localPos, screenPos, previousPos,
-                      modifiers);
+    QHoverEvent hover(type, localPos, QPointF(widget->mapToGlobal(local)),
+                      previousPos, modifiers);
 #else
-    QHoverEvent hover(QEvent::HoverMove, localPos, previousPos, modifiers);
+    QHoverEvent hover(type, localPos, previousPos, modifiers);
 #endif
     QApplication::sendEvent(widget, &hover);
 }
@@ -2144,6 +2137,11 @@ QJsonObject Server::act(const QJsonObject& params)
 
     if (!virtualId.isEmpty()) {
         if (QWindow* window = windowForId(virtualId)) {
+            // A window can close while an event is dispatched or while queued
+            // work is pumped. Every post-dispatch read goes through this guard,
+            // for the same reason as the widget path above: Qt dereferences the
+            // receiver before any handler runs.
+            const QPointer<QWindow> windowGuard(window);
             const QString windowAction =
                 params.value(QStringLiteral("action")).toString();
             if (windowAction == QStringLiteral("set_geometry")) {
@@ -2168,7 +2166,10 @@ QJsonObject Server::act(const QJsonObject& params)
                 window->requestActivate();
                 QCoreApplication::processEvents(
                     QEventLoop::ExcludeUserInputEvents);
-                const QRect actual = window->geometry();
+                QWindow* current = windowGuard.data();
+                if (!current)
+                    return staleTargetResult();
+                const QRect actual = current->geometry();
                 QJsonObject requested;
                 requested.insert(QStringLiteral("x"), x);
                 requested.insert(QStringLiteral("y"), y);
@@ -2183,8 +2184,8 @@ QJsonObject Server::act(const QJsonObject& params)
                 resolved.insert(QStringLiteral("id"), virtualId);
                 resolved.insert(
                     QStringLiteral("class"),
-                    QString::fromLatin1(window->metaObject()->className()));
-                resolved.insert(QStringLiteral("visible"), window->isVisible());
+                    QString::fromLatin1(current->metaObject()->className()));
+                resolved.insert(QStringLiteral("visible"), current->isVisible());
                 resolved.insert(QStringLiteral("rect"), rect);
                 QJsonObject result;
                 result.insert(QStringLiteral("ok"), true);
@@ -2195,14 +2196,17 @@ QJsonObject Server::act(const QJsonObject& params)
             }
             if (windowAction == QStringLiteral("minimize")) {
                 window->showMinimized();
+                QWindow* current = windowGuard.data();
+                if (!current)
+                    return staleTargetResult();
                 QJsonObject resolved;
                 resolved.insert(QStringLiteral("id"), virtualId);
                 resolved.insert(
                     QStringLiteral("class"),
-                    QString::fromLatin1(window->metaObject()->className()));
+                    QString::fromLatin1(current->metaObject()->className()));
                 resolved.insert(QStringLiteral("minimized"),
-                                window->windowState() == Qt::WindowMinimized);
-                const QRect geometry = window->geometry();
+                                current->windowState() == Qt::WindowMinimized);
+                const QRect geometry = current->geometry();
                 resolved.insert(QStringLiteral("rect"), QJsonObject{
                     {QStringLiteral("x"), geometry.x()},
                     {QStringLiteral("y"), geometry.y()},
@@ -2222,16 +2226,19 @@ QJsonObject Server::act(const QJsonObject& params)
                     window->setGeometry(savedGeometry);
                 window->raise();
                 window->requestActivate();
+                QWindow* current = windowGuard.data();
+                if (!current)
+                    return staleTargetResult();
                 QJsonObject resolved;
                 resolved.insert(QStringLiteral("id"), virtualId);
                 resolved.insert(
                     QStringLiteral("class"),
-                    QString::fromLatin1(window->metaObject()->className()));
-                resolved.insert(QStringLiteral("visible"), window->isVisible());
+                    QString::fromLatin1(current->metaObject()->className()));
+                resolved.insert(QStringLiteral("visible"), current->isVisible());
                 resolved.insert(
                     QStringLiteral("minimized"),
-                    window->windowState() == Qt::WindowMinimized);
-                const QRect geometry = window->geometry();
+                    current->windowState() == Qt::WindowMinimized);
+                const QRect geometry = current->geometry();
                 resolved.insert(QStringLiteral("rect"), QJsonObject{
                     {QStringLiteral("x"), geometry.x()},
                     {QStringLiteral("y"), geometry.y()},
@@ -2295,21 +2302,33 @@ QJsonObject Server::act(const QJsonObject& params)
                 const int clicks =
                     windowAction == QStringLiteral("dblclick") ? 2 : 1;
                 for (int i = 0; i < clicks; ++i) {
-                    sendWindowMouse(window, QEvent::MouseMove, point,
+                    QWindow* current = windowGuard.data();
+                    if (!current)
+                        return staleTargetResult();
+                    sendWindowMouse(current, QEvent::MouseMove, point,
                                     Qt::NoButton, Qt::NoButton, windowModifiers);
-                    sendWindowMouse(window, QEvent::MouseButtonPress, point,
+                    current = windowGuard.data();
+                    if (!current)
+                        return staleTargetResult();
+                    sendWindowMouse(current, QEvent::MouseButtonPress, point,
                                     windowButton, windowButton,
                                     windowModifiers);
-                    sendWindowMouse(window, QEvent::MouseButtonRelease, point,
+                    current = windowGuard.data();
+                    if (!current)
+                        return staleTargetResult();
+                    sendWindowMouse(current, QEvent::MouseButtonRelease, point,
                                     windowButton, Qt::NoButton, windowModifiers);
                 }
                 QCoreApplication::processEvents();
-                const QRect geometry = window->geometry();
+                QWindow* current = windowGuard.data();
+                if (!current)
+                    return staleTargetResult();
+                const QRect geometry = current->geometry();
                 QJsonObject resolved;
                 resolved.insert(QStringLiteral("id"), virtualId);
                 resolved.insert(
                     QStringLiteral("class"),
-                    QString::fromLatin1(window->metaObject()->className()));
+                    QString::fromLatin1(current->metaObject()->className()));
                 resolved.insert(QStringLiteral("rect"), QJsonObject{
                     {QStringLiteral("x"), geometry.x()},
                     {QStringLiteral("y"), geometry.y()},
@@ -2353,17 +2372,26 @@ QJsonObject Server::act(const QJsonObject& params)
 #else
                 const int key = sequence[0];
 #endif
+                QWindow* current = windowGuard.data();
+                if (!current)
+                    break;
                 QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
-                QCoreApplication::sendEvent(window, &press);
+                QCoreApplication::sendEvent(current, &press);
+                current = windowGuard.data();
+                if (!current)
+                    break;
                 QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
-                QCoreApplication::sendEvent(window, &release);
+                QCoreApplication::sendEvent(current, &release);
                 QCoreApplication::processEvents();
             }
+            QWindow* current = windowGuard.data();
+            if (!current)
+                return staleTargetResult();
             QJsonObject resolved;
             resolved.insert(QStringLiteral("id"), virtualId);
             resolved.insert(QStringLiteral("class"),
                             QString::fromLatin1(
-                                window->metaObject()->className()));
+                                current->metaObject()->className()));
             QJsonObject result;
             result.insert(QStringLiteral("ok"), true);
             result.insert(QStringLiteral("action"), windowAction);
@@ -2497,11 +2525,24 @@ QJsonObject Server::act(const QJsonObject& params)
     }
 
     QString typeTextAfter;
-    QJsonObject resolved;
-    resolved.insert(QStringLiteral("id"), idFor(widget));
-    resolved.insert(QStringLiteral("class"),
-                    QString::fromLatin1(widget->metaObject()->className()));
-    resolved.insert(QStringLiteral("objectName"), widget->objectName());
+    // Identity is captured before anything is dispatched: after a dispatch the
+    // widget may be gone, and reading its meta-object or objectName would be a
+    // use-after-free.
+    auto identityOf = [&](QWidget* target) {
+        QJsonObject identity;
+        identity.insert(QStringLiteral("id"), idFor(target));
+        identity.insert(QStringLiteral("class"),
+                        QString::fromLatin1(target->metaObject()->className()));
+        identity.insert(QStringLiteral("objectName"), target->objectName());
+        return identity;
+    };
+    QJsonObject resolved = identityOf(widget);
+    // `resolved` is replaced for `type` by the widget that actually received the
+    // keystrokes; the addressed target is kept separately for the observation
+    // fallback below, which documents the *target* going away.
+    const QJsonObject targetIdentity = resolved;
+    QPointer<QWidget> typeReceiver;
+    QJsonObject typeIdentity;
     const QJsonObject observedBefore = propertySnapshot(widget);
 
     // Resolve the point the action targets: the widget's centre unless the
@@ -2599,19 +2640,14 @@ QJsonObject Server::act(const QJsonObject& params)
         if (!dispatchContextMenu())
             return staleTargetResult();
     } else if (action == QStringLiteral("type")) {
-        const QPointer<QWidget>& guard = widgetGuard;
-        if (guard.isNull()) {
-            QJsonObject result;
-            result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
-            result.insert(QStringLiteral("message"), QStringLiteral("target was destroyed"));
-            return result;
-        }
-        QWidget* current = guard.data();
+        if (widgetGuard.isNull())
+            return staleTargetResult();
         auto isEditable = [](QWidget* candidate) {
             return qobject_cast<QLineEdit*>(candidate) ||
                    qobject_cast<QTextEdit*>(candidate) ||
                    qobject_cast<QPlainTextEdit*>(candidate);
         };
+        QWidget* current = widgetGuard.data();
         if (!isEditable(current)) {
             for (QWidget* child :
                  current->findChildren<QWidget*>(QString(),
@@ -2630,36 +2666,68 @@ QJsonObject Server::act(const QJsonObject& params)
                           QStringLiteral("target has no editable child"));
             return result;
         }
-        current->setFocus(Qt::OtherFocusReason);
-        if (params.value(QStringLiteral("clear")).toBool(false))
-            QMetaObject::invokeMethod(current, "clear", Qt::DirectConnection);
+
+        // The widget that receives the keystrokes can destroy itself while
+        // handling one: Enter accepts a modal dialog and the page that owns the
+        // QLineEdit goes away with it. Anchor the receiver itself — it differs
+        // from widgetGuard when the editable is a child of the addressed
+        // target — and re-check it after every dispatched event, because
+        // QCoreApplication::notifyInternal2 dereferences receiver->d_func()
+        // before any handler runs: a second event sent to the freed widget is a
+        // use-after-free inside Qt, not inside the target application.
+        const QPointer<QWidget> editGuard(current);
+        typeReceiver = editGuard;
+        typeIdentity = identityOf(current);
+        auto alive = [&editGuard]() { return !editGuard.isNull(); };
+        auto captureText = [&]() {
+            QWidget* editor = editGuard.data();
+            if (!editor)
+                return;
+            if (auto* line = qobject_cast<QLineEdit*>(editor))
+                typeTextAfter = line->text();
+            else if (auto* textEdit = qobject_cast<QTextEdit*>(editor))
+                typeTextAfter = textEdit->toPlainText();
+            else if (auto* plain = qobject_cast<QPlainTextEdit*>(editor))
+                typeTextAfter = plain->toPlainText();
+        };
+        // Dispatch one key event and report whether the receiver survived it.
+        auto sendKey = [&](QEvent::Type type, int key,
+                           const QString& characters) {
+            QWidget* receiver = editGuard.data();
+            if (!receiver)
+                return false;
+            QKeyEvent event(type, key, Qt::NoModifier, characters);
+            QApplication::sendEvent(receiver, &event);
+            return alive();
+        };
+
+        editGuard.data()->setFocus(Qt::OtherFocusReason);
+        if (params.value(QStringLiteral("clear")).toBool(false) && alive())
+            QMetaObject::invokeMethod(editGuard.data(), "clear",
+                                      Qt::DirectConnection);
+        captureText();
         const QString text = params.value(QStringLiteral("text")).toString();
         for (const QChar ch : text) {
-            if (guard.isNull())
+            if (!sendKey(QEvent::KeyPress, 0, QString(ch)))
                 break;
-            QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(ch));
-            QApplication::sendEvent(current, &press);
-            QKeyEvent release(QEvent::KeyRelease, 0, Qt::NoModifier, QString(ch));
-            QApplication::sendEvent(current, &release);
+            // Capture before the release: either event can destroy the editor,
+            // and the press has already inserted the character, so this keeps
+            // the last text the widget could actually show.
+            captureText();
+            if (!sendKey(QEvent::KeyRelease, 0, QString(ch)))
+                break;
         }
-        if (params.value(QStringLiteral("submit")).toBool(false) && !guard.isNull()) {
-            QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-            QApplication::sendEvent(current, &press);
-            QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
-            QApplication::sendEvent(current, &release);
+        // Enter commits: it can close the dialog and delete the editor before
+        // the matching KeyRelease could be delivered, so the typed text is kept
+        // from the last moment the widget was observable, and the release is
+        // skipped once the press destroyed the receiver.
+        captureText();
+        if (params.value(QStringLiteral("submit")).toBool(false) &&
+            sendKey(QEvent::KeyPress, Qt::Key_Return, QString())) {
+            sendKey(QEvent::KeyRelease, Qt::Key_Return, QString());
         }
-        if (!guard.isNull()) {
-            if (auto* line = qobject_cast<QLineEdit*>(current))
-                typeTextAfter = line->text();
-            else if (auto* textEdit = qobject_cast<QTextEdit*>(current))
-                typeTextAfter = textEdit->toPlainText();
-            else if (auto* plain = qobject_cast<QPlainTextEdit*>(current))
-                typeTextAfter = plain->toPlainText();
-            resolved.insert(QStringLiteral("id"), idFor(current));
-            resolved.insert(QStringLiteral("class"),
-                            QString::fromLatin1(current->metaObject()->className()));
-            resolved.insert(QStringLiteral("objectName"), current->objectName());
-        }
+        if (alive())
+            captureText();
     } else if (action == QStringLiteral("focus")) {
         if (QWidget* current = widgetGuard.data())
             current->setFocus(Qt::OtherFocusReason);
@@ -2760,24 +2828,35 @@ QJsonObject Server::act(const QJsonObject& params)
         if (!target)
             return staleTargetResult();
         const QPoint local(target->width() / 2, target->height() / 2);
-        const QPoint previous =
-            params.value(QStringLiteral("position")).toObject().isEmpty()
-                ? local
-                : local;
         // Enter/Leave are what widgets override for hover feedback; the
         // QHoverEvent family is what styles and tooltips read. A widget with
         // setMouseTracking(true) additionally expects a plain MouseMove, which
-        // is what a real pointer sends while it moves over the widget.
-        sendWidgetEnterLeave(target, local, modifiers, true);
+        // is what a real pointer sends while it moves over the widget. Each
+        // event goes out only while the widget is still alive: the previous one
+        // may have destroyed it, and the next send would be a use-after-free
+        // inside Qt's event dispatch.
+        sendWidgetEnterEvent(target, local);
         target = widgetGuard.data();
-        if (target) {
-            sendWidgetHoverMove(target, local, previous, modifiers);
-            sendWidgetMouse(target, QEvent::MouseMove, local, Qt::NoButton,
-                            Qt::NoButton, modifiers);
-        }
+        if (!target)
+            return staleTargetResult();
+        sendWidgetHoverEvent(target, QEvent::HoverEnter, local, local, modifiers);
         target = widgetGuard.data();
-        if (target)
-            sendWidgetEnterLeave(target, local, modifiers, false);
+        if (!target)
+            return staleTargetResult();
+        sendWidgetHoverEvent(target, QEvent::HoverMove, local, local, modifiers);
+        target = widgetGuard.data();
+        if (!target)
+            return staleTargetResult();
+        sendWidgetMouse(target, QEvent::MouseMove, local, Qt::NoButton,
+                        Qt::NoButton, modifiers);
+        target = widgetGuard.data();
+        if (!target)
+            return staleTargetResult();
+        sendWidgetHoverEvent(target, QEvent::HoverLeave, local, local, modifiers);
+        target = widgetGuard.data();
+        if (!target)
+            return staleTargetResult();
+        sendWidgetLeaveEvent(target);
     } else {
         QJsonObject result;
         result.insert(QStringLiteral("error"), QStringLiteral("E_NOT_IMPLEMENTED"));
@@ -2788,6 +2867,16 @@ QJsonObject Server::act(const QJsonObject& params)
 
     const int settleMs = params.value(QStringLiteral("settle_ms")).toInt(0);
     const int settledMs = settlePump(settleMs);
+
+    if (action == QStringLiteral("type")) {
+        // `resolved` names the widget that received the keystrokes, not the
+        // addressed target. Check liveness after the settle pump as well: it
+        // flushes DeferredDelete, so a dialog that only scheduled its delete can
+        // still lose the editor here.
+        resolved = typeIdentity;
+        if (typeReceiver.isNull())
+            resolved.insert(QStringLiteral("gone"), true);
+    }
 
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
@@ -2833,7 +2922,7 @@ QJsonObject Server::act(const QJsonObject& params)
             // instead of resolving the now-freed pointer again.
             QJsonObject observed;
             observed.insert(QStringLiteral("id"),
-                            resolved.value(QStringLiteral("id")));
+                            targetIdentity.value(QStringLiteral("id")));
             observed.insert(QStringLiteral("gone"), true);
             result.insert(QStringLiteral("observed"), observed);
         }
@@ -5511,11 +5600,27 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
 #else
             const int key = sequence[0];
 #endif
+            QWindow* liveWindow =
+                qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+            if (!liveWindow)
+                break;
             QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
-            QCoreApplication::sendEvent(window, &press);
+            QCoreApplication::sendEvent(liveWindow, &press);
+            // A key press can close the window that received it (Escape on a
+            // QML popup); the release must not go to the freed object.
+            liveWindow = qobject_cast<QQuickWindow*>(ref.windowOwner.data());
+            if (!liveWindow)
+                break;
             QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
-            QCoreApplication::sendEvent(window, &release);
+            QCoreApplication::sendEvent(liveWindow, &release);
             QCoreApplication::processEvents();
+        }
+        if (ref.windowOwner.isNull()) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("window was destroyed"));
+            return result;
         }
         QJsonObject resolved;
         resolved.insert(QStringLiteral("id"), id);
@@ -5552,6 +5657,15 @@ QJsonObject Server::actVirtual(const QJsonObject& params, const QString& id)
         }
         QMetaObject::invokeMethod(item, "forceActiveFocus",
                                   Qt::DirectConnection);
+        // Focus handlers run synchronously and can delete the item.
+        item = qobject_cast<QQuickItem*>(ref.qmlObject.data());
+        if (!item) {
+            QJsonObject result;
+            result.insert(QStringLiteral("error"), QStringLiteral("E_STALE_ID"));
+            result.insert(QStringLiteral("message"),
+                          QStringLiteral("target was destroyed"));
+            return result;
+        }
         QString text = item->property("text").toString();
         if (params.value(QStringLiteral("clear")).toBool(false))
             text.clear();

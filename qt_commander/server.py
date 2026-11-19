@@ -1974,6 +1974,16 @@ async def qt_act(
     it (a Close button that deletes its dialog), the result carries
     ``observed={"id": <old id>, "gone": true}`` instead of a fresh state — that
     is a successful action, not an error, and the id is stale from then on.
+
+    ``type`` follows the widget that actually receives the keystrokes, which is
+    the target itself or the editable child it resolved to. That widget can
+    destroy itself while handling an event: Enter accepts a modal dialog and the
+    page owning the QLineEdit goes away with it. The action then stops
+    dispatching, reports ``resolved={"id": ..., "gone": true}`` and leaves
+    ``text_after`` at the last text observed before the fatal event; a stale id
+    is the expected follow-up, never a crash. Actions that dispatch a sequence of
+    events (``hover`` and the window ``key``/``click`` paths) also stop there and
+    report the destroyed target as ``E_STALE_ID``.
     """
     session = _session(session_id)
     if isinstance(session, dict):

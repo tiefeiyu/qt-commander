@@ -12,6 +12,31 @@ a heading here always matches a tag after the release.
 Before 0.9.0 the project was installed from source only; the `v0.x` git tags
 below are pre-PyPI milestones and are kept for history.
 
+## [0.10.1] — 2026-11-19
+
+### Fixed
+
+- `qt_act(action="type", submit=true)` could take the target process down when
+  Enter closed a modal dialog and destroyed the QLineEdit that received it: the
+  matching KeyRelease — and the KeyRelease of a character that destroyed its own
+  widget — was still dispatched to the freed widget, and Qt dereferences the
+  receiver before any handler runs (`QCoreApplication::notifyInternal2`), so the
+  crash surfaced inside `Qt5Cored.dll` rather than in the application. The
+  keystroke receiver is now anchored in a `QPointer` (not just the addressed
+  target: the editable can be a child of it), every synthetic event is followed
+  by a liveness check before the next one is dispatched, and a destroyed editor
+  reports `resolved={"id": ..., "gone": true}` with `text_after` at the last text
+  observed before the fatal event. The same one-event-per-liveness-check rule now
+  covers `hover` (Enter/HoverEnter/HoverMove/Leave, previously two unchecked
+  events per helper call) and the `QWindow`/QML-window dispatch paths (`key`,
+  `click`, and every read after `processEvents()`).
+- Covered by `scripts/type_submit_regression.py`: 11 scenarios against the new
+  destructive modes of `tests/test-apps/modal` (Enter deleting the page, the
+  editable child, or the whole container; a character destroying the editor on
+  its KeyPress or KeyRelease; a rebuild in place; `QTextEdit`/`QPlainTextEdit`;
+  a hover handler deleting its widget) plus non-destructive controls that catch
+  an over-eager `gone`. Seven of the eleven fail against the pre-fix runtime.
+
 ## [0.10.0] — 2026-11-13
 
 ### Added

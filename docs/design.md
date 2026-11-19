@@ -267,6 +267,8 @@ qt_act(
 
 - `op_id` 由 Python 内部生成，不暴露给 Agent；2004/2003 时同 `op_id` 自动重试一次；库缓存 120s。
 - expect 超时：`ok:false` + `cause:"expect_not_met"` + `dispatched:true` + `retryable:false`，附 `observed`。
+- `type` 的 `resolved` 指向**真正接收按键的控件**（目标本身，或解析出的可编辑子控件）；该控件若在动作中被销毁，`resolved` 带 `"gone": true`，`text_after` 保留最后一次观测到的文本，后续事件不再投递。被寻址的目标被销毁时，`observed` 仍是 `{"id": <目标 id>, "gone": true}`（与 `resolved` 的身份可能不同）。
+- 合成事件逐条投递，每条之后都检查接收者是否仍存活：事件处理器可能销毁接收者，而 Qt 在派发前就会解引用 `receiver`。
 
 ### 5.4 expect
 

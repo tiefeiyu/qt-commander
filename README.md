@@ -373,6 +373,15 @@ cmake -S tests/test-apps/modal -B build/modal-mingw5 -G Ninja \
 cmake --build build/modal-mingw5
 uv run python scripts/task_regression.py
 
+# destructive input: Enter / a typed character / hover must never dispatch a
+# second event to a widget the first one destroyed
+cmake -S tests/test-apps/modal -B build/modal-msvc5 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DQT_MAJOR_VERSION=5 \
+  -DQt5_DIR=/path/to/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5
+cmake --build build/modal-msvc5
+uv run python scripts/type_submit_regression.py \
+  --exe build/modal-msvc5/qt-modal-test.exe
+
 # P0 benchmarks
 uv run python scripts/p0_large.py --label large-7000
 uv run python scripts/p0_matrix.py --exe build/matrix-mingw5/qt-matrix-test.exe

@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -212,26 +215,69 @@ async def scenario_soak(session: Session, process: subprocess.Popen,
     print(f"{label} soak: {cycles} cycles in {elapsed:.0f} ms, inflight 0")
 
 
+def open_target_log(path: Path):
+    """Open the file that receives the target's stdio.
+
+    It has to outlive the process, so it is not a context manager; keeping the
+    open() in a sync helper also keeps the async runner free of blocking-I/O
+    lint. Only run_mode uses it.
+    """
+    return open(path, "wb")
+
+
+def target_log_tail(path: Path, limit: int = 2000) -> str:
+    """Last part of the target's captured output, for failure diagnostics."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-limit:].strip()
+
+
 async def run_mode(exe: Path, mode: str, scenario, label: str) -> None:
     directory = Path(tempfile.mkdtemp(prefix=f"qtc-task-{mode}-"))
     env = dict(os.environ)
     env["QT_COMMANDER_RENDEZVOUS"] = str(directory)
-    process = subprocess.Popen(
-        [str(exe), "--mode", mode],
-        cwd=str(exe.parent),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    session = None
+    # The app's output is the only clue when it dies before the descriptor or
+    # while a scenario is running (a Qt runtime mismatch, a crash in the target).
+    log_path = directory / "target.log"
+    log = open_target_log(log_path)
     try:
-        session = await connect(process, directory)
-        await scenario(session, process, label)
+        process = subprocess.Popen(
+            [str(exe), "--mode", mode],
+            cwd=str(exe.parent),
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        session = None
+        try:
+            try:
+                session = await connect(process, directory)
+            except RuntimeError as exc:
+                tail = target_log_tail(log_path)
+                raise RuntimeError(
+                    f"{exc} (exit code {process.poll()}); "
+                    f"target output: {tail or '<empty>'}"
+                ) from None
+            try:
+                await scenario(session, process, label)
+            except BaseException:
+                tail = target_log_tail(log_path)
+                if tail:
+                    print(f"[{label}/{mode}] target output:\n{tail}",
+                          file=sys.stderr)
+                raise
+        finally:
+            if session is not None:
+                await session.close()
+            with contextlib.suppress(OSError):
+                process.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
     finally:
-        if session is not None:
-            await session.close()
-        process.terminate()
-        process.wait(timeout=5)
+        log.close()
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 async def main(exe: Path, label: str) -> int:
